@@ -14,8 +14,9 @@ from .breaks import AdBreak, find_breaks
 from .feed import download, fetch_feed
 from .fingerprint import FingerprintConfig, fingerprint_file
 from .matcher import MatchParams
-from .pipeline import (Paths, find_common_blocks, ingest_episodes, ingest_feed, ingest_file,
-                       load_fingerprint, neighbours)
+from .outro import music_bed_outro
+from .pipeline import (Paths, episode_loudness, find_common_blocks, ingest_episodes, ingest_feed,
+                       ingest_file, load_fingerprint, neighbours)
 from .report import build_sections
 from .store import TYPES, Store, StoreError
 
@@ -81,8 +82,9 @@ def cmd_report(args, store: Store, paths: Paths) -> None:
                 path = download(args.target, Path(tmp) / "audio")
             fp = fingerprint_file(path, store.config)
         podcast = podcast_arg(store, args.podcast)
+        bed = outro_start(args, store, podcast, fp.loudness)
         print_report(args, store, Path(args.target).name, fp.duration,
-                     store.scan(fp, params, podcast_id=podcast))
+                     store.scan(fp, params, podcast_id=podcast), outro_bed_start=bed)
     else:
         sys.exit("Give an episode id, file or URL, or --feed URL [--index N].")
 
@@ -101,15 +103,27 @@ def find_neighbour_repeats(args, store: Store, paths: Paths, ep_id: int, params:
     find_common_blocks(store, [ep_id, *around], params, compare_with_history=False)
 
 
+def outro_start(args, store: Store, podcast: int | None, loudness) -> float | None:
+    """Where a music-bed outro starts, when asked for (flag or podcast setting) and found."""
+    pod = store.podcast(podcast)
+    if not (args.outro_bed or (pod and pod["outro_bed"])) or loudness is None:
+        return None
+    return music_bed_outro(loudness)
+
+
 def report_episode(args, store: Store, ep_id: int, params: MatchParams) -> None:
     ep = store.episode(ep_id)
     matches = store.scan(load_fingerprint(store, ep_id), params, podcast_id=ep["podcast_id"])
-    print_report(args, store, ep["title"], ep["duration"], matches, ep_id)
+    pod = store.podcast(ep["podcast_id"])
+    wanted = args.outro_bed or (pod and pod["outro_bed"])
+    bed = outro_start(args, store, ep["podcast_id"], episode_loudness(store, ep_id) if wanted else None)
+    print_report(args, store, ep["title"], ep["duration"], matches, ep_id, outro_bed_start=bed)
 
 
 def print_report(args, store: Store, title: str, duration: float, matches,
-                 ep_id: int | None = None) -> None:
-    sections = build_sections(matches, store.types(), duration, fill_gaps=args.fill_gaps)
+                 ep_id: int | None = None, outro_bed_start: float | None = None) -> None:
+    sections = build_sections(matches, store.types(), duration, fill_gaps=args.fill_gaps,
+                              outro_bed_start=outro_bed_start)
     total = sum(s.length for s in sections)
     if args.json:
         print(json.dumps({"episode_id": ep_id, "title": title, "duration": round(duration, 2),
@@ -129,7 +143,7 @@ def print_report(args, store: Store, title: str, duration: float, matches,
               f"{', '.join(s.types)}{unique}  {blocks}")
         if args.detail:
             for p in sorted(s.parts, key=lambda p: p.start):
-                block = f"#{p.block}" if p.block is not None else ""
+                block = f"#{p.block}" if p.block is not None else ("music bed" if p.type == "outro" else "")
                 print(f"      {fmt_time(p.start):>8} - {fmt_time(p.end):>8}  {p.type:<10} {block}")
 
 
@@ -165,7 +179,16 @@ def cmd_list(args, store: Store, paths: Paths) -> None:
 def cmd_podcasts(args, store: Store, paths: Paths) -> None:
     for p in store.podcasts():
         feed = f"  {p['feed_url']}" if p["feed_url"] else ""
-        print(f"{p['id']:>4}  {p['name']}  ({p['episodes']} episodes, {p['blocks']} blocks){feed}")
+        bed = "  [outro-bed]" if p["outro_bed"] else ""
+        print(f"{p['id']:>4}  {p['name']}  ({p['episodes']} episodes, {p['blocks']} blocks){bed}{feed}")
+
+
+def cmd_podcast(args, store: Store, paths: Paths) -> None:
+    pod_id = podcast_arg(store, args.podcast)
+    if args.outro_bed is not None:
+        store.set_outro_bed(pod_id, args.outro_bed)
+    pod = store.podcast(pod_id)
+    print(f"#{pod['id']} {pod['name']}: outro-bed {'on' if pod['outro_bed'] else 'off'}")
 
 
 def cmd_show(args, store: Store, paths: Paths) -> None:
@@ -294,6 +317,8 @@ def main(argv: list[str] | None = None) -> None:
                    help="first fetch the K nearest episodes in the feed and look for new repeats")
     p.add_argument("--fill-gaps", type=float, default=0.0, metavar="SEC",
                    help="take in up to SEC seconds of unique audio between repeats (default: 0)")
+    p.add_argument("--outro-bed", action="store_true",
+                   help="look for an outro read over a music bed, even if the podcast setting is off")
     p.add_argument("--detail", action="store_true", help="list the parts of each section")
     p.add_argument("--json", action="store_true", help="print JSON")
     matching_args(p)
@@ -305,6 +330,13 @@ def main(argv: list[str] | None = None) -> None:
     p.set_defaults(func=cmd_list)
 
     sub.add_parser("podcasts", help="list podcasts in the store").set_defaults(func=cmd_podcasts)
+
+    p = sub.add_parser("podcast", help="show or change a podcast's settings")
+    p.add_argument("podcast", help="podcast id, name or feed URL")
+    p.add_argument("--outro-bed", action=argparse.BooleanOptionalAction, default=None,
+                   help="its episodes end with talk over a music bed (patron names, plugs); "
+                        "reports then run that stretch to the end as outro")
+    p.set_defaults(func=cmd_podcast)
 
     p = sub.add_parser("breaks", help="show the ad breaks found in stored episodes")
     p.add_argument("episode_ids", type=int, nargs="*", help="episode ids (default: all)")

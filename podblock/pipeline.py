@@ -8,9 +8,12 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
+
 from .breaks import SHORT_BLOCK_SEC, classify_bumpers
 from .feed import Episode, Feed, download, fetch_feed
-from .fingerprint import Fingerprint, FingerprintConfig, fingerprint_file, frames_to_seconds
+from .fingerprint import (Fingerprint, FingerprintConfig, decode_audio, fingerprint_file,
+                          frames_to_seconds, loudness_curve)
 from .matcher import MatchParams, common_runs
 from .store import Store
 
@@ -100,6 +103,18 @@ def ingest_file(store: Store, paths: Paths, audio_path: Path, podcast_id: int | 
 
 def load_fingerprint(store: Store, episode_id: int) -> Fingerprint:
     return Fingerprint.load(Path(store.episode(episode_id)["fingerprint_path"]))
+
+
+def episode_loudness(store: Store, episode_id: int) -> np.ndarray | None:
+    """The episode's loudness curve: from its fingerprint, else from its audio."""
+    fp = load_fingerprint(store, episode_id)
+    if fp.loudness is not None:
+        return fp.loudness
+    audio = store.episode(episode_id)["audio_path"]
+    if audio and Path(audio).exists():
+        rate = store.config.sample_rate
+        return loudness_curve(decode_audio(audio, rate), rate)
+    return None
 
 
 def rescan(store: Store, episode_id: int, params: MatchParams, fp: Fingerprint | None = None) -> None:
