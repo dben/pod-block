@@ -17,6 +17,7 @@ from .store import BUMPER, BUMPER_IN, BUMPER_OUT, SegmentMatch, Store
 SHORT_BLOCK_SEC = 10.0  # bumpers usually match for less than this; ads for longer
 MAX_BUMPER_SEC = 20.0  # stored blocks longer than this are never bumpers
 MIN_PLAIN_BREAK_SEC = 60.0  # a group of known blocks this long is a break even without bumpers
+NEW_ADS_GAP_SEC = 90.0  # a half-found break joins known blocks this close: new ads in between
 JOIN_GAP_SEC = 8.0  # blocks this close together belong to one group
 MAX_BREAK_SEC = 600.0  # a bumper-in and bumper-out further apart do not pair up
 MIN_EDGE_SHARE = 0.5  # share of a block's occurrences that must sit at a group edge
@@ -98,19 +99,41 @@ def find_breaks(matches: list[SegmentMatch], kinds: dict[int, str],
     matches = sorted(matches, key=lambda m: m.start)
     breaks: list[AdBreak] = []
     open_break: AdBreak | None = None
+    opener_end = group_end = 0.0
+    ads_seen = False  # a long known block played since the break opened
+
+    def give_up(b: AdBreak) -> None:
+        # Its bumper-out never came. A bumper-in still marks where a break
+        # starts, and the break runs on through the blocks right after it;
+        # a two-sided bumper on its own says nothing.
+        if kinds.get(b.opened_by) == BUMPER_IN:
+            b.end = group_end
+            breaks.append(b)
 
     for m in matches:
         kind = kinds.get(m.segment_id)
-        if open_break and m.start - open_break.end > max_break:
-            breaks.append(open_break)  # its bumper-out never came; keep what we know
+        if open_break and m.start - opener_end > max_break:
+            give_up(open_break)
             open_break = None
         if open_break:
-            open_break.blocks.append(m.segment_id)
-            open_break.end = max(open_break.end, m.end)
-            if kind in CLOSES and m.start > open_break.start:
+            # A break holds at least one ad, so a closer right on the opener's
+            # heels is part of the same sting. Shows that play one sting on
+            # both sides of a break leave the direction open; there, only
+            # known ads in between show that a pair encloses a break.
+            two_sided = kinds.get(open_break.opened_by) == BUMPER and kind == BUMPER
+            if kind in CLOSES and two_sided and not ads_seen and m.start - opener_end >= SHORT_BLOCK_SEC:
+                open_break = AdBreak(m.start, m.end, opened_by=m.segment_id, blocks=[m.segment_id])
+                opener_end = group_end = m.end
+            elif kind in CLOSES and m.start - opener_end >= SHORT_BLOCK_SEC:
+                open_break.end = max(group_end, m.end)
                 open_break.closed_by = m.segment_id
+                open_break.blocks.append(m.segment_id)
                 breaks.append(open_break)
                 open_break = None
+            elif m.start - group_end <= JOIN_GAP_SEC:
+                group_end = max(group_end, m.end)
+                open_break.blocks.append(m.segment_id)
+            ads_seen = ads_seen or m.end - m.start >= SHORT_BLOCK_SEC
             continue
         last = breaks[-1] if breaks else None
         if kind in CLOSES and last and last.closed_by and m.start - last.end <= JOIN_GAP_SEC:
@@ -118,17 +141,31 @@ def find_breaks(matches: list[SegmentMatch], kinds: dict[int, str],
             last.blocks.append(m.segment_id)
         elif kind in OPENS:
             open_break = AdBreak(m.start, m.end, opened_by=m.segment_id, blocks=[m.segment_id])
-        elif kind in CLOSES:
+            opener_end = group_end = m.end
+            ads_seen = False
+        elif kind == BUMPER_OUT:
             # A break ends here, but its start was not found (new ads, no bumper-in).
             breaks.append(AdBreak(m.start, m.end, closed_by=m.segment_id, blocks=[m.segment_id]))
     if open_break:
-        breaks.append(open_break)
+        give_up(open_break)
 
     # Shows without bumpers still play their ads back to back. Such a group
-    # also fills in the missing side of a half-found break it overlaps.
+    # also fills in the missing side of a half-found break it overlaps or
+    # nearly meets (the gap being new ads).
+    def reaches(b: AdBreak, start: float, end: float) -> bool:
+        if b.start < end and start < b.end:
+            return True
+        if b.opened_by is not None and b.closed_by is None:
+            return 0 <= start - b.end <= NEW_ADS_GAP_SEC
+        if b.closed_by is not None and b.opened_by is None:
+            return 0 <= b.start - end <= NEW_ADS_GAP_SEC
+        return False
+
     for group in _groups(matches):
         start, end = min(m.start for m in group), max(m.end for m in group)
-        overlapping = [b for b in breaks if b.start < end and start < b.end]
+        if not any(m.end - m.start >= SHORT_BLOCK_SEC for m in group):
+            continue  # no ads in it, just stings and snippets
+        overlapping = [b for b in breaks if reaches(b, start, end)]
         if any(b.complete for b in overlapping):
             continue
         if overlapping:
