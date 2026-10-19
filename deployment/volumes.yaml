@@ -1,0 +1,25 @@
+# Two volumes, as the app keeps them apart:
+#   data:  podblock.sqlite and fingerprints. Small; back it up.
+#   media: downloaded and cut episodes. Large; can be lost (episodes can be downloaded again).
+# Both must be block storage (ReadWriteOnce). SQLite on NFS or another shared
+# file system can corrupt the database.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pod-block-data
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 2Gi  # about 2 MB of fingerprints per hour of audio, kept 30 days
+  # storageClassName: fast-ssd  # CHANGE if your cluster has no default class
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pod-block-media
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 50Gi  # each downloaded hour is about 50 MB, twice over (original and cut), for a week

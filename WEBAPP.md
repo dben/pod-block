@@ -16,7 +16,7 @@ what is done, and what comes later. Update it as work lands.
 | Milestone 6: timeline editor | done, ahead of 4 and 5 |
 | Milestone 4: private feed | done: tokens, feed XML, audio with byte ranges, copy and QR code |
 | Milestone 5: retention | done: clean-up after N days, keep, settings, cleaned-up episodes shown and archived in one go |
-| Milestone 7: deploy | next |
+| Milestone 7: deploy | done: CI builds and publishes the image; Kubernetes example in `deployment/` |
 
 Last updated: 2026-10-19.
 
@@ -105,7 +105,10 @@ Run notes:
   1000, and starts `podblock serve --host 0.0.0.0 --port 8000`.
 - `/healthz` for liveness and readiness probes.
 - `kubectl exec ... -- podblock api-key` makes a new key if the first one is
-  lost.
+  lost; `podblock backup FILE` copies the database safely while it runs.
+- `deployment/` has a kustomize example and its README; CI publishes the
+  image as `ghcr.io/dben/pod-block` (`latest` from `main`, versions from
+  `v*` tags, and `sha-…` for every build).
 
 ## Requirements
 
@@ -419,8 +422,12 @@ only looks at fingerprinted ones, so they don't affect it.
    shown and archived in one go.
 6. **Timeline editor** (done, ahead of 4 and 5): waveform, sections,
    marks, manual sections, re-cut.
-7. **Deploy**: Kubernetes manifests (Deployment, PVCs, Service, Ingress
-   example), backup notes.
+7. **Deploy** (done): GitHub Actions tests every push and pull request and
+   publishes the image to `ghcr.io/dben/pod-block` (amd64 and arm64) from
+   `main` and `v*` tags; a kustomize example in `deployment/` (namespace,
+   two volumes, a Deployment with probes and a locked-down container,
+   Service, Ingress); `podblock backup` and notes on backups, upgrades and
+   keeping the management pages private.
 
 ## Open questions
 
@@ -472,7 +479,7 @@ None right now.
   stale). For now, "Process again" does it by hand.
 - A real job for feed refreshes, once the job queue exists, so they show on
   the jobs page.
-- Helm chart.
+- A Helm chart, if the kustomize example isn't enough.
 
 ## Changelog
 

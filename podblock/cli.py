@@ -297,6 +297,25 @@ def cmd_serve(args, store: Store, paths: Paths) -> None:
     uvicorn.run(app, host=args.host, port=args.port, proxy_headers=True)
 
 
+def cmd_backup(args, store: Store, paths: Paths) -> None:
+    """Copy the database while it is in use; a plain file copy can catch it half-written."""
+    import sqlite3
+
+    dest = Path(args.dest)
+    if dest.exists() and not args.force:
+        sys.exit(f"podblock: {dest} already exists; pass --force to replace it")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_name(dest.name + ".part")
+    tmp.unlink(missing_ok=True)
+    target = sqlite3.connect(tmp)
+    try:
+        store.db.backup(target)
+    finally:
+        target.close()
+    tmp.replace(dest)
+    print(f"Backed up {paths.db} to {dest} ({dest.stat().st_size / 1e6:.1f} MB).")
+
+
 def cmd_api_key(args, store: Store, paths: Paths) -> None:
     from .web import accounts
     from .web.db import connect, prepare
@@ -454,6 +473,11 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--media-dir", type=Path, default=None,
                    help="where episode audio lives (default: $PODBLOCK_MEDIA_DIR, else DATA_DIR/media)")
     p.set_defaults(func=cmd_serve)
+
+    p = sub.add_parser("backup", help="copy the database to a file, safely, even while the web app runs")
+    p.add_argument("dest", help="file to write, e.g. /data/backup.sqlite")
+    p.add_argument("--force", action="store_true", help="replace the file if it exists")
+    p.set_defaults(func=cmd_backup)
 
     sub.add_parser("api-key", help="make a new login key for the web app, replacing the old one and "
                                    "logging everyone out").set_defaults(func=cmd_api_key)

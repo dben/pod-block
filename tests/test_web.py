@@ -106,3 +106,18 @@ def test_static_files_carry_a_version(tmp_path):
     page = c.get("/login").text
     assert "/static/app.css?v=" in page
     assert c.get("/static/app.css").status_code == 200
+
+
+def test_backup_copies_the_database(tmp_path):
+    import sqlite3
+    from podblock.cli import main
+    data = tmp_path / "data"
+    store = Store(data / "podblock.sqlite")
+    store.podcast_id("Show A", "http://a/feed")
+    store.close()
+    main(["--data-dir", str(data), "backup", str(tmp_path / "copy.sqlite")])
+    copy = sqlite3.connect(tmp_path / "copy.sqlite")
+    assert copy.execute("SELECT name FROM podcasts").fetchall() == [("Show A",)]
+    copy.close()
+    with pytest.raises(SystemExit):
+        main(["--data-dir", str(data), "backup", str(tmp_path / "copy.sqlite")])

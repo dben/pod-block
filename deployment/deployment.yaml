@@ -1,0 +1,79 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pod-block
+spec:
+  replicas: 1  # one only: SQLite, ReadWriteOnce volumes and the job queue all live in this pod
+  strategy:
+    type: Recreate  # the old pod must let go of the volumes before the new one starts
+  template:
+    spec:
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000  # so the volumes are writable by the app's user
+        fsGroupChangePolicy: OnRootMismatch
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      terminationGracePeriodSeconds: 30  # a job cut short goes back in the queue on the next start
+      containers:
+        - name: pod-block
+          image: ghcr.io/dben/pod-block
+          ports:
+            - name: http
+              containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: pod-block
+            # Optional: PODBLOCK_API_KEY (a fixed login key) and PODBLOCK_SECRET_KEY (signs cookies).
+            # Without them a key is made on first start and printed to the log once, and both are stored
+            # in the database. See README.md for making the secret.
+            - secretRef:
+                name: pod-block
+                optional: true
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: media
+              mountPath: /media
+            - name: tmp
+              mountPath: /tmp
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              memory: 2Gi
+          startupProbe:  # the first start upgrades the database
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 4
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: pod-block-data
+        - name: media
+          persistentVolumeClaim:
+            claimName: pod-block-media
+        - name: tmp
+          emptyDir: {}

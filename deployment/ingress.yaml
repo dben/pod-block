@@ -1,0 +1,28 @@
+# An example for ingress-nginx with cert-manager. CHANGE the host, the class and
+# the issuer to fit your cluster, or drop this file and use your own.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: pod-block
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt  # CHANGE, or remove and manage the certificate yourself
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"  # stream audio as it is read
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"  # long episodes, slow listeners
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-body-size: "1m"  # nothing big is ever uploaded
+spec:
+  ingressClassName: nginx  # CHANGE
+  tls:
+    - hosts: [pods.example.com]  # CHANGE
+      secretName: pod-block-tls
+  rules:
+    - host: pods.example.com  # CHANGE
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: pod-block
+                port:
+                  name: http

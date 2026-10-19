@@ -1,0 +1,25 @@
+# An example deployment of pod-block: `kubectl apply -k deployment/`.
+# Copy this folder and change what's marked CHANGE before using it for real.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: pod-block
+labels:
+  - pairs:
+      app.kubernetes.io/name: pod-block
+    includeSelectors: true
+resources:
+  - namespace.yaml
+  - volumes.yaml
+  - deployment.yaml
+  - service.yaml
+  - ingress.yaml
+images:
+  - name: ghcr.io/dben/pod-block
+    newTag: latest  # CHANGE: pin a release, e.g. 1.2.0, or a sha-… tag
+configMapGenerator:
+  - name: pod-block
+    literals:
+      - PODBLOCK_PUBLIC_URL=https://pods.example.com  # CHANGE: the address podcast apps reach it at
+      - PODBLOCK_SECURE_COOKIES=true  # the ingress serves it over HTTPS
+      - PODBLOCK_WORKERS=1  # jobs at once; each takes about a core and 0.3 GB while fingerprinting
+      - FORWARDED_ALLOW_IPS=*  # trust X-Forwarded-* from the ingress; the Service isn't reachable otherwise

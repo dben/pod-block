@@ -38,6 +38,7 @@ podblock report --feed "$FEED"        # repeated sections in the newest episode
 | `prune` | Clear out old audio, fingerprints and blocks (see "Keeping it small"). |
 | `serve [--host H] [--port P]` | Run the web app (see "Web app"). |
 | `api-key` | Make a new login key for the web app, logging everyone out. |
+| `backup DEST [--force]` | Copy the database to `DEST`, safely, even while the web app runs. |
 
 ### `report` options
 
@@ -82,9 +83,10 @@ podblock serve                        # http://127.0.0.1:8000; prints a login ke
 Or in a container, with the database and the audio on their own volumes:
 
 ```sh
-docker build -t pod-block .
-docker run -p 8000:8000 -v pb-data:/data -v pb-media:/media pod-block
+docker run -p 8000:8000 -v pb-data:/data -v pb-media:/media ghcr.io/dben/pod-block:latest
 ```
+
+`deployment/` has an example for Kubernetes.
 
 ## Block types
 

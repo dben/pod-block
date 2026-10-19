@@ -1,5 +1,9 @@
 FROM python:3.12-slim
 
+LABEL org.opencontainers.image.source=https://github.com/dben/pod-block \
+      org.opencontainers.image.description="Podcasts with the repeats cut out" \
+      org.opencontainers.image.licenses=MIT
+
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ffmpeg \
     && rm -rf /var/lib/apt/lists/*
@@ -9,7 +13,8 @@ COPY pyproject.toml README.md LICENSE ./
 COPY podblock ./podblock
 RUN pip install --no-cache-dir '.[web]'
 
-RUN useradd --system --uid 1000 --home /data podblock \
+RUN groupadd --system --gid 1000 podblock \
+    && useradd --system --uid 1000 --gid 1000 --home /data podblock \
     && mkdir -p /data /media && chown podblock:podblock /data /media
 USER podblock
 
