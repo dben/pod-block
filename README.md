@@ -95,8 +95,12 @@ overwrites a type set by hand.
    keeps opening groups becomes a `bumper-in`; one that keeps closing them a
    `bumper-out`.
 5. **Breaks.** A break runs from a bumper-in to the next bumper-out (within
-   10 minutes). A lone bumper still marks one end. Shows without bumpers get
-   breaks from 60 s or more of known blocks back to back.
+   10 minutes), even when the ads between them are all new. Some shows play
+   one sting on both sides of a break (`bumper`); a pair of those only counts
+   when known ads play between them, so the pairing can't slip out of step.
+   A lone bumper-in or bumper-out still marks one end, and reaches over up to
+   90 s of new ads to known ones. Shows without bumpers get breaks from 60 s
+   or more of known blocks back to back.
 
 ## Data
 
