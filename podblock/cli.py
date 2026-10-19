@@ -9,6 +9,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+from .breaks import AdBreak, find_breaks
 from .feed import download
 from .matcher import MatchParams
 from .pipeline import Paths, find_common_blocks, ingest_feed, ingest_file, scan_audio
@@ -56,16 +57,53 @@ def cmd_scan(args, store: Store, paths: Paths) -> None:
             fp, matches = scan_audio(store, target, params)
         duration = fp.duration
 
-    labels = {r["id"]: r["label"] for r in store.segment_summary()}
+    rows = {r["id"]: r for r in store.segment_summary()}
     print(f"Duration {fmt_time(duration)}, {len(matches)} known block(s):")
     total = 0.0
     for m in matches:
         total += m.end - m.start
-        label = f"  [{labels[m.segment_id]}]" if labels.get(m.segment_id) else ""
         print(f"  {fmt_time(m.start):>8} - {fmt_time(m.end):>8}  ({m.end - m.start:5.0f}s)  "
-              f"segment #{m.segment_id} from {fmt_time(m.segment_start)}  hits={m.hits}{label}")
+              f"segment #{m.segment_id} from {fmt_time(m.segment_start)}  hits={m.hits}"
+              f"{describe(rows.get(m.segment_id))}")
     if duration:
         print(f"Known blocks cover {fmt_time(total)} ({100 * total / duration:.1f}%).")
+    print_breaks(find_breaks(matches, {i: r["kind"] for i, r in rows.items()}))
+
+
+def describe(row) -> str:
+    """Kind and label of a block, for the end of an output line."""
+    if row is None:
+        return ""
+    tags = [t for t in (row["kind"], row["label"]) if t]
+    return f"  [{', '.join(tags)}]" if tags else ""
+
+
+def print_breaks(breaks: list[AdBreak], indent: str = "") -> None:
+    if not breaks:
+        print(f"{indent}No ad breaks found.")
+        return
+    total = sum(b.length for b in breaks)
+    print(f"{indent}{len(breaks)} ad break(s), {fmt_time(total)} in all:")
+    for b in breaks:
+        if b.complete:
+            how = f"bumpers #{b.opened_by} / #{b.closed_by}"
+        elif b.opened_by:
+            how = f"bumper-in #{b.opened_by}; end not found"
+        elif b.closed_by:
+            how = f"bumper-out #{b.closed_by}; start not found"
+        else:
+            how = "no bumpers, known blocks back to back"
+        print(f"{indent}  {fmt_time(b.start):>8} - {fmt_time(b.end):>8}  ({fmt_time(b.length):>5})  {how}")
+
+
+def cmd_breaks(args, store: Store, paths: Paths) -> None:
+    kinds = {r["id"]: r["kind"] for r in store.segments()}
+    episodes = store.fingerprinted_episodes()
+    if args.episode_ids:
+        episodes = [e for e in episodes if e["id"] in args.episode_ids]
+    for ep in episodes:
+        print(f"#{ep['id']} {ep['title']} ({fmt_time(ep['duration'] or 0)})")
+        print_breaks(find_breaks(store.occurrences_for_episode(ep["id"]), kinds), indent="  ")
 
 
 def print_segments(store: Store) -> None:
@@ -75,9 +113,8 @@ def print_segments(store: Store) -> None:
         return
     print(f"{'id':>4} {'length':>7} {'episodes':>8} {'times':>5}  source")
     for r in rows:
-        label = f"  [{r['label']}]" if r["label"] else ""
         print(f"{r['id']:>4} {fmt_time(r['duration']):>7} {r['episodes']:>8} {r['occurrences']:>5}  "
-              f"{(r['source_title'] or '?')[:50]} @ {fmt_time(r['source_start'])}{label}")
+              f"{(r['source_title'] or '?')[:50]} @ {fmt_time(r['source_start'])}{describe(r)}")
 
 
 def cmd_list(args, store: Store, paths: Paths) -> None:
@@ -89,7 +126,7 @@ def cmd_show(args, store: Store, paths: Paths) -> None:
     if seg is None:
         sys.exit(f"No segment #{args.segment_id}")
     print(f"Segment #{seg['id']}  {fmt_time(seg['source_end'] - seg['source_start'])}"
-          f"  label={seg['label'] or '-'}")
+          f"  kind={seg['kind'] or '-'}  label={seg['label'] or '-'}")
     for o in store.occurrences_for_segment(args.segment_id):
         print(f"  {fmt_time(o['start']):>8} - {fmt_time(o['end']):>8}  {o['title']}")
 
@@ -126,9 +163,10 @@ def main(argv: list[str] | None = None) -> None:
     sub = parser.add_subparsers(dest="command", required=True)
 
     def matching_args(p):
-        p.add_argument("--min-length", type=float, default=10.0,
-                       help="shortest common block to report, in seconds (default: %(default)s)")
-        p.add_argument("--min-hits", type=int, default=3,
+        p.add_argument("--min-length", type=float, default=MatchParams.min_length_sec,
+                       help="shortest common block, in seconds; blocks under 10 s must also "
+                            "occur at least 3 times (default: %(default)s)")
+        p.add_argument("--min-hits", type=int, default=MatchParams.min_hits_per_bin,
                        help="matching hashes per second needed to call audio shared (default: %(default)s)")
 
     p = sub.add_parser("analyze", help="fingerprint feeds or files and store their common blocks")
@@ -148,6 +186,10 @@ def main(argv: list[str] | None = None) -> None:
     p.set_defaults(func=cmd_scan)
 
     sub.add_parser("list", help="list stored common blocks").set_defaults(func=cmd_list)
+
+    p = sub.add_parser("breaks", help="show the ad breaks found in stored episodes")
+    p.add_argument("episode_ids", type=int, nargs="*", help="episode ids (default: all)")
+    p.set_defaults(func=cmd_breaks)
 
     p = sub.add_parser("show", help="show where a block occurs")
     p.add_argument("segment_id", type=int)
