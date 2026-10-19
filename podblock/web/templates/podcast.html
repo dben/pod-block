@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+{% block content %}
+{% set art = podcast.image_url|web_url %}
+{% set about = podcast.description|text %}
+<section class="show-head">
+  {% if art %}<img class="show-backdrop" src="{{ art }}" alt="" aria-hidden="true" referrerpolicy="no-referrer">{% endif %}
+  <div class="show-head-inner">
+    {% if art %}
+    <img class="show-cover" src="{{ art }}" alt="" referrerpolicy="no-referrer">
+    {% else %}
+    <div class="show-cover cover-blank" aria-hidden="true">{{ (podcast.name or '?')[:1]|upper }}</div>
+    {% endif %}
+    <div class="show-info">
+      {% if podcast.author %}<p class="eyebrow">{{ podcast.author }}</p>{% endif %}
+      <h1>{{ podcast.name }}</h1>
+      <p class="stats">
+        <span class="badge">{{ (counts.active + counts.archived)|plural('episode') }}</span>
+        {% for c in (podcast.categories|fromjson)[:3] %}<span class="badge">{{ c }}</span>{% endfor %}
+        {% if podcast.explicit %}<span class="badge" title="Explicit">E</span>{% endif %}
+      </p>
+      {% if about %}
+      <div class="show-about" x-data="{ open: false }" :class="open && 'open'">
+        <p>{{ about }}</p>
+        {% if about|length > 220 %}
+        <button class="link-btn" type="button" x-cloak @click="open = !open" x-text="open ? 'Less' : 'More'">More</button>
+        {% endif %}
+      </div>
+      {% endif %}
+      <div class="show-actions">
+        {% if podcast.feed_url %}
+        <form method="post" action="/podcasts/{{ podcast.id }}/refresh" x-data="{ busy: false }" @submit="busy = true">
+          <button class="btn btn-ghost btn-sm" type="submit" :disabled="busy">
+            <svg class="icon" :class="busy && 'spin'" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.34-5.66M20 4v4h-4"/></svg>
+            Refresh
+          </button>
+        </form>
+        {% endif %}
+        {% if podcast.link|web_url %}
+        <a class="btn btn-ghost btn-sm" href="{{ podcast.link }}" target="_blank" rel="noopener noreferrer">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg>
+          Website
+        </a>
+        {% endif %}
+        <details class="menu">
+          <summary class="btn btn-ghost btn-sm icon-only" aria-label="More actions">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg>
+          </summary>
+          <div class="menu-pop">
+            <form method="post" action="/podcasts/{{ podcast.id }}/remove"
+                  data-confirm="Remove {{ podcast.name }}? Episodes you haven't downloaded are deleted. Blocks learned from it stay, since they help find ads in other shows.">
+              <button class="danger" type="submit">Remove podcast</button>
+            </form>
+          </div>
+        </details>
+      </div>
+      <p class="hint">
+        {% if podcast.feed_url %}Checked {{ podcast.last_refreshed_at|ago }}{% else %}No feed; added from files{% endif %}
+        {% if podcast.last_error %}<span class="text-error"> · Last refresh failed: {{ podcast.last_error }}</span>{% endif %}
+      </p>
+    </div>
+  </div>
+</section>
+
+<div class="toolbar">
+  <nav class="tabs" aria-label="Episode lists">
+    <a href="/podcasts/{{ podcast.id }}" {% if view == 'active' %}aria-current="page"{% endif %}>
+      Episodes <span class="count" data-count="active">{{ '{:,}'.format(counts.active) }}</span></a>
+    <a href="/podcasts/{{ podcast.id }}?view=archived" {% if view == 'archived' %}aria-current="page"{% endif %}>
+      Archived <span class="count" data-count="archived">{{ '{:,}'.format(counts.archived) }}</span></a>
+  </nav>
+  <form class="search" method="get" action="/podcasts/{{ podcast.id }}" role="search">
+    {% if view != 'active' %}<input type="hidden" name="view" value="{{ view }}">{% endif %}
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/></svg>
+    <input class="input" type="search" name="q" value="{{ q }}" placeholder="Search titles" aria-label="Search titles"
+           hx-get="/podcasts/{{ podcast.id }}" hx-trigger="input changed delay:300ms, search"
+           hx-include="closest form" hx-target="#episodes" hx-select="#episodes" hx-swap="outerHTML"
+           hx-push-url="true">
+  </form>
+</div>
+
+<section id="episodes">
+  {% if episodes %}
+  <p class="list-note muted">
+    {% if q %}{{ "{:,}".format(total) }} matching “{{ q }}”{% else %}Newest first{% endif %}
+    <span class="hide-touch"> · Tick the artwork to select; shift-click to select a range.</span>
+    <span class="show-touch"> · Tap the artwork, or press and hold, to select.</span>
+  </p>
+  <ul class="ep-list" data-select-list>
+    {% include "_episodes.html" %}
+  </ul>
+  {% else %}
+  <div class="card empty">
+    {% if q %}<h2>Nothing matches “{{ q }}”</h2>
+    {% elif view == 'archived' %}<h2>Nothing archived</h2><p class="muted">Archived episodes are hidden from your list. Archive them from the list, one at a time or a selection at once.</p>
+    {% else %}<h2>No episodes</h2><p class="muted">Every episode is archived, or the feed has none yet.</p>{% endif %}
+  </div>
+  {% endif %}
+</section>
+
+<form id="bulk" class="bulkbar" method="post" action="/podcasts/{{ podcast.id }}/episodes" data-bulk>
+  <input type="hidden" name="next" value="{{ here }}">
+  <label class="bulk-all" title="Select all shown">
+    <input type="checkbox" data-select-all aria-label="Select all shown">
+  </label>
+  <span class="bulk-count"><b data-selected-count>0</b> selected</span>
+  <div class="bulk-actions">
+    {% if view == 'archived' %}
+    <button class="btn btn-primary btn-sm" name="action" value="unarchive">Unarchive</button>
+    {% else %}
+    <button class="btn btn-primary btn-sm" name="action" value="archive">Archive</button>
+    {% endif %}
+    <button class="btn btn-ghost btn-sm" type="button" data-clear>Clear</button>
+  </div>
+</form>
+{% endblock %}

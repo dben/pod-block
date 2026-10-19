@@ -8,7 +8,7 @@ from podblock.store import Store
 from podblock.web import accounts
 from podblock.web.app import create_app, safe_next
 from podblock.web.config import Settings
-from podblock.web.db import connect, setting
+from podblock.web.db import MIGRATIONS, connect, setting
 
 HTML = {"accept": "text/html"}
 
@@ -88,7 +88,7 @@ def test_app_tables_live_beside_the_detectors(tmp_path):
     assert "Show A" in c.get("/", headers=HTML).text
 
     db = connect(s.db_path)
-    assert setting(db, "app_schema") == "1"
+    assert setting(db, "app_schema") == str(len(MIGRATIONS))
     assert db.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
     assert [r["username"] for r in db.execute("SELECT username FROM users")] == ["admin"]
     db.close()

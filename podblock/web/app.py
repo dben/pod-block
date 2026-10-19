@@ -3,36 +3,25 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import sqlite3
 import sys
-from pathlib import Path
-from typing import Iterator
+from contextlib import asynccontextmanager
 from urllib.parse import quote
 
 from fastapi import Depends, FastAPI, Form, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import accounts
+from . import accounts, podcasts
+from .background import Background
 from .config import Settings
 from .db import connect, prepare, setting
+from .deps import LoginRequired, get_db
+from .templating import STATIC, page
 
-HERE = Path(__file__).parent
 SESSION_DAYS = 30
 FAILED_LOGIN_DELAY = 1.0  # seconds, to slow down guessing
-
-
-class LoginRequired(Exception):
-    pass
-
-
-def _static_versions(root: Path) -> dict[str, str]:
-    """A short content hash per static file, so browsers drop old copies when one changes."""
-    return {str(p.relative_to(root)): hashlib.sha1(p.read_bytes()).hexdigest()[:10]
-            for p in root.rglob("*") if p.is_file()}
 
 
 def init(settings: Settings) -> tuple[str, str | None]:
@@ -67,36 +56,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         print(f"\n  pod-block API key (shown once; `podblock api-key` makes a new one):\n\n    {made}\n",
               file=sys.stderr, flush=True)
 
-    app = FastAPI(title="pod-block", docs_url=None, redoc_url=None, openapi_url=None)
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        background = Background(settings.db_path) if settings.background else None
+        if background:
+            background.start()
+        yield
+        if background:
+            background.stop()
+
+    app = FastAPI(title="pod-block", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
     app.state.settings = settings
     app.add_middleware(SessionMiddleware, secret_key=secret, session_cookie="podblock_session",
                        max_age=SESSION_DAYS * 86400, same_site="lax", https_only=settings.secure_cookies)
-    app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
-
-    templates = Jinja2Templates(directory=HERE / "templates")
-    versions = _static_versions(HERE / "static")
-    templates.env.globals["static"] = lambda name: f"/static/{name}?v={versions.get(name, '0')}"
-
-    def page(request: Request, name: str, status_code: int = 200, **context) -> Response:
-        return templates.TemplateResponse(request, name, context, status_code=status_code)
-
-    def get_db() -> Iterator[sqlite3.Connection]:
-        db = connect(settings.db_path)
-        try:
-            yield db
-        finally:
-            db.close()
-
-    def current_user(request: Request, db: sqlite3.Connection = Depends(get_db)) -> sqlite3.Row:
-        uid = request.session.get("uid")
-        if uid is not None and request.session.get("epoch") == accounts.auth_epoch(db):
-            row = accounts.user(db, uid)
-            if row is not None:
-                return row
-        auth = request.headers.get("authorization", "")
-        if auth[:7].lower() == "bearer " and accounts.check_api_key(db, auth[7:].strip()):
-            return accounts.user(db, accounts.admin_id(db))
-        raise LoginRequired()
+    app.mount("/static", StaticFiles(directory=STATIC), name="static")
+    app.include_router(podcasts.router)
 
     @app.exception_handler(LoginRequired)
     async def login_required(request: Request, exc: LoginRequired) -> Response:
@@ -139,17 +113,5 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def logout(request: Request) -> Response:
         request.session.clear()
         return RedirectResponse("/login", status_code=303)
-
-    @app.get("/")
-    def home(request: Request, user=Depends(current_user), db: sqlite3.Connection = Depends(get_db)) -> Response:
-        podcasts = db.execute(
-            """
-            SELECT p.id, p.name, p.feed_url,
-                   (SELECT COUNT(*) FROM episodes e WHERE e.podcast_id = p.id) AS episodes,
-                   (SELECT COUNT(*) FROM segments s WHERE s.podcast_id = p.id) AS blocks
-            FROM podcasts p ORDER BY p.name COLLATE NOCASE
-            """
-        ).fetchall()
-        return page(request, "home.html", title="Podcasts", user=user, podcasts=podcasts, nav="podcasts")
 
     return app

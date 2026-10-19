@@ -3,23 +3,44 @@
 <div class="page-head">
   <div>
     <h1>Podcasts</h1>
-    <p class="muted">{{ podcasts|length }} {{ 'feed' if podcasts|length == 1 else 'feeds' }}</p>
+    <p class="muted">{{ podcasts|length|plural('feed') }}</p>
   </div>
 </div>
+
+<form class="card add-feed" method="post" action="/podcasts" x-data="{ busy: false }" @submit="busy = true">
+  <label class="field add-feed-field">
+    <span>Add a podcast</span>
+    <input class="input" type="url" name="url" value="{{ url or '' }}" required
+           placeholder="https://example.com/podcast.rss" autocomplete="off" autocapitalize="off" spellcheck="false"
+           inputmode="url">
+  </label>
+  <button class="btn btn-primary" type="submit" :disabled="busy">
+    <span x-show="!busy">Add</span>
+    <span x-show="busy" x-cloak class="spinner-label"><span class="spinner" aria-hidden="true"></span>Fetching…</span>
+  </button>
+  {% if error %}<p class="alert alert-error add-feed-error" role="alert">{{ error }}</p>{% endif %}
+</form>
 
 {% if podcasts %}
 <ul class="grid podcast-grid">
   {% for p in podcasts %}
-  <li class="card podcast-card">
-    <div class="cover cover-blank" aria-hidden="true">{{ (p.name or '?')[:1]|upper }}</div>
-    <div class="podcast-card-body">
-      <h2 class="podcast-name">{{ p.name }}</h2>
-      {% if p.feed_url %}<p class="muted truncate">{{ p.feed_url }}</p>{% endif %}
-      <p class="stats">
-        <span class="badge">{{ p.episodes }} episodes</span>
-        <span class="badge">{{ p.blocks }} blocks</span>
-      </p>
-    </div>
+  <li>
+    <a class="card podcast-card" href="/podcasts/{{ p.id }}">
+      {% if p.image_url|web_url %}
+      <img class="cover" src="{{ p.image_url }}" alt="" loading="lazy" referrerpolicy="no-referrer">
+      {% else %}
+      <div class="cover cover-blank" aria-hidden="true">{{ (p.name or '?')[:1]|upper }}</div>
+      {% endif %}
+      <div class="podcast-card-body">
+        <h2 class="podcast-name">{{ p.name }}</h2>
+        {% if p.author %}<p class="muted truncate">{{ p.author }}</p>{% endif %}
+        <p class="stats">
+          <span class="badge">{{ p.episode_count|plural('episode') }}</span>
+          {% if p.latest_ts %}<span class="badge">Latest {{ p.latest_ts|day }}</span>{% endif %}
+          {% if p.last_error %}<span class="badge badge-error" title="{{ p.last_error }}">Refresh failed</span>{% endif %}
+        </p>
+      </div>
+    </a>
   </li>
   {% endfor %}
 </ul>
@@ -27,8 +48,8 @@
 <div class="card empty">
   <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a6 6 0 0 0-6 6v3a6 6 0 0 0 12 0V9a6 6 0 0 0-6-6Zm0 15v3m-4 0h8"/></svg>
   <h2>No podcasts yet</h2>
-  <p class="muted">Adding feeds from this page comes next. Until then,
-    <code>podblock analyze FEED_URL</code> adds one from the command line.</p>
+  <p class="muted">Paste a podcast's RSS feed address above. Most podcast sites and apps have a
+    "copy RSS link" option.</p>
 </div>
 {% endif %}
 {% endblock %}

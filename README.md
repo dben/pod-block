@@ -65,7 +65,8 @@ podblock report --feed "$FEED"        # repeated sections in the newest episode
 ## Web app
 
 A web app to manage it all is under way; `WEBAPP.md` has the plan and its
-status. So far it has a login and lists the podcasts in the store.
+status. So far you can log in, add feeds, browse and search their episodes,
+and archive them a selection at a time.
 
 ```sh
 pip install -e '.[web]'
@@ -210,7 +211,11 @@ occurrences(segment_id, episode_id, start, end, segment_start, hits)
 compared_pairs(a_id, b_id)
 reports(episode_id, created_at, report)      -- the JSON `report --json` prints
 users(id, username, password_hash, is_admin, created_at)  -- web app logins
+user_episodes(user_id, episode_id, archived, kept)        -- web app, per user
 ```
+
+The web app adds its own columns to `podcasts` and `episodes` (feed metadata,
+raw XML); `WEBAPP.md` lists them.
 
 ## Tests
 

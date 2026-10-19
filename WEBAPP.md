@@ -11,7 +11,8 @@ what is done, and what comes later. Update it as work lands.
 | --- | --- |
 | Repeat detection (`podblock` CLI, `podblock/*.py`) | done; see `README.md` |
 | Milestone 1: skeleton | done: `podblock serve`, API-key login, dark theme, Dockerfile |
-| Milestone 2: feeds | next |
+| Milestone 2: feeds | done: add and refresh feeds, show header, episode list, archive, remove |
+| Milestone 3: processing | next |
 
 Last updated: 2026-10-19.
 
@@ -28,6 +29,7 @@ Answers to the first round of questions, kept here so they don't get lost.
 | Retention | Counts from when an episode was processed, not its publish date. A keep pin stops the clock. |
 | Users | Built for a few users, but round one has one login. Feeds, downloads, processing and blocks are shared. Archived and kept are per user. The private feed is per podcast and shared; per-user feeds come later. |
 | Downloads | Manual for now, apart from the comparison episodes above. |
+| Keeping it generic | No real feed URLs, show names or audio in the repo, its history or its tests. Real feeds for trying things by hand live in the environment variable `PODBLOCK_TEST_FEEDS` (space-separated), set in the cloud environment's settings. |
 
 ## Stack
 
@@ -104,32 +106,49 @@ Ticked items are built. Each has an id so commits and issues can point at it.
 
 ### Feeds and episode list
 
-- [ ] **F1** Add a feed by RSS URL. Fetch it, store the show's metadata
+- [x] **F1** Add a feed by RSS URL. Fetch it, store the show's metadata
   (title, author, description, artwork, link, language, categories, explicit
-  flag) and every episode.
-- [ ] **F2** Show page with a header built from the feed: artwork, title,
-  author, description (collapsed on phones), episode count, links to the
-  private feed and settings.
-- [ ] **F3** Episode list: artwork, title, date, length, short description,
-  and state (`new`, `queued`, `processing`, `ready`, `failed`, `expired`).
-  Newest first, paged or loaded on scroll.
-- [ ] **F4** Refresh feeds on a schedule (default hourly, per feed setting)
-  and by hand.
-- [ ] **F5** Store our own copy of each episode's metadata, including the raw
-  `<item>` XML, so the episode survives after it leaves the feed.
-- [ ] **F6** When an episode leaves the feed, delete it from our list unless
-  it was ever downloaded. Downloaded ones stay, marked "no longer in feed".
-- [ ] **F7** Archive episodes to hide them from your list (per user), with a
-  toggle to show archived ones and a way to unarchive.
-  - Select one with a click, a range with shift-click, and add or remove one
-    with ctrl/cmd-click.
-  - On touch screens, a long press starts select mode; tapping then toggles
-    and a second long press selects the range since the last tap.
-  - A bar with the selection count and actions (archive, unarchive,
-    download, keep) appears while anything is selected.
-  - "Archive everything older than this" from one episode's menu.
-- [ ] **F8** Remove a feed, with what happens to its downloads spelled out
-  before confirming.
+  flag) and every episode. Feeds over 64 MB, and pages that aren't RSS, are
+  refused with a reason.
+- [x] **F2** Show page with a header built from the feed: artwork (also
+  blurred behind the header), author, title, episode count, categories,
+  description (three lines, then "More"), Refresh, Website, and a menu with
+  Remove. It shows when the feed was last checked and the last error.
+  - [ ] Link to the private feed and to podcast settings (milestones 4 and 5).
+- [x] **F3** Episode list: artwork, title, date, length, season and episode
+  number, trailer and bonus badges, two lines of show notes as plain text.
+  Newest first, 50 at a time with "Load more". Search by title as you type.
+  - [ ] Processing state per episode (`queued`, `processing`, `ready`,
+    `failed`, `expired`): milestone 3.
+- [x] **F4** Refresh feeds by hand, and in the background when due (every 60
+  minutes by default; `podcasts.refresh_minutes`). Refreshes send the last
+  ETag and Last-Modified, so an unchanged feed costs one short request.
+  - [ ] A page to change the interval per podcast.
+- [x] **F5** Store our own copy of each episode's metadata, including the raw
+  `<item>` XML (show notes come from it later), so the episode survives after
+  it leaves the feed.
+- [x] **F6** When an episode leaves the feed, delete it unless it was ever
+  downloaded or the detector knows it (fingerprint, block matches or report).
+  Those stay, marked "No longer in feed", and lose the mark if they return. A
+  refresh that finds no episodes at all deletes nothing.
+- [x] **F7** Archive episodes to hide them from your list (per user), with an
+  Archived tab and a way to unarchive.
+  - Each row's artwork is its checkbox: click it to select, shift-click
+    another to select everything in between. While anything is selected, a
+    click anywhere on a row toggles it too. Esc clears.
+  - On touch screens, tap the artwork, or press and hold a row, to select;
+    while selecting, a tap toggles and a second press and hold selects the
+    range since the last one.
+  - A bar with the count, select-all, Archive (or Unarchive) and Clear rises
+    while anything is selected. Archiving takes the rows out without a page
+    load, with Undo in the toast.
+  - "Archive this and older" in each row's menu.
+  - [ ] Download and Keep in the bar (milestones 3 and 5).
+- [x] **F8** Remove a podcast, after a confirmation saying what happens:
+  episodes never downloaded are deleted; downloaded ones, and the blocks
+  learned from the show, stay (blocks may be ads other shows share). The
+  podcast is hidden and no longer refreshed; adding the same feed again
+  brings it back.
 
 ### Processing
 
@@ -220,39 +239,42 @@ Ticked items are built. Each has an id so commits and issues can point at it.
   theme can follow.
 - [x] **U2** Mobile first: a bottom tab bar on phones, touch targets of at
   least 44 px, inputs at 16 px so iOS doesn't zoom, no hover-only controls.
-- [ ] **U3** Pages work without JavaScript where it costs little (lists,
-  forms); the timeline needs it.
+- [x] **U3** Pages work without JavaScript where it costs little: adding,
+  refreshing, paging, searching, archiving (one at a time or by ticking
+  boxes) all work as plain forms and links. The timeline will need it.
 
 ## Data model
 
-Built (migration 1):
+Built (migrations 1 to 3 in `podblock/web/db.py`):
 
 ```
 users(id, username, password_hash, is_admin, created_at)
-settings: app_schema, api_key_hash, auth_epoch, secret_key   -- rows beside the detector's own
-```
-
-Planned. Columns added to the detector's tables:
-
-```
-podcasts  + author, description, image_url, link, channel_xml,   -- raw <channel> minus items
-            public_token, retention_days, refresh_minutes,
-            last_refreshed_at, last_error, added_at
-episodes  + description, image_url, audio_type, audio_length,
-            item_xml,                                            -- raw <item>, for the private feed
-            in_feed, ever_downloaded, state, public_token,
-            original_path, cut_path, cut_duration, cut_length,
-            processed_at, expires_at
-```
-
-New tables:
-
-```
 user_episodes(user_id, episode_id, archived, kept)
+settings: app_schema, api_key_hash, auth_epoch, secret_key   -- rows beside the detector's own
+
+podcasts  + author, description, image_url, link, language, categories (JSON), explicit,
+            channel_xml,                                     -- raw <channel> minus items
+            followed, refresh_minutes, feed_etag, feed_last_modified,
+            last_refreshed_at, last_error, added_at
+episodes  + pub_ts, summary, image_url, link, audio_type, audio_length, feed_duration,
+            season, episode_number, episode_type, explicit,
+            item_xml,                                        -- raw <item>
+            in_feed, ever_downloaded
+```
+
+Planned:
+
+```
+podcasts  + public_token, retention_days
+episodes  + state, public_token, original_path, cut_path, cut_duration, cut_length,
+            processed_at, expires_at
 edits(id, episode_id, kind, start, end, segment_id, created_at)  -- kind: cut (hand-added section)
 jobs(id, kind, episode_id, podcast_id, state, progress, error,
      attempts, created_at, started_at, finished_at)
 ```
+
+Guids are unique across the whole store. If two shows use the same guid,
+the second show's copy is stored under `feed URL#guid`.
 
 Episode rows from feeds have no fingerprint until downloaded; the detector
 only looks at fingerprinted ones, so they don't affect it.
@@ -264,10 +286,11 @@ only looks at fingerprinted ones, so they don't affect it.
 | `GET /` | yes | podcasts | built |
 | `GET /login`, `POST /login`, `POST /logout` | no | session | built |
 | `GET /healthz` | no | probe | built |
-| `POST /podcasts` | yes | add a feed | |
-| `GET /podcasts/{id}` | yes | show header and episode list | |
-| `POST /podcasts/{id}/refresh` | yes | refresh now | |
-| `POST /episodes/bulk` | yes | archive, unarchive, keep, download a selection | |
+| `POST /podcasts` | yes | add a feed | built |
+| `GET /podcasts/{id}?view=&q=&page=` | yes | show header and episode list; `partial=1` gives only the rows | built |
+| `POST /podcasts/{id}/refresh` | yes | refresh now | built |
+| `POST /podcasts/{id}/episodes` | yes | `action` = archive, unarchive or archive_older on `ids`; JSON when asked | built |
+| `POST /podcasts/{id}/remove` | yes | stop following | built |
 | `GET /episodes/{id}` | yes | timeline editor | |
 | `POST /episodes/{id}/edits` | yes | save timeline edits | |
 | `GET /episodes/{id}/original` | yes | original audio for the timeline | |
@@ -280,8 +303,8 @@ only looks at fingerprinted ones, so they don't affect it.
 1. **Skeleton** (done): `podblock/web/` package, settings from env vars, app
    tables in the shared database, API-key login, base layout and theme,
    `podblock serve`, `podblock api-key`, Dockerfile.
-2. **Feeds**: add, refresh, show header, episode list, prune, archive with
-   multi-select.
+2. **Feeds** (done): add, refresh, show header, episode list, prune,
+   archive with multi-select, remove.
 3. **Processing**: jobs table and worker, download with comparison
    episodes, detect, render cut audio, jobs page.
 4. **Private feed**: tokens, feed XML, audio with byte ranges.
@@ -315,9 +338,16 @@ None right now.
 - A "this was a repeat" button in the player that sends the spot back as a
   manual section.
 - Stats: time cut per episode and per podcast.
+- Cache and shrink artwork on our side. Pages now load each show's and
+  episode's artwork straight from the feed's host, lazily, and some feeds
+  use 3000 px images.
+- Follow feeds that move: a 301 redirect or `itunes:new-feed-url`.
+- A real job for feed refreshes, once the job queue exists, so they show on
+  the jobs page.
 - Helm chart.
 
 ## Changelog
 
 - 2026-10-19: plan written; first round of questions answered; milestone 1
-  built.
+  built. Real feed URLs and show names taken out of the repo and its
+  history. Milestone 2 built.

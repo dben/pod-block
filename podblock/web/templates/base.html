@@ -8,8 +8,10 @@
   <title>{% if title %}{{ title }} · {% endif %}pod-block</title>
   <link rel="icon" href="{{ static('icon.svg') }}" type="image/svg+xml">
   <link rel="stylesheet" href="{{ static('app.css') }}">
+  <script>document.documentElement.classList.add("js")</script>
   <script src="{{ static('vendor/htmx.min.js') }}" defer></script>
   <script src="{{ static('vendor/alpine.min.js') }}" defer></script>
+  <script src="{{ static('app.js') }}" defer></script>
 </head>
 <body class="{% block body_class %}{% endblock %}">
 {% block shell %}
@@ -43,5 +45,8 @@
     </form>
   </nav>
 {% endblock %}
+  <div class="toasts" id="toasts" role="status" aria-live="polite">
+    {% for kind, text in flashes(request) %}<div class="toast toast-{{ kind }}" data-autohide>{{ text }}</div>{% endfor %}
+  </div>
 </body>
 </html>
