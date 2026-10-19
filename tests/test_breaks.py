@@ -24,7 +24,30 @@ def test_short_blocks_at_group_edges_become_bumpers(tmp_path):
             ]
         store.replace_occurrences(ep, matches)
 
-    assert classify_bumpers(store) == {jingle_in: BUMPER_IN, jingle_out: BUMPER_OUT}
+    tags = classify_bumpers(store)
+    assert tags.kinds == {jingle_in: BUMPER_IN, jingle_out: BUMPER_OUT}
+    assert tags.confirmed == set()  # 4 edges in 2 episodes is not enough yet
+
+
+def test_bumpers_seen_often_enough_stay_tagged(tmp_path):
+    store = Store(tmp_path / "db.sqlite")
+    jingle_in, ad = block(store, 4), block(store, 60)
+    episodes = []
+    for n in range(3):
+        ep = store.upsert_episode(f"ep{n}", fingerprint_path="unused")
+        episodes.append(ep)
+        store.replace_occurrences(ep, [m for t in (600, 1800) for m in (
+            SegmentMatch(jingle_in, t, t + 4, 0, 50), SegmentMatch(ad, t + 6, t + 66, 0, 500))])
+
+    tags = classify_bumpers(store)
+    assert tags.confirmed == {jingle_in}
+    store.set_auto_types(tags.kinds, tags.confirmed)
+
+    # Even with its evidence gone, a confirmed bumper keeps its tag.
+    for ep in episodes:
+        store.replace_occurrences(ep, [])
+    store.set_auto_types(classify_bumpers(store).kinds)
+    assert store.types()[jingle_in] == BUMPER_IN
 
 
 def test_breaks_from_bumpers_and_from_plain_groups():

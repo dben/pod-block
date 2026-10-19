@@ -120,7 +120,9 @@ A loudness curve is stored with each fingerprint, so this needs no audio.
 4. **Bumpers.** Matches within 8 s of each other form a group. A block whose
    matches are short (under 10 s, and no longer than 20 s stored) and that
    keeps opening groups becomes a `bumper-in`; one that keeps closing them a
-   `bumper-out`.
+   `bumper-out`. Tags are worked out afresh on each run until a bumper has
+   sat at a break edge 6 times in 3 episodes; it is then confirmed and keeps
+   its tag (`list` shows `confirmed`; `type ID auto` undoes it).
 5. **Breaks.** A break runs from a bumper-in to the next bumper-out (within
    10 minutes), even when the ads between them are all new. Some shows play
    one sting on both sides of a break (`bumper`); a pair of those only counts
@@ -149,10 +151,13 @@ in the set.
 | `--audio-days` | 0 | downloaded audio; only `export` needs it (local files you gave are never touched) |
 | `--fingerprint-days` | 30 | fingerprints; those episodes are fetched again if asked for |
 | `--block-days` | 30 | blocks no processed episode has played in that long, unless typed by hand |
+| `--bumper-days` | 365 | bumpers not heard in that long; a show's bumpers rarely change, and they mark breaks even when every ad is new |
 
-Episode rows and saved reports stay; each report is about 1 KB. Keep
-fingerprints as long as blocks: bumper tags lean on where blocks played, and
-a block that gets split has its matches rebuilt from the fingerprints.
+Episode rows, saved reports and the record of where blocks played all stay
+after an episode's fingerprint goes; each report is about 1 KB. When a block
+is split, where it played is carried over to the pieces by its timings, so
+fingerprints only need to live as long as you want episodes on hand for
+comparing (a week is fine).
 
 Measured on one CPU core:
 

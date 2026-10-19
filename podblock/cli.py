@@ -171,6 +171,8 @@ def describe(row) -> str:
     tags = []
     if row["type"] != "repeated" or row["type_manual"]:
         tags.append(row["type"] + ("*" if row["type_manual"] else ""))
+    if row["confirmed"]:
+        tags.append("confirmed")
     if row["label"]:
         tags.append(row["label"])
     return f"  [{', '.join(tags)}]" if tags else ""
@@ -214,8 +216,9 @@ def cmd_show(args, store: Store, paths: Paths) -> None:
     seg = store.segment(args.segment_id)
     if seg is None:
         sys.exit(f"No segment #{args.segment_id}")
+    how = " (set by hand)" if seg["type_manual"] else " (confirmed)" if seg["confirmed"] else ""
     print(f"Segment #{seg['id']}  {fmt_time(seg['source_end'] - seg['source_start'])}"
-          f"  type={seg['type']}{' (set by hand)' if seg['type_manual'] else ''}"
+          f"  type={seg['type']}{how}"
           f"  label={seg['label'] or '-'}")
     for o in store.occurrences_for_segment(args.segment_id):
         print(f"  {fmt_time(o['start']):>8} - {fmt_time(o['end']):>8}  {o['title']}")
@@ -281,7 +284,7 @@ def cmd_export(args, store: Store, paths: Paths) -> None:
 
 def cmd_prune(args, store: Store, paths: Paths) -> None:
     gone = prune(store, audio_days=args.audio_days, fingerprint_days=args.fingerprint_days,
-                 block_days=args.block_days, dry_run=args.dry_run)
+                 block_days=args.block_days, bumper_days=args.bumper_days, dry_run=args.dry_run)
     verb = "Would remove" if args.dry_run else "Removed"
     print(f"{verb}: " + (", ".join(f"{n} {what}" for what, n in gone.items() if n) or "nothing"))
 
@@ -407,6 +410,8 @@ def main(argv: list[str] | None = None) -> None:
                    help="delete fingerprints older than this (default: %(default)s)")
     p.add_argument("--block-days", type=float, default=30.0,
                    help="drop blocks not heard for this long, unless typed by hand (default: %(default)s)")
+    p.add_argument("--bumper-days", type=float, default=365.0,
+                   help="drop bumpers not heard for this long (default: %(default)s)")
     p.add_argument("--dry-run", action="store_true", help="only say what would go")
     p.set_defaults(func=cmd_prune)
 

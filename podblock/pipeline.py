@@ -17,7 +17,7 @@ from .feed import Episode, Feed, download, fetch_feed
 from .fingerprint import (Fingerprint, FingerprintConfig, fingerprint_file, frames_to_seconds,
                           loudness_file)
 from .matcher import MatchParams, common_runs
-from .store import Store
+from .store import BUMPER, BUMPER_IN, BUMPER_OUT, SegmentMatch, Store
 
 log = logging.getLogger(__name__)
 
@@ -25,6 +25,7 @@ SHORT_MIN_OCCURRENCES = 3  # blocks under SHORT_BLOCK_SEC must turn up this ofte
 COMPARE_SAME = 4  # same-show episodes, closest in publish date, to compare each episode with
 COMPARE_OTHER = 1  # episodes from each other show to compare with, for network ads...
 OTHER_WINDOW_DAYS = 14.0  # ...if published within this many days
+BUMPER_TYPES = {BUMPER_IN, BUMPER_OUT, BUMPER}
 
 
 @dataclass
@@ -227,13 +228,16 @@ def find_common_blocks(store: Store, episode_ids: list[int], params: MatchParams
     # New blocks may also play in the episodes compared against.
     for ep_id in sorted(involved if added else targets):
         rescan(store, ep_id, params, load(ep_id), heard=ep_id in targets)
-    for ep_id in sorted(split_segments(store)):
-        if store.episode(ep_id)["fingerprint_path"]:
-            rescan(store, ep_id, params, load(ep_id))
+    split_segments(store, params.min_length_sec)
     drop_nested_blocks(store)
     prune_short_blocks(store)
-    store.set_auto_types(classify_bumpers(store))
+    retag_bumpers(store)
     return added
+
+
+def retag_bumpers(store: Store) -> None:
+    tags = classify_bumpers(store)
+    store.set_auto_types(tags.kinds, tags.confirmed)
 
 
 def drop_nested_blocks(store: Store, share: float = 0.8) -> int:
@@ -276,16 +280,18 @@ def prune_short_blocks(store: Store, min_occurrences: int = SHORT_MIN_OCCURRENCE
     return len(weak)
 
 
-def split_segments(store: Store) -> set[int]:
+def split_segments(store: Store, min_length: float = MatchParams.min_length_sec) -> int:
     """Cut blocks at points where their occurrences start or stop.
 
     A block first found as one long run (say a 5 minute ad break) often turns up
     elsewhere only in parts (one ad from that break). Those part boundaries mark
     where the separate pieces of audio begin and end. The pieces are cut from
-    the block's own hashes, so the source episode need not be kept. Returns the
-    episodes whose occurrences were lost with the split blocks.
+    the block's own hashes, and each known occurrence is carried over to the
+    pieces it covers, so neither source episodes nor the episodes it played in
+    need their fingerprints any more. Overlaps under `min_length` are dropped.
+    Returns how many blocks were split.
     """
-    touched: set[int] = set()
+    split = 0
     for seg in store.segments():
         length = seg["source_end"] - seg["source_start"]
         occurrences = store.occurrences_for_segment(seg["id"])
@@ -297,6 +303,7 @@ def split_segments(store: Store) -> set[int]:
             continue
         whole = store.segment_fingerprint(seg["id"])
         bounds = [0.0, *cuts, length]
+        carried = []
         for lo, hi in zip(bounds, bounds[1:]):
             new_id = store.add_segment(whole.slice(lo, hi), seg["source_episode_id"],
                                        seg["source_start"] + lo, seg["source_start"] + hi,
@@ -305,10 +312,20 @@ def split_segments(store: Store) -> set[int]:
                 store.set_label(new_id, seg["label"])
             if seg["type_manual"]:
                 store.set_type(new_id, seg["type"])
+            for o in occurrences:
+                # The part of the block this occurrence played, in block time.
+                o_lo, o_hi = o["segment_start"], o["segment_start"] + o["end"] - o["start"]
+                a, b = max(lo, o_lo), min(hi, o_hi)
+                if b - a >= min_length:
+                    start = o["start"] + a - o_lo
+                    share = (b - a) / max(o_hi - o_lo, 1e-9)
+                    carried.append((o["episode_id"], SegmentMatch(new_id, start, start + b - a, a - lo,
+                                                                  max(1, round(o["hits"] * share)))))
         store.delete_segment(seg["id"])
-        touched |= {o["episode_id"] for o in occurrences}
+        store.add_occurrences(carried)
         log.info("split block %d into %d", seg["id"], len(bounds) - 1)
-    return touched
+        split += 1
+    return split
 
 
 def _joined_spans(occurrences, gap: float = 15.0, tolerance: float = 0.2) -> list[tuple[float, float]]:
@@ -351,7 +368,7 @@ def _cut_points(edges: list[float], length: float, min_length: float,
 
 
 def prune(store: Store, audio_days: float = 0.0, fingerprint_days: float = 30.0,
-          block_days: float = 30.0, dry_run: bool = False) -> Counter:
+          block_days: float = 30.0, bumper_days: float = 365.0, dry_run: bool = False) -> Counter:
     """Clear out what is no longer needed. Returns counts of what went (or would go).
 
     - Downloaded audio older than `audio_days`; only `export` needs it.
@@ -359,6 +376,8 @@ def prune(store: Store, audio_days: float = 0.0, fingerprint_days: float = 30.0,
     - Fingerprints older than `fingerprint_days`; those episodes can no longer
       be compared or rescanned, and are fetched again if asked for.
     - Blocks not heard in `block_days`, unless their type was set by hand.
+      Bumpers last `bumper_days`: a show's bumpers rarely change, and they
+      mark breaks even when every ad in them is new.
     - Block matches in episodes whose fingerprints are gone, once older than
       `block_days`. Episode rows and their saved reports stay; both are tiny.
     """
@@ -380,8 +399,11 @@ def prune(store: Store, audio_days: float = 0.0, fingerprint_days: float = 30.0,
                 Path(ep["fingerprint_path"]).unlink()
                 store.upsert_episode(ep["guid"], fingerprint_path=None)
 
+    def lifetime(row) -> float:
+        return (bumper_days if row["type"] in BUMPER_TYPES else block_days) * day
+
     stale = [r["id"] for r in store.segments()
-             if not r["type_manual"] and (r["last_seen"] or 0) < now - block_days * day]
+             if not r["type_manual"] and (r["last_seen"] or 0) < now - lifetime(r)]
     gone["blocks"] += len(stale)
     old_matches = store.db.execute(
         "SELECT COUNT(*) FROM occurrences WHERE episode_id IN "
@@ -396,5 +418,5 @@ def prune(store: Store, audio_days: float = 0.0, fingerprint_days: float = 30.0,
                          (now - block_days * day,))
         store.db.commit()
         if stale:
-            store.set_auto_types(classify_bumpers(store))
+            retag_bumpers(store)
     return gone
