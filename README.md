@@ -1,114 +1,121 @@
 # pod-block
 
 Finds audio that repeats across podcast episodes (intros, outros, ad reads,
-promos, theme music, and the short bumpers around ad breaks) and keeps it in a
-database so new episodes can be checked against it. From the bumpers and
-repeated ads it also marks where each ad break starts and ends.
+promos, theme music, and the short bumpers around ad breaks) and keeps it in
+one database for every feed, so new episodes, of any show, can be checked
+against it. For a given episode it lists every repeated section: known
+blocks, ad breaks marked by bumpers, and intros and outros stretched to the
+start and end.
 
-## How it works
-
-1. **Fetch.** Reads the RSS feed and downloads the newest *n* episodes.
-2. **Fingerprint.** Decodes each episode to 8 kHz mono with ffmpeg, builds a
-   spectrogram, and keeps only its strongest peaks. Each peak is paired with a
-   few peaks just after it, and each pair becomes a 32-bit hash of
-   (frequency, frequency gap, time gap), stamped with the time it starts at.
-   This is the same idea Shazam uses. The hashes survive re-encoding, volume
-   changes and moderate noise, and an hour of audio yields a few hundred
-   thousand of them.
-3. **Compare.** For each pair of episodes, look up which hashes they share.
-   When both contain the same stretch of audio, the matching hashes all sit at
-   one fixed time offset. The matcher counts hits per offset in one-second
-   bins and reports runs of densely hit bins at least `--min-length` seconds
-   long (1.5 s by default; edges land within a fraction of a second). Runs
-   shorter than 10 s are kept only if they turn up at least 3 times, since a
-   pair of short clips can match by chance.
-4. **Store.** Each shared run becomes a *block*: its hashes go into SQLite,
-   along with where it came from. Before a run is stored it is checked against
-   the blocks already known, and only the parts not yet covered are added, so
-   an ad found in five episodes is stored once.
-5. **Split.** A block first found as one long run, such as a five-minute ad
-   break, often turns up elsewhere only in parts (one ad from that break).
-   The points where those partial matches start and stop are cut points, so
-   the break gets split into single-ad blocks. Short slivers that nearly
-   always play inside a longer block are dropped.
-6. **Bumpers.** In each episode, matches that sit within 8 s of each other
-   form a group, such as a run of ads. A block whose matches are short (under
-   10 s) and that keeps opening such groups becomes a `bumper-in`; one that
-   keeps closing them becomes a `bumper-out`. Blocks longer than 20 s are
-   never bumpers.
-7. **Ad breaks.** A break runs from a bumper-in to the next bumper-out (within
-   10 minutes), even when the ads between them are new. A bumper found on its
-   own still marks one end of a break. Shows without bumpers still get their
-   breaks found when 60 s or more of known blocks play back to back.
-8. **Scan.** Any audio file can be checked against the stored blocks, which
-   also lists its ad breaks. Every episode in the store is rescanned after new
-   blocks are added, so the `occurrences` table always says where each block
-   appears.
-
-## Setup
+## Quick start
 
 Needs Python 3.10+ and `ffmpeg` on the `PATH`.
 
 ```sh
 pip install -e .
-```
-
-## Use
-
-```sh
 FEED=https://www.omnycontent.com/d/playlist/e73c998e-6e60-432f-8610-ae210140c5b1/e5f91208-cc7e-4726-a312-ae280140ad11/d64f756d-6d5e-4fae-b24f-ae280140ad36/podcast.rss
 
-# Download, fingerprint and compare the 5 newest episodes.
-podblock analyze "$FEED" -n 5
-
-# Run it again later: new episodes are compared with each other and with
-# everything analyzed before. Episodes already fingerprinted are skipped.
-podblock analyze "$FEED" -n 5
-
-# Local files work too, and can be mixed with feeds.
-podblock analyze episode1.mp3 episode2.mp3
-
-# What has been found, and where each block occurs.
-podblock list
-podblock show 3
-
-# Ad breaks in the stored episodes (all, or the ids given).
-podblock breaks
-podblock breaks 1 3
-
-# Listen to a block, then name it.
-podblock export 3 -o block3.mp3
-podblock label 3 "ad: mattress"
-
-# Check a new file or URL against the store without changing it.
-podblock scan new-episode.mp3
-# ...or add it to the store and look for new blocks as well.
-podblock scan new-episode.mp3 --record
+podblock analyze "$FEED" -n 5         # learn repeats and bumpers from 5 episodes
+podblock list                         # what was found
+podblock report --feed "$FEED"        # repeated sections in the newest episode
 ```
+
+## Commands
+
+| Command | What it does |
+| --- | --- |
+| `analyze SOURCE... [-n 5] [--podcast NAME]` | Download and fingerprint the newest *n* episodes of each feed (or local files), compare them with each other and everything stored, and store new blocks. Episodes already fingerprinted are skipped. |
+| `report TARGET` | List the repeated sections in one episode. `TARGET` is a stored episode id, an audio file or an audio URL; or use `--feed URL [--index N]` (0 = newest). |
+| `list [--podcast P] [--type T]` | Stored blocks, how many episodes each turns up in, and their types. |
+| `podcasts` | Podcasts in the store. |
+| `breaks [EPISODE_ID...]` | Ad breaks found in stored episodes. |
+| `show ID` | Where a block occurs. |
+| `type ID TYPE` | Set a block's type by hand (see below). `auto` hands it back to automatic tagging. |
+| `label ID TEXT` | Give a block a name. |
+| `export ID [-o file.mp3]` | Cut a block out of its source episode, to listen to it. |
+| `delete ID` | Remove a block. |
+
+### `report` options
+
+- `--fill-gaps 30`: take in up to 30 s of unique audio when it sits between
+  two repeated parts, so a short gap between ads doesn't split a break.
+- `--neighbors 3`: first fetch the 3 nearest episodes in the feed (newer and
+  older), compare them with this one and store any new blocks. Good for
+  catching ads that only ran for a week or two.
+- `--podcast P`: for a file or URL, which podcast's `intro`, `outro` and
+  `show` blocks apply.
+- `--detail`: list the parts that make up each section.
+- `--json`: machine-readable output:
+
+```json
+{"episode_id": 3, "title": "...", "duration": 5593.2, "repeated_sec": 912.4,
+ "sections": [{"start": 0.0, "end": 193.2, "length": 193.2,
+               "types": ["intro", "repeated"], "blocks": [12, 47],
+               "unique_sec": 0.0, "parts": [{"start": 0.0, "end": 94.3, "type": "intro", "block": 47}]}]}
+```
+
+## Block types
+
+| Type | Set by | Checked against | In a report |
+| --- | --- | --- | --- |
+| `repeated` | default | every podcast | its own span |
+| `intro` | hand | its podcast only | the first one stretches back to 0:00 |
+| `outro` | hand | its podcast only | the last one stretches to the end (patron names, trailers) |
+| `show` | hand | its podcast only | its own span |
+| `bumper-in` / `bumper-out` / `bumper` | automatic, or hand | every podcast | marks an ad break: everything between a bumper-in and the next bumper-out is one section, even when the ads are new |
+
+A block's podcast is the one it was first found in. Automatic tagging never
+overwrites a type set by hand.
+
+## How it works
+
+1. **Fingerprint.** Each episode is decoded with ffmpeg and turned into a
+   spectrogram. The strongest peaks are kept, each is paired with a few peaks
+   just after it, and each pair becomes a 32-bit hash stamped with its time.
+   This survives re-encoding, volume changes and moderate noise.
+   - `--high-band` (default on) decodes at 16 kHz and fingerprints 4-8 kHz
+     as a band of its own. Speech sits mostly below 4 kHz, so music played
+     under a host's voice often only shows up there. On the test episodes
+     this nearly tripled how much of a music bed under speech was found.
+   - `--split-bands` (default off) picks peaks within several bands
+     separately. It found under a second more on the same test, for 8% more
+     hashes.
+   - A store keeps the setting it was created with; fingerprints from
+     different settings never match.
+2. **Compare.** For each pair of episodes, matching hashes from the same
+   audio all sit at one time offset. Runs of densely matched seconds at least
+   `--min-length` (1.5 s) long are shared audio. Runs under 10 s must turn up
+   at least 3 times to be kept.
+3. **Store.** Each shared run becomes a block, unless stored blocks already
+   cover it. Long blocks are cut where other episodes match only part of them
+   (an ad break splits into single ads), and slivers that always play inside
+   a longer block are dropped.
+4. **Bumpers.** Matches within 8 s of each other form a group. A block whose
+   matches are short (under 10 s, and no longer than 20 s stored) and that
+   keeps opening groups becomes a `bumper-in`; one that keeps closing them a
+   `bumper-out`.
+5. **Breaks.** A break runs from a bumper-in to the next bumper-out (within
+   10 minutes). A lone bumper still marks one end. Shows without bumpers get
+   breaks from 60 s or more of known blocks back to back.
+
+## Data
 
 Everything lives in `./podblock-data` (change with `--data-dir`):
 
 | Path | What |
 | --- | --- |
-| `podblock.sqlite` | episodes, blocks, block hashes, occurrences |
-| `fingerprints/*.npz` | full fingerprint for each episode, so comparisons never redecode |
-| `audio/` | downloaded episodes (pass `--delete-audio` to drop them after fingerprinting; `export` then stops working for their blocks) |
-
-### Tuning
-
-- `--min-length` (default 1.5 s): shortest block to report. Raise it to 10
-  or 30 to skip bumpers and keep only long blocks.
-- `--min-hits` (default 3): matching hashes needed per second. Raise it if
-  you see false matches, lower it for heavily processed audio.
-
-## Database
+| `podblock.sqlite` | podcasts, episodes, blocks, block hashes, occurrences, settings |
+| `fingerprints/*.npz` | full fingerprint of each episode, so comparisons never decode again |
+| `audio/` | downloaded episodes (`--delete-audio` drops them after fingerprinting; `export` then can't cut their blocks) |
 
 ```
-episodes(id, guid, feed_url, title, pub_date, audio_url, audio_path, fingerprint_path, duration)
-segments(id, source_episode_id, source_start, source_end, label, kind)  -- kind: bumper-in, bumper-out, bumper
+settings(key, value)                         -- schema version, fingerprint setting
+podcasts(id, name, feed_url)
+episodes(id, guid, podcast_id, title, pub_date, audio_url, audio_path, fingerprint_path, duration)
+segments(id, source_episode_id, podcast_id, source_start, source_end, label, type, type_manual)
 segment_hashes(segment_id, hash, t)          -- t in 32 ms frames from the block start
 occurrences(segment_id, episode_id, start, end, segment_start, hits)
-compared_pairs(a_id, b_id)                   -- which episode pairs are done
+compared_pairs(a_id, b_id)
 ```
 
 ## Tests

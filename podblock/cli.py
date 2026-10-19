@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import subprocess
 import sys
@@ -10,10 +11,13 @@ import tempfile
 from pathlib import Path
 
 from .breaks import AdBreak, find_breaks
-from .feed import download
+from .feed import download, fetch_feed
+from .fingerprint import FingerprintConfig, fingerprint_file
 from .matcher import MatchParams
-from .pipeline import Paths, find_common_blocks, ingest_feed, ingest_file, scan_audio
-from .store import Store
+from .pipeline import (Paths, find_common_blocks, ingest_episodes, ingest_feed, ingest_file,
+                       load_fingerprint, neighbours)
+from .report import build_sections
+from .store import TYPES, Store, StoreError
 
 
 def fmt_time(sec: float) -> str:
@@ -27,12 +31,24 @@ def params_from(args) -> MatchParams:
     return MatchParams(min_length_sec=args.min_length, min_hits_per_bin=args.min_hits)
 
 
+def podcast_arg(store: Store, key: str | None, create: bool = False) -> int | None:
+    if not key:
+        return None
+    found = store.find_podcast(key)
+    if found is None and create:
+        return store.podcast_id(name=key)
+    if found is None:
+        sys.exit(f"No podcast called {key!r}; see `podblock podcasts`.")
+    return found
+
+
 def cmd_analyze(args, store: Store, paths: Paths) -> None:
     params = params_from(args)
     ids = []
+    podcast = podcast_arg(store, args.podcast, create=True)
     for source in args.sources:
         if Path(source).exists():
-            ids.append(ingest_file(store, paths, Path(source)))
+            ids.append(ingest_file(store, paths, Path(source), podcast))
         else:
             ids += ingest_feed(store, paths, source, args.episodes, keep_audio=not args.delete_audio)
     added = find_common_blocks(store, ids, params, compare_with_history=not args.no_history)
@@ -40,42 +56,127 @@ def cmd_analyze(args, store: Store, paths: Paths) -> None:
     print_segments(store)
 
 
-def cmd_scan(args, store: Store, paths: Paths) -> None:
+def cmd_report(args, store: Store, paths: Paths) -> None:
     params = params_from(args)
-    target = Path(args.target)
-    if args.record:
-        if not target.exists():
-            sys.exit("--record needs a local file; download it first.")
-        ep_id = ingest_file(store, paths, target)
-        find_common_blocks(store, [ep_id], params)
-        matches = store.occurrences_for_episode(ep_id)
-        duration = store.episode(ep_id)["duration"]
-    else:
+    if args.feed:
+        feed = fetch_feed(args.feed)
+        if not 0 <= args.index < len(feed.episodes):
+            sys.exit(f"The feed has {len(feed.episodes)} episodes; --index must be below that.")
+        [ep_id] = ingest_episodes(store, paths, feed, [feed.episodes[args.index]])
+        if args.neighbors:
+            around = ingest_episodes(store, paths, feed, neighbours(feed.episodes, args.index, args.neighbors))
+            find_common_blocks(store, [ep_id, *around], params, compare_with_history=False)
+        report_episode(args, store, ep_id, params)
+    elif args.target and args.target.isdigit() and store.episode(int(args.target)):
+        ep_id = int(args.target)
+        if args.neighbors:
+            find_neighbour_repeats(args, store, paths, ep_id, params)
+        report_episode(args, store, ep_id, params)
+    elif args.target:
+        if args.neighbors:
+            sys.exit("--neighbors needs a feed episode: use --feed URL --index N, or a stored episode id.")
         with tempfile.TemporaryDirectory() as tmp:
-            if not target.exists():
-                target = download(args.target, Path(tmp) / "audio")
-            fp, matches = scan_audio(store, target, params)
-        duration = fp.duration
+            path = Path(args.target)
+            if not path.exists():
+                path = download(args.target, Path(tmp) / "audio")
+            fp = fingerprint_file(path, store.config)
+        podcast = podcast_arg(store, args.podcast)
+        print_report(args, store, Path(args.target).name, fp.duration,
+                     store.scan(fp, params, podcast_id=podcast))
+    else:
+        sys.exit("Give an episode id, file or URL, or --feed URL [--index N].")
 
-    rows = {r["id"]: r for r in store.segment_summary()}
-    print(f"Duration {fmt_time(duration)}, {len(matches)} known block(s):")
-    total = 0.0
-    for m in matches:
-        total += m.end - m.start
-        print(f"  {fmt_time(m.start):>8} - {fmt_time(m.end):>8}  ({m.end - m.start:5.0f}s)  "
-              f"segment #{m.segment_id} from {fmt_time(m.segment_start)}  hits={m.hits}"
-              f"{describe(rows.get(m.segment_id))}")
-    if duration:
-        print(f"Known blocks cover {fmt_time(total)} ({100 * total / duration:.1f}%).")
-    print_breaks(find_breaks(matches, {i: r["kind"] for i, r in rows.items()}))
+
+def find_neighbour_repeats(args, store: Store, paths: Paths, ep_id: int, params: MatchParams) -> None:
+    """Fetch the episodes next to a stored one in its feed and compare them with it."""
+    ep = store.episode(ep_id)
+    pod = store.db.execute("SELECT feed_url FROM podcasts WHERE id = ?", (ep["podcast_id"],)).fetchone()
+    if not pod or not pod["feed_url"]:
+        sys.exit("--neighbors needs an episode that came from a feed.")
+    feed = fetch_feed(pod["feed_url"])
+    index = next((i for i, e in enumerate(feed.episodes) if e.guid == ep["guid"]), None)
+    if index is None:
+        sys.exit("That episode is no longer in its feed, so its neighbours are unknown.")
+    around = ingest_episodes(store, paths, feed, neighbours(feed.episodes, index, args.neighbors))
+    find_common_blocks(store, [ep_id, *around], params, compare_with_history=False)
+
+
+def report_episode(args, store: Store, ep_id: int, params: MatchParams) -> None:
+    ep = store.episode(ep_id)
+    matches = store.scan(load_fingerprint(store, ep_id), params, podcast_id=ep["podcast_id"])
+    print_report(args, store, ep["title"], ep["duration"], matches, ep_id)
+
+
+def print_report(args, store: Store, title: str, duration: float, matches,
+                 ep_id: int | None = None) -> None:
+    sections = build_sections(matches, store.types(), duration, fill_gaps=args.fill_gaps)
+    total = sum(s.length for s in sections)
+    if args.json:
+        print(json.dumps({"episode_id": ep_id, "title": title, "duration": round(duration, 2),
+                          "repeated_sec": round(total, 2),
+                          "sections": [s.to_dict() for s in sections]}, indent=2))
+        return
+    print(f"{title} ({fmt_time(duration)})")
+    if not sections:
+        print("No repeated sections found.")
+        return
+    share = f" ({100 * total / duration:.1f}%)" if duration else ""
+    print(f"{len(sections)} repeated section(s), {fmt_time(total)} in all{share}:")
+    for s in sections:
+        unique = f", {s.unique_sec:.0f}s unique filled" if s.unique_sec else ""
+        blocks = " ".join(f"#{b}" for b in s.blocks[:8]) + (" ..." if len(s.blocks) > 8 else "")
+        print(f"  {fmt_time(s.start):>8} - {fmt_time(s.end):>8}  ({fmt_time(s.length):>5})  "
+              f"{', '.join(s.types)}{unique}  {blocks}")
+        if args.detail:
+            for p in sorted(s.parts, key=lambda p: p.start):
+                block = f"#{p.block}" if p.block is not None else ""
+                print(f"      {fmt_time(p.start):>8} - {fmt_time(p.end):>8}  {p.type:<10} {block}")
 
 
 def describe(row) -> str:
-    """Kind and label of a block, for the end of an output line."""
-    if row is None:
-        return ""
-    tags = [t for t in (row["kind"], row["label"]) if t]
+    """Type and label of a block, for the end of an output line."""
+    tags = []
+    if row["type"] != "repeated" or row["type_manual"]:
+        tags.append(row["type"] + ("*" if row["type_manual"] else ""))
+    if row["label"]:
+        tags.append(row["label"])
     return f"  [{', '.join(tags)}]" if tags else ""
+
+
+def print_segments(store: Store, podcast: int | None = None, block_type: str | None = None) -> None:
+    rows = [r for r in store.segment_summary()
+            if (podcast is None or r["podcast_id"] == podcast)
+            and (block_type is None or r["type"] == block_type)]
+    if not rows:
+        print("No matching blocks.")
+        return
+    print(f"{'id':>4} {'length':>7} {'episodes':>8} {'times':>5}  source")
+    for r in rows:
+        print(f"{r['id']:>4} {fmt_time(r['duration']):>7} {r['episodes']:>8} {r['occurrences']:>5}  "
+              f"{(r['source_title'] or '?')[:50]} @ {fmt_time(r['source_start'])}{describe(r)}")
+    if any(r["type_manual"] for r in rows):
+        print("(* = type set by hand)")
+
+
+def cmd_list(args, store: Store, paths: Paths) -> None:
+    print_segments(store, podcast_arg(store, args.podcast), args.type)
+
+
+def cmd_podcasts(args, store: Store, paths: Paths) -> None:
+    for p in store.podcasts():
+        feed = f"  {p['feed_url']}" if p["feed_url"] else ""
+        print(f"{p['id']:>4}  {p['name']}  ({p['episodes']} episodes, {p['blocks']} blocks){feed}")
+
+
+def cmd_show(args, store: Store, paths: Paths) -> None:
+    seg = store.segment(args.segment_id)
+    if seg is None:
+        sys.exit(f"No segment #{args.segment_id}")
+    print(f"Segment #{seg['id']}  {fmt_time(seg['source_end'] - seg['source_start'])}"
+          f"  type={seg['type']}{' (set by hand)' if seg['type_manual'] else ''}"
+          f"  label={seg['label'] or '-'}")
+    for o in store.occurrences_for_segment(args.segment_id):
+        print(f"  {fmt_time(o['start']):>8} - {fmt_time(o['end']):>8}  {o['title']}")
 
 
 def print_breaks(breaks: list[AdBreak], indent: str = "") -> None:
@@ -97,38 +198,19 @@ def print_breaks(breaks: list[AdBreak], indent: str = "") -> None:
 
 
 def cmd_breaks(args, store: Store, paths: Paths) -> None:
-    kinds = {r["id"]: r["kind"] for r in store.segments()}
+    types = store.types()
     episodes = store.fingerprinted_episodes()
     if args.episode_ids:
         episodes = [e for e in episodes if e["id"] in args.episode_ids]
     for ep in episodes:
         print(f"#{ep['id']} {ep['title']} ({fmt_time(ep['duration'] or 0)})")
-        print_breaks(find_breaks(store.occurrences_for_episode(ep["id"]), kinds), indent="  ")
+        print_breaks(find_breaks(store.occurrences_for_episode(ep["id"]), types), indent="  ")
 
 
-def print_segments(store: Store) -> None:
-    rows = store.segment_summary()
-    if not rows:
-        print("No common blocks stored yet.")
-        return
-    print(f"{'id':>4} {'length':>7} {'episodes':>8} {'times':>5}  source")
-    for r in rows:
-        print(f"{r['id']:>4} {fmt_time(r['duration']):>7} {r['episodes']:>8} {r['occurrences']:>5}  "
-              f"{(r['source_title'] or '?')[:50]} @ {fmt_time(r['source_start'])}{describe(r)}")
-
-
-def cmd_list(args, store: Store, paths: Paths) -> None:
-    print_segments(store)
-
-
-def cmd_show(args, store: Store, paths: Paths) -> None:
-    seg = store.segment(args.segment_id)
-    if seg is None:
+def cmd_type(args, store: Store, paths: Paths) -> None:
+    if store.segment(args.segment_id) is None:
         sys.exit(f"No segment #{args.segment_id}")
-    print(f"Segment #{seg['id']}  {fmt_time(seg['source_end'] - seg['source_start'])}"
-          f"  kind={seg['kind'] or '-'}  label={seg['label'] or '-'}")
-    for o in store.occurrences_for_segment(args.segment_id):
-        print(f"  {fmt_time(o['start']):>8} - {fmt_time(o['end']):>8}  {o['title']}")
+    store.set_type(args.segment_id, None if args.type == "auto" else args.type)
 
 
 def cmd_label(args, store: Store, paths: Paths) -> None:
@@ -155,10 +237,32 @@ def cmd_export(args, store: Store, paths: Paths) -> None:
     print(out)
 
 
+def open_store(args, paths: Paths) -> Store:
+    """Open the store, checking any fingerprint flags against its setting."""
+    flags = {k: v for k, v in (("high_band", args.high_band), ("split_bands", args.split_bands))
+             if v is not None}
+    if not paths.db.exists():
+        return Store(paths.db, FingerprintConfig(**flags))
+    store = Store(paths.db)
+    clash = [k for k, v in flags.items() if getattr(store.config, k) != v]
+    if clash:
+        store.close()
+        raise StoreError(f"this store uses '{store.config.name}' fingerprints, which "
+                         f"--{'' if flags[clash[0]] else 'no-'}{clash[0].replace('_', '-')} does not fit; "
+                         "use a new --data-dir")
+    return store
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="podblock", description=__doc__)
     parser.add_argument("--data-dir", type=Path, default=Path("podblock-data"),
                         help="where the database, fingerprints and audio live (default: %(default)s)")
+    parser.add_argument("--high-band", action=argparse.BooleanOptionalAction, default=None,
+                        help="also fingerprint 4-8 kHz, where music under speech shows best "
+                             "(only when creating a store; default on)")
+    parser.add_argument("--split-bands", action=argparse.BooleanOptionalAction, default=None,
+                        help="pick peaks in each frequency band separately "
+                             "(only when creating a store; default off)")
     parser.add_argument("-v", "--verbose", action="store_true")
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -167,25 +271,40 @@ def main(argv: list[str] | None = None) -> None:
                        help="shortest common block, in seconds; blocks under 10 s must also "
                             "occur at least 3 times (default: %(default)s)")
         p.add_argument("--min-hits", type=int, default=MatchParams.min_hits_per_bin,
-                       help="matching hashes per second needed to call audio shared (default: %(default)s)")
+                       help="matching hashes per second needed to call audio shared "
+                            "(default: %(default)s)")
 
     p = sub.add_parser("analyze", help="fingerprint feeds or files and store their common blocks")
     p.add_argument("sources", nargs="+", help="RSS feed URLs and/or local audio files")
-    p.add_argument("-n", "--episodes", type=int, default=5, help="newest episodes per feed (default: %(default)s)")
+    p.add_argument("-n", "--episodes", type=int, default=5,
+                   help="newest episodes per feed (default: %(default)s)")
+    p.add_argument("--podcast", help="podcast name for local files")
     p.add_argument("--delete-audio", action="store_true", help="delete audio once fingerprinted")
     p.add_argument("--no-history", action="store_true",
                    help="compare only these episodes, not ones analyzed earlier")
     matching_args(p)
     p.set_defaults(func=cmd_analyze)
 
-    p = sub.add_parser("scan", help="check an audio file or URL against stored blocks")
-    p.add_argument("target")
-    p.add_argument("--record", action="store_true",
-                   help="also add the file to the store and look for new common blocks")
+    p = sub.add_parser("report", help="list the repeated sections in one episode")
+    p.add_argument("target", nargs="?", help="stored episode id, audio file or audio URL")
+    p.add_argument("--feed", help="take the episode from this feed instead")
+    p.add_argument("--index", type=int, default=0, help="with --feed: 0 = newest episode (default: 0)")
+    p.add_argument("--podcast", help="for a file or URL: which podcast's intro/outro/show blocks apply")
+    p.add_argument("--neighbors", type=int, default=0, metavar="K",
+                   help="first fetch the K nearest episodes in the feed and look for new repeats")
+    p.add_argument("--fill-gaps", type=float, default=0.0, metavar="SEC",
+                   help="take in up to SEC seconds of unique audio between repeats (default: 0)")
+    p.add_argument("--detail", action="store_true", help="list the parts of each section")
+    p.add_argument("--json", action="store_true", help="print JSON")
     matching_args(p)
-    p.set_defaults(func=cmd_scan)
+    p.set_defaults(func=cmd_report)
 
-    sub.add_parser("list", help="list stored common blocks").set_defaults(func=cmd_list)
+    p = sub.add_parser("list", help="list stored common blocks")
+    p.add_argument("--podcast", help="only blocks found in this podcast (id, name or feed URL)")
+    p.add_argument("--type", choices=TYPES, help="only blocks of this type")
+    p.set_defaults(func=cmd_list)
+
+    sub.add_parser("podcasts", help="list podcasts in the store").set_defaults(func=cmd_podcasts)
 
     p = sub.add_parser("breaks", help="show the ad breaks found in stored episodes")
     p.add_argument("episode_ids", type=int, nargs="*", help="episode ids (default: all)")
@@ -195,7 +314,13 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("segment_id", type=int)
     p.set_defaults(func=cmd_show)
 
-    p = sub.add_parser("label", help="name a block, e.g. 'intro' or 'ad: mattress'")
+    p = sub.add_parser("type", help="set a block's type; intro, outro and show apply to its own "
+                                    "podcast only, the rest to every podcast")
+    p.add_argument("segment_id", type=int)
+    p.add_argument("type", choices=[*TYPES, "auto"], help="'auto' hands it back to automatic tagging")
+    p.set_defaults(func=cmd_type)
+
+    p = sub.add_parser("label", help="name a block, e.g. 'mattress ad'")
     p.add_argument("segment_id", type=int)
     p.add_argument("label", nargs="?", default="")
     p.set_defaults(func=cmd_label)
@@ -213,7 +338,10 @@ def main(argv: list[str] | None = None) -> None:
     logging.basicConfig(level=logging.INFO if args.verbose else logging.WARNING,
                         format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
     paths = Paths(args.data_dir)
-    store = Store(paths.db)
+    try:
+        store = open_store(args, paths)
+    except StoreError as e:
+        sys.exit(f"podblock: {e}")
     try:
         args.func(args, store, paths)
     finally:

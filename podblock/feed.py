@@ -35,31 +35,40 @@ def _parse_date(text: str | None) -> datetime | None:
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
-def parse_feed(xml: bytes) -> list[Episode]:
-    """Episodes with an audio enclosure, newest first."""
+@dataclass
+class Feed:
+    url: str
+    title: str
+    episodes: list[Episode]  # newest first
+
+
+def parse_feed(xml: bytes, url: str = "") -> Feed:
+    """The podcast's title and its episodes with an audio enclosure, newest first."""
     root = ET.fromstring(xml)
+    channel = root.find("channel")
+    title = (channel.findtext("title") if channel is not None else None) or url
     episodes = []
     for item in root.iter("item"):
         enclosure = item.find("enclosure")
         if enclosure is None or not enclosure.get("url"):
             continue
-        url = enclosure.get("url")
-        guid = (item.findtext("guid") or url).strip()
+        audio_url = enclosure.get("url")
+        guid = (item.findtext("guid") or audio_url).strip()
         episodes.append(Episode(
             guid=guid,
             title=(item.findtext("title") or "").strip(),
-            audio_url=url,
+            audio_url=audio_url,
             published=_parse_date(item.findtext("pubDate")),
         ))
     oldest = datetime.min.replace(tzinfo=timezone.utc)
     episodes.sort(key=lambda e: e.published or oldest, reverse=True)
-    return episodes
+    return Feed(url, title.strip(), episodes)
 
 
-def fetch_feed(url: str, timeout: float = 60) -> list[Episode]:
+def fetch_feed(url: str, timeout: float = 60) -> Feed:
     resp = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=timeout)
     resp.raise_for_status()
-    return parse_feed(resp.content)
+    return parse_feed(resp.content, url)
 
 
 def download(url: str, dest: Path, timeout: float = 60) -> Path:
