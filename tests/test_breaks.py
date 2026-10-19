@@ -63,8 +63,10 @@ def test_breaks_from_bumpers_and_from_plain_groups():
 
     breaks = find_breaks(matches, kinds)
 
+    # Breaks run between their bumpers, not over them; a lone bumper-out marks
+    # where a break ended, with nothing known before it.
     assert [(b.start, b.end, b.opened_by, b.closed_by) for b in breaks] == [
-        (100, 244, 1, 3),
-        (900, 904, None, 3),
+        (104, 240, 1, 3),
+        (900, 900, None, 3),
         (2000, 2100, None, None),
     ]

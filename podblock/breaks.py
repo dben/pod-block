@@ -26,6 +26,7 @@ MIN_EDGE_SHARE = 0.5  # share of a block's occurrences that must sit at a group 
 
 OPENS = {BUMPER_IN, BUMPER}
 CLOSES = {BUMPER_OUT, BUMPER}
+BUMPER_TYPES = {BUMPER_IN, BUMPER_OUT, BUMPER}
 
 
 @dataclass
@@ -110,63 +111,80 @@ def classify_bumpers(store: Store) -> BumperTags:
 
 def find_breaks(matches: list[SegmentMatch], kinds: dict[int, str],
                 max_break: float = MAX_BREAK_SEC) -> list[AdBreak]:
-    """Ad breaks in one piece of audio, from its block matches and the blocks' types."""
+    """Ad breaks in one piece of audio, from its block matches and the blocks' types.
+
+    A break spans only what plays between its bumpers: hosts often talk over
+    a bumper, and that talk belongs to the show. A lone bumper-out with
+    nothing known before it gives a break of no length, which still marks
+    where one ended.
+    """
     matches = sorted(matches, key=lambda m: m.start)
     breaks: list[AdBreak] = []
     open_break: AdBreak | None = None
-    opener_end = group_end = 0.0
+    group_end = 0.0  # end of the known blocks running on from the opener
     ads_seen = False  # a long known block played since the break opened
+    closers_until = float("-inf")  # end of the last run of closing bumpers
 
     def give_up(b: AdBreak) -> None:
         # Its bumper-out never came. A bumper-in still marks where a break
         # starts, and the break runs on through the blocks right after it;
         # a two-sided bumper on its own says nothing.
         if kinds.get(b.opened_by) == BUMPER_IN:
-            b.end = group_end
+            b.end = max(b.start, group_end)
             breaks.append(b)
+
+    def open_at(m: SegmentMatch) -> AdBreak:
+        nonlocal group_end, ads_seen
+        group_end, ads_seen = m.end, False
+        return AdBreak(m.end, m.end, opened_by=m.segment_id, blocks=[m.segment_id])
 
     for m in matches:
         kind = kinds.get(m.segment_id)
-        if open_break and m.start - opener_end > max_break:
+        if kind in CLOSES and m.start - closers_until <= JOIN_GAP_SEC:
+            closers_until = max(closers_until, m.end)  # bumper-outs often come in a row
+            continue
+        if open_break and m.start - open_break.start > max_break:
             give_up(open_break)
             open_break = None
         if open_break:
+            gap = m.start - open_break.start
+            if kind in OPENS and not ads_seen and m.start - group_end <= JOIN_GAP_SEC:
+                # Another opening sting right after the first: the break starts after both.
+                open_break.start = group_end = max(open_break.start, m.end)
+                open_break.blocks.append(m.segment_id)
+                continue
             # A break holds at least one ad, so a closer right on the opener's
             # heels is part of the same sting. Shows that play one sting on
             # both sides of a break leave the direction open; there, only
             # known ads in between show that a pair encloses a break.
             two_sided = kinds.get(open_break.opened_by) == BUMPER and kind == BUMPER
-            if kind in CLOSES and two_sided and not ads_seen and m.start - opener_end >= SHORT_BLOCK_SEC:
-                open_break = AdBreak(m.start, m.end, opened_by=m.segment_id, blocks=[m.segment_id])
-                opener_end = group_end = m.end
-            elif kind in CLOSES and m.start - opener_end >= SHORT_BLOCK_SEC:
-                open_break.end = max(group_end, m.end)
+            if kind in CLOSES and two_sided and not ads_seen and gap >= SHORT_BLOCK_SEC:
+                open_break = open_at(m)
+            elif kind in CLOSES and gap >= SHORT_BLOCK_SEC:
+                open_break.end = max(open_break.start, m.start)
                 open_break.closed_by = m.segment_id
                 open_break.blocks.append(m.segment_id)
                 breaks.append(open_break)
                 open_break = None
-            elif m.start - group_end <= JOIN_GAP_SEC:
+                closers_until = m.end
+            elif kind not in BUMPER_TYPES and m.start - group_end <= JOIN_GAP_SEC:
                 group_end = max(group_end, m.end)
                 open_break.blocks.append(m.segment_id)
-            ads_seen = ads_seen or m.end - m.start >= SHORT_BLOCK_SEC
+            ads_seen = ads_seen or (kind not in BUMPER_TYPES and m.end - m.start >= SHORT_BLOCK_SEC)
             continue
-        last = breaks[-1] if breaks else None
-        if kind in CLOSES and last and last.closed_by and m.start - last.end <= JOIN_GAP_SEC:
-            last.end = max(last.end, m.end)  # bumper-outs often come in a row
-            last.blocks.append(m.segment_id)
-        elif kind in OPENS:
-            open_break = AdBreak(m.start, m.end, opened_by=m.segment_id, blocks=[m.segment_id])
-            opener_end = group_end = m.end
-            ads_seen = False
+        if kind in OPENS:
+            open_break = open_at(m)
         elif kind == BUMPER_OUT:
             # A break ends here, but its start was not found (new ads, no bumper-in).
-            breaks.append(AdBreak(m.start, m.end, closed_by=m.segment_id, blocks=[m.segment_id]))
+            breaks.append(AdBreak(m.start, m.start, closed_by=m.segment_id, blocks=[m.segment_id]))
+            closers_until = m.end
     if open_break:
         give_up(open_break)
 
     # Shows without bumpers still play their ads back to back. Such a group
     # also fills in the missing side of a half-found break it overlaps or
-    # nearly meets (the gap being new ads).
+    # nearly meets (the gap being new ads). Bumpers at a group's edges are
+    # left out of it, as above.
     def reaches(b: AdBreak, start: float, end: float) -> bool:
         if b.start < end and start < b.end:
             return True
@@ -177,17 +195,21 @@ def find_breaks(matches: list[SegmentMatch], kinds: dict[int, str],
         return False
 
     for group in _groups(matches):
-        start, end = min(m.start for m in group), max(m.end for m in group)
-        if not any(m.end - m.start >= SHORT_BLOCK_SEC for m in group):
+        content = [m for m in group if kinds.get(m.segment_id) not in BUMPER_TYPES]
+        if not any(m.end - m.start >= SHORT_BLOCK_SEC for m in content):
             continue  # no ads in it, just stings and snippets
+        start, end = min(m.start for m in content), max(m.end for m in content)
         overlapping = [b for b in breaks if reaches(b, start, end)]
         if any(b.complete for b in overlapping):
             continue
         if overlapping:
             for b in overlapping:
-                b.start, b.end = min(b.start, start), max(b.end, end)
-        elif _covered(group) >= MIN_PLAIN_BREAK_SEC:
-            breaks.append(AdBreak(start, end, blocks=[m.segment_id for m in group]))
+                if b.opened_by is None:
+                    b.start = min(b.start, start)
+                if b.closed_by is None:
+                    b.end = max(b.end, end)
+        elif _covered(content) >= MIN_PLAIN_BREAK_SEC:
+            breaks.append(AdBreak(start, end, blocks=[m.segment_id for m in content]))
 
     return _merge_overlapping(breaks)
 

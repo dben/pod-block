@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import subprocess
 import sys
 import tempfile
@@ -388,7 +389,8 @@ def main(argv: list[str] | None = None) -> None:
     p.set_defaults(func=cmd_show)
 
     p = sub.add_parser("type", help="set a block's type; intro, outro and show apply to its own "
-                                    "podcast only, the rest to every podcast")
+                                    "podcast only, the rest to every podcast; ignored marks a false "
+                                    "positive, which is then never reported")
     p.add_argument("segment_id", type=int)
     p.add_argument("type", choices=[*TYPES, "auto"], help="'auto' hands it back to automatic tagging")
     p.set_defaults(func=cmd_type)
@@ -429,6 +431,8 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(f"podblock: {e}")
     try:
         args.func(args, store, paths)
+    except BrokenPipeError:  # output piped into something that stopped reading, like head
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
     finally:
         store.close()
 
