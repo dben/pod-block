@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pod-block"
+version = "0.1.0"
+description = "Find and remember audio that repeats across podcast episodes"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.24", "scipy>=1.10", "requests>=2.28"]
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[project.scripts]
+podblock = "podblock.cli:main"
+
+[tool.setuptools]
+packages = ["podblock"]
