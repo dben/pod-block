@@ -46,6 +46,19 @@
     }
   }, true);
 
+  document.addEventListener("click", async (e) => {
+    const btn = e.target.closest("[data-copy]");
+    if (!btn) return;
+    const field = document.querySelector(btn.dataset.copy);
+    try {
+      await navigator.clipboard.writeText(field.value);
+    } catch {
+      field.select();
+      document.execCommand("copy");  // older browsers, and pages not served over HTTPS
+    }
+    toast("Copied.");
+  });
+
   document.addEventListener("submit", (e) => {
     const msg = e.target.dataset.confirm;
     if (msg && !confirm(msg)) e.preventDefault();

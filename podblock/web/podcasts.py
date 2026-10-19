@@ -5,10 +5,11 @@ from __future__ import annotations
 import sqlite3
 from urllib.parse import urlencode
 
+import segno
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 
-from . import feeds, jobs, library
+from . import feeds, jobs, library, publish
 from .episodes import wake_worker
 from .deps import current_user, get_db
 from .templating import flash, page
@@ -68,8 +69,21 @@ def show_podcast(request: Request, podcast_id: int, view: str = "active", q: str
     )
     if partial:
         return page(request, "_episodes.html", **context)
+    private = publish.feed_url(request, publish.ensure_token(db, podcast_id))
     return page(request, "podcast.html", title=pod["name"], nav="podcasts", user=user,
-                counts=library.counts(db, user["id"], podcast_id), **context)
+                counts=library.counts(db, user["id"], podcast_id), private_url=private,
+                private_count=len(publish.published(db, podcast_id)),
+                private_qr=segno.make(private, error="m").svg_inline(scale=4, border=2, dark="#0d0f13", light="#ffffff"),
+                **context)
+
+
+@router.post("/podcasts/{podcast_id}/feed-token")
+def new_feed_address(request: Request, podcast_id: int, user=Depends(current_user),
+                     db: sqlite3.Connection = Depends(get_db)) -> Response:
+    _podcast_or_404(db, podcast_id)
+    publish.new_feed_token(db, podcast_id)
+    flash(request, "The private feed has a new address. The old one no longer works.")
+    return RedirectResponse(f"/podcasts/{podcast_id}?feed=1", status_code=303)
 
 
 @router.post("/podcasts/{podcast_id}/refresh")

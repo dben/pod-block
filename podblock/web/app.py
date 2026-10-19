@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import accounts, episodes, podcasts
+from . import accounts, episodes, podcasts, publish
 from .background import Background
 from .config import Settings
 from .db import connect, prepare, setting
@@ -74,6 +74,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.mount("/static", StaticFiles(directory=STATIC), name="static")
     app.include_router(podcasts.router)
     app.include_router(episodes.router)
+    app.include_router(publish.router)
 
     @app.exception_handler(LoginRequired)
     async def login_required(request: Request, exc: LoginRequired) -> Response:

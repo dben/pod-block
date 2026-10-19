@@ -2,6 +2,7 @@
 {% block content %}
 {% set art = podcast.image_url|web_url %}
 {% set about = podcast.description|text %}
+<div x-data="{ feed: {{ 'true' if request.query_params.get('feed') else 'false' }} }">
 <section class="show-head">
   {% if art %}<img class="show-backdrop" src="{{ art }}" alt="" aria-hidden="true" referrerpolicy="no-referrer">{% endif %}
   <div class="show-head-inner">
@@ -35,6 +36,10 @@
           </button>
         </form>
         {% endif %}
+        <button class="btn btn-ghost btn-sm" type="button" @click="feed = !feed" :aria-expanded="feed">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 19a1 1 0 1 0 0-2 1 1 0 0 0 0 2zM4 11a9 9 0 0 1 9 9M4 4a16 16 0 0 1 16 16"/></svg>
+          Private feed
+        </button>
         {% if podcast.link|web_url %}
         <a class="btn btn-ghost btn-sm" href="{{ podcast.link }}" target="_blank" rel="noopener noreferrer">
           <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg>
@@ -60,6 +65,27 @@
     </div>
   </div>
 </section>
+
+<section class="card feed-panel" x-show="feed" x-cloak x-transition.opacity>
+  <div class="feed-panel-body">
+    <h2>Private feed</h2>
+    <p class="muted">Add this address to any podcast app to get {{ private_count|plural('episode') }} with the
+      repeats cut out. It lists only episodes you've downloaded, and new ones appear when they're ready.</p>
+    <div class="copy-row">
+      <input class="input mono" type="text" readonly value="{{ private_url }}" id="private-url" aria-label="Private feed address"
+             @focus="$el.select()">
+      <button class="btn btn-primary" type="button" data-copy="#private-url">Copy</button>
+    </div>
+    <p class="hint">No login is needed to use it, so anyone with the address can listen. It isn't listed
+      anywhere and asks podcast directories not to list it.</p>
+    <form method="post" action="/podcasts/{{ podcast.id }}/feed-token"
+          data-confirm="Make a new address? Apps using the old one will stop getting episodes until you add the new one.">
+      <button class="btn btn-ghost btn-sm" type="submit">Make a new address</button>
+    </form>
+  </div>
+  <div class="qr" aria-label="QR code of the address">{{ private_qr|safe }}</div>
+</section>
+</div>
 
 <div class="toolbar">
   <nav class="tabs" aria-label="Episode lists">

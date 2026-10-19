@@ -21,6 +21,7 @@ import requests
 
 from ..feed import CONTENT, ITUNES, Feed, FeedError, get_feed, parse_feed
 from . import jobs
+from .db import new_token
 
 log = logging.getLogger(__name__)
 
@@ -123,8 +124,8 @@ def add_podcast(db: sqlite3.Connection, url: str) -> Refreshed:
     fetched = _fetch(url)
     feed = _parse(fetched.xml, url)
     with _refreshing:
-        cur = db.execute("INSERT INTO podcasts (name, feed_url, added_at) VALUES (?, ?, ?)",
-                         (feed.title, url, time.time()))
+        cur = db.execute("INSERT INTO podcasts (name, feed_url, added_at, public_token) VALUES (?, ?, ?, ?)",
+                         (feed.title, url, time.time(), new_token()))
         result = _apply(db, cur.lastrowid, feed, fetched.etag, fetched.last_modified)
     return result
 

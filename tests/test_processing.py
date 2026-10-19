@@ -329,3 +329,79 @@ def test_intro_marks_only_the_block_that_ends_the_section(env):
     assert out["types"][0]["blocks"] == [plays[0]["segment_id"]]
     out = check_edits(env.db, ep_id, {"types": [{"type": "ignored", "blocks": blocks}]})
     assert sorted(out["types"][0]["blocks"]) == sorted(blocks)
+
+
+# ---- the private feed --------------------------------------------------------------
+
+def feed_of(env):
+    token = env.db.execute("SELECT public_token FROM podcasts WHERE id = ?", (env.pod,)).fetchone()[0]
+    return token, TestClient(env.client.app)  # no login
+
+
+def test_private_feed_lists_ready_episodes_with_cut_audio(env):
+    from podblock.feed import parse_feed
+    import xml.etree.ElementTree as ET
+    env.web.pages[URL] = env.web.pages[URL].replace(
+        b"<description>Notes for episode 3.</description>",
+        b'<description>Notes for episode 3.</description><podcast:chapters url="https://example.com/c.json" '
+        b'type="application/json+chapters"/><media:content xmlns:media="http://search.yahoo.com/mrss/" '
+        b'url="https://cdn.example.com/3.mp3" type="audio/mpeg"/><media:content xmlns:media="http://search.yahoo.com/mrss/" '
+        b'url="https://example.com/3.jpg" medium="image"/>')
+    feeds.refresh(env.db, env.pod, conditional=False)
+    processed(env)
+    token, anon = feed_of(env)
+    res = anon.get(f"/p/{token}/feed.xml")
+    assert res.status_code == 200 and res.headers["content-type"].startswith("application/rss+xml")
+    body = res.content
+    assert b"ns0:" not in body and b"<itunes:block>Yes</itunes:block>" in body
+    assert b"podcast:chapters" not in body
+    assert b"https://cdn.example.com/" not in body  # nothing points at the uncut audio
+    assert b"https://example.com/3.jpg" in body  # images stay
+    assert f'/p/{token}/feed.xml'.encode() in body  # its own self link
+
+    feed = parse_feed(body, "x")
+    assert feed.title == "Example Show" and feed.author == "Example Network"
+    assert [e.title for e in feed.episodes] == ["Episode 5", "Episode 4", "Episode 3", "Episode 2"]
+    newest = feed.episodes[0]
+    ep5 = episode(env, "ep-5")
+    assert newest.guid == "ep-5" and newest.audio_url.startswith(f"http://testserver/p/{token}/")
+    assert newest.audio_length == ep5["cut_bytes"] and newest.audio_type == "audio/mpeg"
+    assert newest.duration == pytest.approx(ep5["cut_duration"], abs=1)
+    assert ET.fromstring(newest.xml).findtext("description") == "Notes for episode 5."
+
+    audio = anon.get(newest.audio_url.replace("http://testserver", ""), headers={"range": "bytes=0-9"})
+    assert audio.status_code == 206 and len(audio.content) == 10
+    assert anon.head(newest.audio_url.replace("http://testserver", "")).status_code == 200
+
+    again = anon.get(f"/p/{token}/feed.xml", headers={"if-none-match": res.headers["etag"]})
+    assert again.status_code == 304
+
+
+def test_private_feed_is_hidden_behind_its_token(env):
+    processed(env)
+    token, anon = feed_of(env)
+    for path in ("/p/nope/feed.xml", f"/p/{token}/0000000000000000.mp3", f"/p/{token[:-1]}/feed.xml"):
+        res = anon.get(path)
+        assert res.status_code == 404 and res.text == "Not found", path
+
+    env.client.post(f"/podcasts/{env.pod}/feed-token")
+    assert anon.get(f"/p/{token}/feed.xml").status_code == 404
+    new, _ = feed_of(env)
+    assert new != token and anon.get(f"/p/{new}/feed.xml").status_code == 200
+
+    env.client.post(f"/podcasts/{env.pod}/remove")
+    assert anon.get(f"/p/{new}/feed.xml").status_code == 404
+
+
+def test_show_page_offers_the_private_feed(env):
+    processed(env)
+    token, _ = feed_of(env)
+    page = env.client.get(f"/podcasts/{env.pod}").text
+    assert f"http://testserver/p/{token}/feed.xml" in page and "<svg" in page and "4 episodes" in page
+
+
+def test_public_url_setting_is_used_for_links(env):
+    processed(env)
+    env.settings.public_url = "https://pods.example.com"
+    token, anon = feed_of(env)
+    assert b"https://pods.example.com/p/" in anon.get(f"/p/{token}/feed.xml").content

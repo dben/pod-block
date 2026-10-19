@@ -681,3 +681,17 @@ a.podcast-card:hover { border-color: var(--border-strong); background: var(--sur
   .savebar { bottom: calc(var(--tabbar-h) + 12px + env(safe-area-inset-bottom)); }
   .has-savebar .page { padding-bottom: calc(var(--tabbar-h) + 110px); }
 }
+
+/* ---- private feed --------------------------------------------------------- */
+
+.feed-panel { display: flex; gap: 24px; align-items: flex-start; padding: 20px; margin: -4px 0 20px; }
+.feed-panel-body { display: grid; gap: 12px; flex: 1; min-width: 0; }
+.copy-row { display: flex; gap: 8px; }
+.copy-row .input { font-size: 0.88rem; }
+.qr { flex: none; width: 168px; padding: 6px; border-radius: 12px; background: #fff; }
+.qr svg { display: block; width: 100%; height: auto; }
+@media (max-width: 720px) {
+  .feed-panel { flex-direction: column; align-items: center; }
+  .feed-panel-body { width: 100%; }
+  .qr { width: 148px; }
+}

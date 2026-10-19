@@ -14,7 +14,8 @@ what is done, and what comes later. Update it as work lands.
 | Milestone 2: feeds | done: add and refresh feeds, show header, episode list, archive, remove |
 | Milestone 3: processing | done: job queue and worker, download, detect, cut, episode and jobs pages |
 | Milestone 6: timeline editor | done, ahead of 4 and 5 |
-| Milestone 4: private feed | next |
+| Milestone 4: private feed | done: tokens, feed XML, audio with byte ranges, copy and QR code |
+| Milestone 5: retention | next |
 
 Last updated: 2026-10-19.
 
@@ -90,7 +91,7 @@ Other settings:
 | `PODBLOCK_API_KEY` | fixed login key; when unset, one is made on first start, its hash stored, and the key printed to the log once |
 | `PODBLOCK_SECRET_KEY` | signs session cookies; made and stored on first start when unset |
 | `PODBLOCK_SECURE_COOKIES` | `true` to send the session cookie over HTTPS only; set it behind TLS |
-| `PODBLOCK_PUBLIC_URL` | base URL for links in the private feed, e.g. `https://pods.example.com`; falls back to the request's host (not used yet) |
+| `PODBLOCK_PUBLIC_URL` | base URL for links in the private feed, e.g. `https://pods.example.com`; falls back to the address the request came to |
 | `PODBLOCK_WORKERS` | threads running jobs (default 1). Fingerprinting takes about 0.3 GB and one core per thread |
 | `FORWARDED_ALLOW_IPS` | Uvicorn's own: which proxies to trust for `X-Forwarded-*` headers; set it to the ingress's address range |
 
@@ -249,20 +250,35 @@ Ticked items are built. Each has an id so commits and issues can point at it.
 
 ### Private feed and streaming
 
-- [ ] **S1** Each podcast gets a random token (128 bits, URL-safe). Its feed
-  is at `/p/<token>/feed.xml` and lists only episodes with cut audio on
-  disk.
-- [ ] **S2** The feed keeps the show's channel metadata and each episode's
-  `<item>` as the source had them, changing only the enclosure (URL, length,
-  type) and `itunes:duration`. Chapters and transcripts would be out of step
-  with the cut audio, so they are dropped until we can shift them (see
-  future features).
-- [ ] **S3** Each episode's audio is at `/p/<token>/<episode-token>.<ext>`,
-  with byte-range support, `HEAD`, `ETag` and caching headers.
-- [ ] **S4** Make a new token for a podcast, which breaks the old feed URL.
-- [ ] **S5** Unknown tokens get a plain 404 that doesn't say whether the
-  podcast exists.
-- [ ] **S6** Copy-link and QR code for the private feed on the show page.
+- [x] **S1** Each podcast gets a random token (128 bits, URL-safe). Its feed
+  is at `/p/<token>/feed.xml` and lists only ready episodes with their cut
+  audio on disk, newest first. No login.
+- [x] **S2** The feed keeps the show's channel and each episode's `<item>` as
+  the source had them (`podblock/web/publish.py`), with these changes: the
+  enclosure points at the cut file with its length and type, and
+  `itunes:duration` is the cut length; chapters, transcripts and soundbites
+  go, as their times no longer fit; every other link to the uncut audio goes
+  (`media:content` for audio, `podcast:alternateEnclosure`), since some apps
+  play those instead; `itunes:new-feed-url` goes, as it would send apps back
+  to the source; `atom:link rel="self"` points at the private feed; and
+  `itunes:block` asks directories not to list it. Namespace prefixes are
+  kept as the source wrote them. Guids stay the source's.
+- [x] **S3** Each episode's audio is at `/p/<token>/<key>.<ext>`, where the key
+  is the one its files are named by (the guid's SHA-1, 16 hex digits). The
+  podcast's token guards the path, and the feed lists them all anyway, so a
+  second token per episode would add nothing. Byte ranges, `HEAD`, `ETag`
+  and caching headers come with it; the feed itself answers
+  `If-None-Match` with 304.
+- [x] **S4** "Make a new address" gives a podcast a new token, after a
+  confirmation; the old feed and audio links stop working at once.
+- [x] **S5** Unknown tokens, and podcasts removed in the app, get a plain
+  "Not found" that says nothing more.
+- [x] **S6** A "Private feed" button on the show page opens the address with
+  Copy, a QR code (made on the server with `segno`), and how many episodes
+  are in it.
+- [x] **S7** Feed links use `PODBLOCK_PUBLIC_URL`, else the address the
+  request came to. Behind a proxy, set one or the other
+  (`FORWARDED_ALLOW_IPS`), or links will point at the inside address.
 
 ### Retention
 
@@ -329,11 +345,14 @@ episodes  + cut_spec,                                        -- the stretches ke
 edits(id, episode_id, start, end, created_by, created_at)    -- sections cut by hand, this episode only
 ```
 
+Built in migration 6: `podcasts.public_token` (unique), made for every
+podcast that had none.
+
 Planned:
 
 ```
-podcasts  + public_token, retention_days
-episodes  + public_token, expires_at
+podcasts  + retention_days
+episodes  + expires_at
 ```
 
 Guids are unique across the whole store. If two shows use the same guid,
@@ -363,8 +382,9 @@ only looks at fingerprinted ones, so they don't affect it.
 | `GET /jobs`, `POST /jobs/{id}/cancel`, `POST /jobs/{id}/retry` | yes | job queue | built |
 | `GET /episodes/{id}/peaks` | yes | the waveform, made on first ask | built |
 | `POST /episodes/{id}/edits` | yes | save timeline changes (JSON: `types`, `add`, `remove`); queues an edit job | built |
-| `GET /p/{token}/feed.xml` | no | private feed | |
-| `GET /p/{token}/{episode_token}.{ext}` | no | cut audio | |
+| `GET /p/{token}/feed.xml` | no | private feed | built |
+| `GET /p/{token}/{key}.{ext}` | no | cut audio, with byte ranges | built |
+| `POST /podcasts/{id}/feed-token` | yes | new private feed address | built |
 
 ## Milestones
 
@@ -375,7 +395,8 @@ only looks at fingerprinted ones, so they don't affect it.
    archive with multi-select, remove.
 3. **Processing** (done): jobs table and worker, download with comparison
    episodes, detect, render cut audio, episode page, jobs page.
-4. **Private feed**: tokens, feed XML, audio with byte ranges.
+4. **Private feed** (done): tokens, feed XML, audio with byte ranges, copy
+   and QR code.
 5. **Retention**: expiry job, keep pins, settings.
 6. **Timeline editor** (done, ahead of 4 and 5): waveform, sections,
    marks, manual sections, re-cut.
@@ -396,8 +417,23 @@ None right now.
 - Shift chapter and transcript timestamps to match the cut audio, and add
   chapters marking where cuts were made.
 - A per-podcast choice of which section types to cut.
-- A per-podcast setting for how much new audio between repeats is cut with
-  them (4 seconds today).
+- Join sections that sit only a few seconds apart: a per-podcast setting
+  (and perhaps a timeline action) for how much new audio between two cut
+  sections goes with them, so an unknown ad between two known ones is cut
+  too. In the test show, a new ad played between two known ones at about
+  23:00 to 24:00 and was left in. Today a fixed 4 seconds is joined
+  (`processing.FILL_GAPS`).
+- Find bumpers that end up inside ad blocks. The test show seems to have
+  stings around its breaks, but they got stored as the edges of longer ad
+  blocks rather than as short blocks of their own, so they never became
+  bumpers, and breaks with new ads in them weren't spanned. Ideas: cut
+  blocks where the same short piece keeps turning up at their edges; look
+  for short repeats just inside the ends of known ads; let the user mark a
+  bumper on the timeline (a Bumper type that splits it out of its block).
+- Captions and transcripts with faster-whisper: transcribe each episode
+  (int8 on a CPU), shift the times to the cut audio, and serve them in the
+  private feed as `podcast:transcript` (SRT or WebVTT). The text could also
+  help name ad blocks and find repeats that differ in sound but not words.
 - OPML import and export.
 - One combined private feed across podcasts.
 - Postgres, and the worker as its own Deployment, so the web side can run
@@ -425,3 +461,4 @@ None right now.
   built. Real feed URLs and show names taken out of the repo and its
   history. Milestone 2 built. Milestone 3 built. Timeline editor (milestone
   6) built ahead of 4 and 5; sections under 15 seconds are no longer cut.
+  Milestone 4 built.

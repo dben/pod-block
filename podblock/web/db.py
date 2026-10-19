@@ -9,6 +9,7 @@ functions given the connection. The last step applied is kept in
 
 from __future__ import annotations
 
+import secrets
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -123,7 +124,16 @@ MIGRATIONS = [
     );
     CREATE INDEX edits_episode ON edits(episode_id);
     """,
+    # 6: the private feed: a random token per podcast, which is the feed's address
+    "ALTER TABLE podcasts ADD COLUMN public_token TEXT; CREATE UNIQUE INDEX podcasts_token ON podcasts(public_token);",
+    lambda db: db.executemany("UPDATE podcasts SET public_token = ? WHERE id = ?",
+                              [(new_token(), r["id"]) for r in db.execute("SELECT id FROM podcasts")]),
 ]
+
+
+def new_token() -> str:
+    """128 random bits, URL-safe."""
+    return secrets.token_urlsafe(16)
 
 
 def iso_ts(text: str | None) -> float | None:
