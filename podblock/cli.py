@@ -16,10 +16,10 @@ from .feed import download, fetch_feed
 from .fingerprint import FingerprintConfig, fingerprint_file
 from .matcher import MatchParams
 from .outro import music_bed_outro
-from .pipeline import (COMPARE_OTHER, COMPARE_SAME, OTHER_WINDOW_DAYS, Paths, episode_loudness,
-                       find_common_blocks, ingest_episodes, ingest_feed, ingest_file, load_fingerprint,
+from .pipeline import (COMPARE_OTHER, COMPARE_SAME, OTHER_WINDOW_DAYS, Paths, episode_report,
+                       find_common_blocks, ingest_episodes, ingest_feed, ingest_file,
                        neighbours, prune, refingerprint)
-from .report import build_sections
+from .report import MIN_SECTION_SEC, build_sections
 from .store import TYPES, Store, StoreError
 
 
@@ -97,14 +97,8 @@ def cmd_report(args, store: Store, paths: Paths) -> None:
         sys.exit("Give an episode id, file or URL, or --feed URL [--index N].")
 
     find_common_blocks(store, [ep_id], params, same=args.compare_same, other=args.compare_other)
-    ep = store.episode(ep_id)
-    matches = store.scan(load_fingerprint(store, ep_id), params, podcast_id=ep["podcast_id"], heard=True)
-    pod = store.podcast(ep["podcast_id"])
-    wanted = args.outro_bed or (pod and pod["outro_bed"])
-    bed = outro_start(args, store, ep["podcast_id"], episode_loudness(store, ep_id) if wanted else None)
-    data = report_data(args, store, ep["title"], ep["duration"], matches, ep_id, outro_bed_start=bed)
-    store.save_report(ep_id, json.dumps(data))
-    show(args, data)
+    show(args, episode_report(store, ep_id, params, fill_gaps=args.fill_gaps, outro_bed=args.outro_bed or None,
+                              min_section=args.min_section))
 
 
 def fetch_neighbours(args, store: Store, paths: Paths, ep_id: int) -> None:
@@ -138,7 +132,8 @@ def outro_start(args, store: Store, podcast: int | None, loudness) -> float | No
 def report_data(args, store: Store, title: str, duration: float, matches,
                 ep_id: int | None = None, outro_bed_start: float | None = None) -> dict:
     sections = build_sections(matches, store.types(), duration, fill_gaps=args.fill_gaps,
-                              outro_bed_start=outro_bed_start)
+                              outro_bed_start=outro_bed_start, min_section=args.min_section,
+                              pinned=store.hand_typed())
     return {"episode_id": ep_id, "title": title, "duration": round(duration, 2),
             "repeated_sec": round(sum(s.length for s in sections), 2),
             "sections": [s.to_dict() for s in sections]}
@@ -290,6 +285,52 @@ def cmd_prune(args, store: Store, paths: Paths) -> None:
     print(f"{verb}: " + (", ".join(f"{n} {what}" for what, n in gone.items() if n) or "nothing"))
 
 
+def cmd_serve(args, store: Store, paths: Paths) -> None:
+    try:
+        import uvicorn
+
+        from .web.app import create_app
+        from .web.config import Settings
+    except ImportError:
+        sys.exit("podblock: the web app needs its extras: pip install 'pod-block[web]'")
+    app = create_app(Settings.from_env(data_dir=paths.root, media_dir=args.media_dir))
+    uvicorn.run(app, host=args.host, port=args.port, proxy_headers=True)
+
+
+def cmd_backup(args, store: Store, paths: Paths) -> None:
+    """Copy the database while it is in use; a plain file copy can catch it half-written."""
+    import sqlite3
+
+    dest = Path(args.dest)
+    if dest.exists() and not args.force:
+        sys.exit(f"podblock: {dest} already exists; pass --force to replace it")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_name(dest.name + ".part")
+    tmp.unlink(missing_ok=True)
+    target = sqlite3.connect(tmp)
+    try:
+        store.db.backup(target)
+    finally:
+        target.close()
+    tmp.replace(dest)
+    print(f"Backed up {paths.db} to {dest} ({dest.stat().st_size / 1e6:.1f} MB).")
+
+
+def cmd_api_key(args, store: Store, paths: Paths) -> None:
+    from .web import accounts
+    from .web.db import connect, prepare
+
+    prepare(paths.db)
+    db = connect(paths.db)
+    try:
+        print(accounts.new_api_key(db))
+    finally:
+        db.close()
+    if os.environ.get("PODBLOCK_API_KEY"):
+        print("podblock: PODBLOCK_API_KEY is set, and replaces this key when the server next starts",
+              file=sys.stderr)
+
+
 def open_store(args, paths: Paths) -> Store:
     """Open the store, checking any fingerprint flags against its setting."""
     flags = {k: v for k, v in (("high_band", args.high_band), ("split_bands", args.split_bands))
@@ -308,8 +349,10 @@ def open_store(args, paths: Paths) -> Store:
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="podblock", description=__doc__)
-    parser.add_argument("--data-dir", type=Path, default=Path("podblock-data"),
-                        help="where the database, fingerprints and audio live (default: %(default)s)")
+    parser.add_argument("--data-dir", type=Path,
+                        default=Path(os.environ.get("PODBLOCK_DATA_DIR", "podblock-data")),
+                        help="where the database, fingerprints and audio live "
+                             "(default: $PODBLOCK_DATA_DIR, else %(default)s)")
     parser.add_argument("--high-band", action=argparse.BooleanOptionalAction, default=None,
                         help="also fingerprint 4-8 kHz, where music under speech shows best "
                              "(only when creating a store; default on)")
@@ -358,6 +401,9 @@ def main(argv: list[str] | None = None) -> None:
                    help="take in up to SEC seconds of unique audio between repeats (default: 0)")
     p.add_argument("--outro-bed", action="store_true",
                    help="look for an outro read over a music bed, even if the podcast setting is off")
+    p.add_argument("--min-section", type=float, default=MIN_SECTION_SEC, metavar="SEC",
+                   help="leave out sections shorter than this, unless they are breaks, intros, outros, "
+                        "show blocks or typed by hand (default: %(default)s; 0 lists them all)")
     p.add_argument("--detail", action="store_true", help="list the parts of each section")
     p.add_argument("--json", action="store_true", help="print JSON")
     p.add_argument("--cached", action="store_true",
@@ -420,6 +466,21 @@ def main(argv: list[str] | None = None) -> None:
     p = sub.add_parser("delete", help="remove a block from the store")
     p.add_argument("segment_id", type=int)
     p.set_defaults(func=cmd_delete)
+
+    p = sub.add_parser("serve", help="run the web app")
+    p.add_argument("--host", default="127.0.0.1", help="address to listen on (default: %(default)s)")
+    p.add_argument("--port", type=int, default=8000, help="(default: %(default)s)")
+    p.add_argument("--media-dir", type=Path, default=None,
+                   help="where episode audio lives (default: $PODBLOCK_MEDIA_DIR, else DATA_DIR/media)")
+    p.set_defaults(func=cmd_serve)
+
+    p = sub.add_parser("backup", help="copy the database to a file, safely, even while the web app runs")
+    p.add_argument("dest", help="file to write, e.g. /data/backup.sqlite")
+    p.add_argument("--force", action="store_true", help="replace the file if it exists")
+    p.set_defaults(func=cmd_backup)
+
+    sub.add_parser("api-key", help="make a new login key for the web app, replacing the old one and "
+                                   "logging everyone out").set_defaults(func=cmd_api_key)
 
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO if args.verbose else logging.WARNING,

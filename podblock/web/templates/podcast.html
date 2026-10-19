@@ -1,0 +1,198 @@
+{% extends "base.html" %}
+{% block content %}
+{% set art = podcast.image_url|web_url %}
+{% set about = podcast.description|text %}
+<div x-data="{ feed: {{ 'true' if request.query_params.get('feed') else 'false' }}, settings: false }">
+<section class="show-head">
+  {% if art %}<img class="show-backdrop" src="{{ art }}" alt="" aria-hidden="true" referrerpolicy="no-referrer">{% endif %}
+  <div class="show-head-inner">
+    {% if art %}
+    <img class="show-cover" src="{{ art }}" alt="" referrerpolicy="no-referrer">
+    {% else %}
+    <div class="show-cover cover-blank" aria-hidden="true">{{ (podcast.name or '?')[:1]|upper }}</div>
+    {% endif %}
+    <div class="show-info">
+      {% if podcast.author %}<p class="eyebrow">{{ podcast.author }}</p>{% endif %}
+      <h1>{{ podcast.name }}</h1>
+      <p class="stats">
+        <span class="badge">{{ (counts.active + counts.archived)|plural('episode') }}</span>
+        {% for c in (podcast.categories|fromjson)[:3] %}<span class="badge">{{ c }}</span>{% endfor %}
+        {% if podcast.explicit %}<span class="badge" title="Explicit">E</span>{% endif %}
+        {% if cut_sec >= 60 %}<span class="badge badge-ok" title="Cut from the episodes downloaded so far">{{ cut_sec|duration }} cut so far</span>{% endif %}
+        {% if podcast.auto_download %}<span class="badge badge-busy" title="New episodes download on their own">Auto-download</span>{% endif %}
+      </p>
+      {% if about %}
+      <div class="show-about" x-data="{ open: false }" :class="open && 'open'">
+        <p>{{ about }}</p>
+        {% if about|length > 220 %}
+        <button class="link-btn" type="button" x-cloak @click="open = !open" x-text="open ? 'Less' : 'More'">More</button>
+        {% endif %}
+      </div>
+      {% endif %}
+      <div class="show-actions">
+        {% if podcast.feed_url %}
+        <form method="post" action="/podcasts/{{ podcast.id }}/refresh" x-data="{ busy: false }" @submit="busy = true">
+          <button class="btn btn-ghost btn-sm" type="submit" :disabled="busy">
+            <svg class="icon" :class="busy && 'spin'" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.34-5.66M20 4v4h-4"/></svg>
+            Refresh
+          </button>
+        </form>
+        {% endif %}
+        <button class="btn btn-ghost btn-sm" type="button" @click="feed = !feed" :aria-expanded="feed">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 19a1 1 0 1 0 0-2 1 1 0 0 0 0 2zM4 11a9 9 0 0 1 9 9M4 4a16 16 0 0 1 16 16"/></svg>
+          Private feed
+        </button>
+        <button class="btn btn-ghost btn-sm" type="button" @click="settings = !settings" :aria-expanded="settings">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 2v3m0 14v3M4.9 4.9 7 7m10 10 2.1 2.1M2 12h3m14 0h3M4.9 19.1 7 17m10-10 2.1-2.1"/></svg>
+          Settings
+        </button>
+        {% if podcast.link|web_url %}
+        <a class="btn btn-ghost btn-sm" href="{{ podcast.link }}" target="_blank" rel="noopener noreferrer">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg>
+          Website
+        </a>
+        {% endif %}
+        <details class="menu">
+          <summary class="btn btn-ghost btn-sm icon-only" aria-label="More actions">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg>
+          </summary>
+          <div class="menu-pop">
+            <form method="post" action="/podcasts/{{ podcast.id }}/remove"
+                  data-confirm="Remove {{ podcast.name }}? Episodes you haven't downloaded are deleted. Blocks learned from it stay, since they help find ads in other shows.">
+              <button class="danger" type="submit">Remove podcast</button>
+            </form>
+          </div>
+        </details>
+      </div>
+      <p class="hint">
+        {% if podcast.feed_url %}Checked {{ podcast.last_refreshed_at|ago }}{% else %}No feed; added from files{% endif %}
+        {% if podcast.last_error %}<span class="text-error"> · Last refresh failed: {{ podcast.last_error }}</span>{% endif %}
+      </p>
+    </div>
+  </div>
+</section>
+
+<section class="card settings-panel" x-show="settings" x-cloak x-transition.opacity>
+  <h2>Settings</h2>
+  <form class="settings-form" method="post" action="/podcasts/{{ podcast.id }}/settings">
+    <label class="field">
+      <span>Clean up downloads after</span>
+      <span class="input-with-unit">
+        <input class="input" type="number" name="retention_days" min="0" max="3650" value="{{ podcast.retention_days }}" required>
+        <span class="muted">days</span>
+      </span>
+      <small class="hint">Counted from when an episode is ready. 0 keeps them for good. Episodes anyone keeps stay.</small>
+    </label>
+    <label class="field">
+      <span>Check for new episodes every</span>
+      <select class="input" name="refresh_minutes">
+        {% for minutes, label in [(15, '15 minutes'), (30, '30 minutes'), (60, 'hour'), (180, '3 hours'), (360, '6 hours'), (720, '12 hours'), (1440, 'day'), (10080, 'week')] %}
+        <option value="{{ minutes }}" {% if podcast.refresh_minutes == minutes %}selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+        {% if podcast.refresh_minutes not in [15, 30, 60, 180, 360, 720, 1440, 10080] %}
+        <option value="{{ podcast.refresh_minutes }}" selected>{{ podcast.refresh_minutes }} minutes</option>
+        {% endif %}
+      </select>
+    </label>
+    <label class="field">
+      <span>Also cut new audio between cuts up to</span>
+      <span class="input-with-unit">
+        <input class="input" type="number" name="fill_gaps" min="0" max="120" step="1" value="{{ podcast.fill_gaps|round|int }}" required>
+        <span class="muted">seconds apart</span>
+      </span>
+      <small class="hint">Catches a new ad that plays between two known ones. Too high and a short bit of the show between two ads goes too.</small>
+    </label>
+    <label class="tl-check settings-check">
+      <input type="checkbox" name="auto_download" value="true" {% if podcast.auto_download %}checked{% endif %}>
+      Download new episodes as they appear
+    </label>
+    <button class="btn btn-primary btn-sm" type="submit">Save</button>
+  </form>
+</section>
+
+<section class="card feed-panel" x-show="feed" x-cloak x-transition.opacity>
+  <div class="feed-panel-body">
+    <h2>Private feed</h2>
+    <p class="muted">Add this address to any podcast app to get {{ private_count|plural('episode') }} with the
+      repeats cut out. It lists only episodes you've downloaded, and new ones appear when they're ready.</p>
+    <div class="copy-row">
+      <input class="input mono" type="text" readonly value="{{ private_url }}" id="private-url" aria-label="Private feed address"
+             @focus="$el.select()">
+      <button class="btn btn-primary" type="button" data-copy="#private-url">Copy</button>
+    </div>
+    <p class="hint">No login is needed to use it, so anyone with the address can listen. It isn't listed
+      anywhere and asks podcast directories not to list it.</p>
+    <form method="post" action="/podcasts/{{ podcast.id }}/feed-token"
+          data-confirm="Make a new address? Apps using the old one will stop getting episodes until you add the new one.">
+      <button class="btn btn-ghost btn-sm" type="submit">Make a new address</button>
+    </form>
+  </div>
+  <div class="qr" aria-label="QR code of the address">{{ private_qr|safe }}</div>
+</section>
+</div>
+
+<div class="toolbar">
+  <nav class="tabs" aria-label="Episode lists">
+    <a href="/podcasts/{{ podcast.id }}" {% if view == 'active' %}aria-current="page"{% endif %}>
+      Episodes <span class="count" data-count="active">{{ '{:,}'.format(counts.active) }}</span></a>
+    <a href="/podcasts/{{ podcast.id }}?view=downloaded" {% if view == 'downloaded' %}aria-current="page"{% endif %}>
+      Downloaded <span class="count" data-count="downloaded">{{ '{:,}'.format(counts.downloaded) }}</span></a>
+    <a href="/podcasts/{{ podcast.id }}?view=archived" {% if view == 'archived' %}aria-current="page"{% endif %}>
+      Archived <span class="count" data-count="archived">{{ '{:,}'.format(counts.archived) }}</span></a>
+  </nav>
+  <form class="search" method="get" action="/podcasts/{{ podcast.id }}" role="search">
+    {% if view != 'active' %}<input type="hidden" name="view" value="{{ view }}">{% endif %}
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/></svg>
+    <input class="input" type="search" name="q" value="{{ q }}" placeholder="Search titles" aria-label="Search titles"
+           hx-get="/podcasts/{{ podcast.id }}" hx-trigger="input changed delay:300ms, search"
+           hx-include="closest form" hx-target="#episodes" hx-select="#episodes" hx-swap="outerHTML"
+           hx-push-url="true">
+  </form>
+</div>
+
+<section id="episodes">
+  {% if counts.expired and view != 'archived' %}
+  <form class="cleanup-note" method="post" action="/podcasts/{{ podcast.id }}/episodes">
+    <input type="hidden" name="action" value="archive_expired">
+    <input type="hidden" name="next" value="{{ here }}">
+    <span class="muted">{{ counts.expired|plural('episode') }} {{ 'was' if counts.expired == 1 else 'were' }} downloaded and cleaned up since.</span>
+    <button class="btn btn-ghost btn-sm" type="submit">Archive {{ 'it' if counts.expired == 1 else 'them all' }}</button>
+  </form>
+  {% endif %}
+  {% if episodes %}
+  <p class="list-note muted">
+    {% if q %}{{ "{:,}".format(total) }} matching “{{ q }}”{% else %}Newest first{% endif %}
+    <span class="hide-touch"> · Tick the artwork to select; shift-click to select a range.</span>
+    <span class="show-touch"> · Tap the artwork, or press and hold, to select.</span>
+  </p>
+  <ul class="ep-list" data-select-list>
+    {% include "_episodes.html" %}
+  </ul>
+  {% else %}
+  <div class="card empty">
+    {% if q %}<h2>Nothing matches “{{ q }}”</h2>
+    {% elif view == 'downloaded' %}<h2>Nothing downloaded yet</h2><p class="muted">Episodes you download show here, and stay after they're cleaned up until you archive them.</p>
+    {% elif view == 'archived' %}<h2>Nothing archived</h2><p class="muted">Archived episodes are hidden from your list. Archive them from the list, one at a time or a selection at once.</p>
+    {% else %}<h2>No episodes</h2><p class="muted">Every episode is archived, or the feed has none yet.</p>{% endif %}
+  </div>
+  {% endif %}
+</section>
+
+<form id="bulk" class="bulkbar" method="post" action="/podcasts/{{ podcast.id }}/episodes" data-bulk>
+  <input type="hidden" name="next" value="{{ here }}">
+  <label class="bulk-all" title="Select all shown">
+    <input type="checkbox" data-select-all aria-label="Select all shown">
+  </label>
+  <span class="bulk-count"><b data-selected-count>0</b> selected</span>
+  <div class="bulk-actions">
+    <button class="btn btn-primary btn-sm" name="action" value="download">Download</button>
+    <button class="btn btn-ghost btn-sm" name="action" value="keep" title="Never clean these up">Keep</button>
+    {% if view == 'archived' %}
+    <button class="btn btn-ghost btn-sm" name="action" value="unarchive">Unarchive</button>
+    {% else %}
+    <button class="btn btn-ghost btn-sm" name="action" value="archive">Archive</button>
+    {% endif %}
+    <button class="btn btn-ghost btn-sm" type="button" data-clear>Clear</button>
+  </div>
+</form>
+{% endblock %}

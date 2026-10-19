@@ -1,0 +1,193 @@
+{% extends "base.html" %}
+{% block content %}
+{% set e = episode %}
+{% set art = e.image_url|web_url or podcast.image_url|web_url %}
+<a class="back" href="/podcasts/{{ podcast.id }}">
+  <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>{{ podcast.name }}
+</a>
+
+<section class="ep-head">
+  {% if art %}<img class="ep-head-art" src="{{ art }}" alt="" referrerpolicy="no-referrer">
+  {% else %}<div class="ep-head-art cover-blank" aria-hidden="true"></div>{% endif %}
+  <div class="ep-head-info">
+    <h1>{{ e.title or 'Untitled' }}</h1>
+    <p class="ep-meta">
+      {% if e.pub_ts %}<span>{{ e.pub_ts|day }}</span>{% endif %}
+      {% if e.duration or e.feed_duration %}<span>{{ (e.duration or e.feed_duration)|duration }}</span>{% endif %}
+      {% if e.season or e.episode_number %}<span>{% if e.season %}Season {{ e.season }}{% endif %}{% if e.season and e.episode_number %} · {% endif %}{% if e.episode_number %}Episode {{ e.episode_number }}{% endif %}</span>{% endif %}
+      {% if not e.in_feed %}<span class="badge badge-warn">No longer in feed</span>{% endif %}
+      {% include "_state_badge.html" %}
+    </p>
+  </div>
+</section>
+
+<div class="ep-page{% if timeline %} ep-page-wide{% endif %}">
+  <div class="ep-main">
+    {% if e.state in ('queued', 'running') %}
+      {% set episode = e %}{% include "_episode_status.html" %}
+    {% elif e.state == 'ready' %}
+    <section class="card status-card">
+      <h2>Ready</h2>
+      {% if report and e.duration %}
+      {% set cut_sec = e.duration - (e.cut_duration or e.duration) %}
+      <p class="muted">{{ cut_sec|duration or 'Nothing' }} cut from {{ e.duration|duration }}
+        ({{ (100 * cut_sec / e.duration)|round|int }}%), in {{ report.sections|length|plural('section') }}.
+        {{ e.cut_duration|duration }} left.</p>
+      {% endif %}
+      {% if e.state_note %}<p class="alert alert-error">{{ e.state_note }}</p>{% endif %}
+      <audio class="player" controls preload="none" src="/episodes/{{ e.id }}/audio"></audio>
+      <div class="row-actions">
+        <a class="btn btn-primary btn-sm" href="/episodes/{{ e.id }}/audio?download=1">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11m0 0-4-4m4 4 4-4M5 20h14"/></svg>Download file</a>
+        <form method="post" action="/episodes/{{ e.id }}/process">
+          <button class="btn btn-ghost btn-sm" type="submit">Process again</button>
+        </form>
+      </div>
+      {% set ex = expires(e) %}
+      <div class="keep-row">
+        <p class="hint">
+          {% if e.processed_at %}Processed {{ e.processed_at|ago }}.{% endif %}
+          {% if e.kept %}You're keeping it, so it won't be cleaned up.
+          {% elif e.kept_any %}Someone is keeping it, so it won't be cleaned up.
+          {% elif ex %}Its download is cleaned up {{ ex|until }} ({{ ex|day }}) unless you keep it.
+          {% endif %}
+        </p>
+        <form method="post" action="/episodes/{{ e.id }}/keep">
+          <input type="hidden" name="keep" value="{{ 'false' if e.kept else 'true' }}">
+          <button class="btn btn-ghost btn-sm" type="submit">{{ 'Stop keeping' if e.kept else 'Keep' }}</button>
+        </form>
+      </div>
+    </section>
+    {% elif e.state == 'expired' %}
+    <section class="card status-card">
+      <h2>Cleaned up</h2>
+      <p class="muted">Its download was deleted {{ e.expired_at|ago if e.expired_at else '' }}, {{ e.retention_days }} days after it was
+        ready. The report and any changes you made stay, so downloading it again cuts it the same way.</p>
+      <form method="post" action="/episodes/{{ e.id }}/process">
+        <button class="btn btn-primary" type="submit">Download again</button>
+      </form>
+    </section>
+    {% elif e.state == 'failed' %}
+    <section class="card status-card">
+      <h2>Processing failed</h2>
+      <p class="alert alert-error">{{ e.state_note or 'Something went wrong.' }}</p>
+      <form method="post" action="/episodes/{{ e.id }}/process">
+        <button class="btn btn-primary btn-sm" type="submit">Try again</button>
+      </form>
+    </section>
+    {% else %}
+    <section class="card status-card">
+      <h2>Not downloaded yet</h2>
+      <p class="muted">Download it to find its repeats and make a copy with them cut out.
+        If the show has few episodes downloaded, a few of the episodes after it come along, so
+        there is something to compare with.</p>
+      <form method="post" action="/episodes/{{ e.id }}/process">
+        <button class="btn btn-primary" type="submit">Download and cut</button>
+      </form>
+    </section>
+    {% endif %}
+
+    {% if timeline %}
+    <section class="card tl-card tl-loading" data-timeline>
+      <div class="card-head">
+        <h2>Timeline</h2>
+        <span class="muted">{{ report.sections|length|plural('section') }} cut</span>
+      </div>
+      <script type="application/json" id="timeline-data">{{ timeline|tojson }}</script>
+      <audio data-original preload="none" src="{{ timeline.audio }}"></audio>
+
+      <div class="tl-toolbar">
+        <button class="btn btn-primary btn-sm icon-only tl-playbtn" type="button" data-tl="play" aria-label="Play">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.5v13l10-6.5z"/></svg>
+        </button>
+        <span class="tl-clock mono" data-tl="time">0:00</span>
+        <label class="tl-switch" title="While playing, jump over everything that would be cut">
+          <input type="checkbox" data-tl="preview"><span>Skip cuts</span>
+        </label>
+        <span class="tl-spacer"></span>
+        {% if timeline.editable %}
+        <button class="btn btn-ghost btn-sm" type="button" data-tl="add">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>Add section</button>
+        {% endif %}
+        <div class="tl-zoom" role="group" aria-label="Zoom">
+          <button class="btn btn-ghost btn-sm icon-only" type="button" data-tl="zoom-out" aria-label="Zoom out">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"/></svg></button>
+          <button class="btn btn-ghost btn-sm" type="button" data-tl="fit">Fit</button>
+          <button class="btn btn-ghost btn-sm icon-only" type="button" data-tl="zoom-in" aria-label="Zoom in">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button>
+        </div>
+      </div>
+
+      <div class="tl-overview" data-tl="overview" title="The whole episode; drag to move along">
+        <canvas></canvas><div class="tl-window" hidden></div>
+      </div>
+      <div class="tl-scroll" data-tl="scroll">
+        <div class="tl-track" data-tl="track">
+          <div class="tl-labels" data-tl="labels"></div>
+          <div class="tl-wave" data-tl="wave">
+            <canvas data-tl="canvas"></canvas>
+            <div class="tl-playhead" data-tl="playhead"></div>
+          </div>
+          <div class="tl-plays" data-tl="plays"></div>
+        </div>
+      </div>
+      <ul class="tl-legend" aria-label="Colours">
+        {% for k, label in [('intro', 'Intro'), ('outro', 'Outro'), ('break', 'Ad break'), ('repeated', 'Repeat'), ('show', 'Show only'), ('ignored', 'Kept'), ('manual', 'Cut by hand')] %}
+        <li class="k-{{ k }}"><span class="tl-dot"></span>{{ label }}</li>
+        {% endfor %}
+      </ul>
+      {% if timeline.editable %}
+      <p class="hint tl-hint">
+        <span class="hide-touch">Drag across the waveform to mark a section by hand; ctrl or ⌘ and scroll to zoom.</span>
+        <span class="show-touch">Tap “Add section” to mark one by hand at the player's place.</span>
+        Changing what a section is changes it in every episode it plays in. Nothing changes until you save.
+      </p>
+      {% endif %}
+
+      <ol class="tl-list" data-tl="list">
+        {% for s in report.sections %}
+        <li class="tl-item"><span class="mono">{{ s.start|clock }} – {{ s.end|clock }}</span> {{ s.types|join(', ') }}</li>
+        {% endfor %}
+      </ol>
+    </section>
+    {% elif report %}
+    <section class="card sections-card">
+      <div class="card-head">
+        <h2>What gets cut</h2>
+        <span class="muted">{{ report.sections|length|plural('section') }}</span>
+      </div>
+      <ol class="section-list">
+        {% for s in report.sections %}
+        <li class="section">
+          <span class="section-time mono">{{ s.start|clock }} – {{ s.end|clock }}</span>
+          <span class="section-types">
+            {% for t in s.types %}<span class="type type-{{ t }}">{{ t|replace('-', ' ') }}</span>{% endfor %}
+          </span>
+          <span class="section-len muted mono">{{ s.length|clock }}</span>
+        </li>
+        {% endfor %}
+      </ol>
+      <p class="hint">The download is gone, so there is no timeline to edit. Download it again to get one.</p>
+    </section>
+    {% endif %}
+  </div>
+
+  {% if notes %}
+  <section class="card notes-card">
+    <h2>Show notes</h2>
+    <div class="notes" x-data="{ open: false }" :class="open && 'open'">
+      <p>{{ notes }}</p>
+      {% if notes|length > 600 %}<button class="link-btn" type="button" x-cloak @click="open = !open" x-text="open ? 'Less' : 'More'">More</button>{% endif %}
+    </div>
+  </section>
+  {% endif %}
+</div>
+{% if timeline %}
+<div class="savebar" data-tl="savebar" hidden>
+  <span class="savebar-text" data-tl="dirty">0 unsaved changes</span>
+  <button class="btn btn-ghost btn-sm" type="button" data-tl="discard">Discard</button>
+  <button class="btn btn-primary btn-sm" type="button" data-tl="save"><span class="hide-narrow">Save and re-cut</span><span class="show-narrow">Save</span></button>
+</div>
+<script src="{{ static('timeline.js') }}" defer></script>
+{% endif %}
+{% endblock %}

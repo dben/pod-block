@@ -1,0 +1,7 @@
+{% for e in episodes %}{% include "_episode_row.html" %}{% endfor %}
+{% if next_url %}
+<li class="ep-more">
+  <a class="btn btn-ghost" href="{{ next_url }}" hx-get="{{ next_url }}&partial=1" hx-target="closest li"
+     hx-swap="outerHTML">Load more</a>
+</li>
+{% endif %}

@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#0d0f13">
+  <title>{% if title %}{{ title }} · {% endif %}pod-block</title>
+  <link rel="icon" href="{{ static('icon.svg') }}" type="image/svg+xml">
+  <link rel="stylesheet" href="{{ static('app.css') }}">
+  <script>document.documentElement.classList.add("js")</script>
+  <script src="{{ static('vendor/htmx.min.js') }}" defer></script>
+  <script src="{{ static('vendor/alpine.min.js') }}" defer></script>
+  <script src="{{ static('app.js') }}" defer></script>
+</head>
+<body class="{% block body_class %}{% endblock %}">
+{% block shell %}
+  <header class="topbar">
+    <a class="brand" href="/">
+      <img src="{{ static('icon.svg') }}" alt="" width="28" height="28">
+      <span>pod-block</span>
+    </a>
+    <nav class="topnav" aria-label="Main">
+      <a href="/" {% if nav == 'podcasts' %}aria-current="page"{% endif %}>Podcasts</a>
+      {% set working = active_jobs(request) %}
+      <a href="/jobs" {% if nav == 'jobs' %}aria-current="page"{% endif %}>Jobs{% if working %} <span class="nav-count">{{ working }}</span>{% endif %}</a>
+    </nav>
+    <form method="post" action="/logout" class="topbar-end">
+      <button class="btn btn-ghost btn-sm" type="submit">Log out</button>
+    </form>
+  </header>
+
+  <main class="page">
+    {% block content %}{% endblock %}
+  </main>
+
+  <nav class="tabbar" aria-label="Main">
+    <a href="/" {% if nav == 'podcasts' %}aria-current="page"{% endif %}>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a6 6 0 0 0-6 6v3a6 6 0 0 0 12 0V9a6 6 0 0 0-6-6Zm0 15v3m-4 0h8"/></svg>
+      <span>Podcasts</span>
+    </a>
+    <a href="/jobs" {% if nav == 'jobs' %}aria-current="page"{% endif %}>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h10M4 18h7M17 15l2 2 3-4"/></svg>
+      <span>Jobs{% if working %} ({{ working }}){% endif %}</span>
+    </a>
+    <form method="post" action="/logout">
+      <button type="submit">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3M10 16l-4-4 4-4M6 12h10"/></svg>
+        <span>Log out</span>
+      </button>
+    </form>
+  </nav>
+{% endblock %}
+  <div class="toasts" id="toasts" role="status" aria-live="polite">
+    {% for kind, text in flashes(request) %}<div class="toast toast-{{ kind }}" data-autohide>{{ text }}</div>{% endfor %}
+  </div>
+</body>
+</html>

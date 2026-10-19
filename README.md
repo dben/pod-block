@@ -13,7 +13,7 @@ Needs Python 3.10+ and `ffmpeg` on the `PATH`.
 
 ```sh
 pip install -e .
-FEED=https://example.com/podcast.rss
+FEED=https://example.com/podcast.rss  # any podcast RSS feed
 
 podblock analyze "$FEED" -n 5         # learn repeats and bumpers from 5 episodes
 podblock list                         # what was found
@@ -36,9 +36,15 @@ podblock report --feed "$FEED"        # repeated sections in the newest episode
 | `export ID [-o file.mp3]` | Cut a block out of its source episode, to listen to it. |
 | `delete ID` | Remove a block. |
 | `prune` | Clear out old audio, fingerprints and blocks (see "Keeping it small"). |
+| `serve [--host H] [--port P]` | Run the web app (see "Web app"). |
+| `api-key` | Make a new login key for the web app, logging everyone out. |
+| `backup DEST [--force]` | Copy the database to `DEST`, safely, even while the web app runs. |
 
 ### `report` options
 
+- `--min-section 15`: leave out sections shorter than this (default 15 s),
+  unless they are ad breaks, intros, outros, show blocks or typed by hand.
+  `0` lists them all.
 - `--fill-gaps 30`: take in up to 30 s of unique audio when it sits between
   two repeated parts, so a short gap between ads doesn't split a break.
 - `--neighbors 3`: first fetch the 3 nearest episodes in the feed (newer and
@@ -59,6 +65,28 @@ podblock report --feed "$FEED"        # repeated sections in the newest episode
                "types": ["intro", "repeated"], "blocks": [12, 47],
                "unique_sec": 0.0, "parts": [{"start": 0.0, "end": 94.3, "type": "intro", "block": 47}]}]}
 ```
+
+## Web app
+
+A web app to manage it all is under way; `WEBAPP.md` has the plan and its
+status. So far you can log in, add feeds, browse, search and archive their
+episodes, and download episodes: a background job finds their repeats and
+makes a copy with them cut out, to play or download from the episode's page,
+check and change on a timeline, and get in any podcast app through a private
+feed per podcast.
+
+```sh
+pip install -e '.[web]'
+podblock serve                        # http://127.0.0.1:8000; prints a login key on first start
+```
+
+Or in a container, with the database and the audio on their own volumes:
+
+```sh
+docker run -p 8000:8000 -v pb-data:/data -v pb-media:/media ghcr.io/dben/pod-block:latest
+```
+
+`deployment/` has an example for Kubernetes.
 
 ## Block types
 
@@ -190,7 +218,12 @@ segments(id, source_episode_id, podcast_id, source_start, source_end, label, typ
 occurrences(segment_id, episode_id, start, end, segment_start, hits)
 compared_pairs(a_id, b_id)
 reports(episode_id, created_at, report)      -- the JSON `report --json` prints
+users(id, username, password_hash, is_admin, created_at)  -- web app logins
+user_episodes(user_id, episode_id, archived, kept)        -- web app, per user
 ```
+
+The web app adds its own columns to `podcasts` and `episodes` (feed metadata,
+raw XML); `WEBAPP.md` lists them.
 
 ## Tests
 

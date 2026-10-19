@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block body_class %}auth{% endblock %}
+{% block shell %}
+<main class="auth-wrap">
+  <form class="card auth-card" method="post" action="/login">
+    <div class="auth-brand">
+      <img src="{{ static('icon.svg') }}" alt="" width="48" height="48">
+      <h1>pod-block</h1>
+      <p class="muted">Podcasts with the repeats cut out.</p>
+    </div>
+
+    {% if error %}<p class="alert alert-error" role="alert">{{ error }}</p>{% endif %}
+
+    <label class="field">
+      <span>API key</span>
+      <input class="input mono" type="password" name="key" required autofocus
+             autocomplete="current-password" autocapitalize="off" spellcheck="false">
+    </label>
+    <input type="hidden" name="next" value="{{ next }}">
+    <button class="btn btn-primary btn-block" type="submit">Log in</button>
+
+    <p class="hint">The server prints the key to its log on first start.
+      Lost it? Run <code>podblock api-key</code> for a new one.</p>
+  </form>
+</main>
+{% endblock %}

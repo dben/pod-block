@@ -1,0 +1,10 @@
+{% if e.state == 'ready' %}<span class="badge badge-ok">Ready{% if e.cut_duration %} · {{ e.cut_duration|duration }}{% endif %}</span>
+{% elif e.state == 'running' %}<span class="badge badge-busy"><span class="spinner" aria-hidden="true"></span>{{ e.state_note or 'Working' }}</span>
+{% elif e.state == 'queued' %}<span class="badge badge-busy">{{ e.state_note or 'Queued' }}</span>
+{% elif e.state == 'failed' %}<span class="badge badge-error" title="{{ e.state_note or '' }}">Failed</span>
+{% elif e.state == 'expired' %}<span class="badge badge-gone" title="Its download was deleted; download it again to listen">Cleaned up{% if e.expired_at %} {{ e.expired_at|day }}{% endif %}</span>
+{% endif %}
+{% if e.kept %}<span class="badge badge-kept" title="You're keeping it: it won't be cleaned up"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4h6l-1 6 3 3H7l3-3zM12 13v7"/></svg>Kept</span>
+{% elif e.kept_any %}<span class="badge badge-kept" title="Someone is keeping it, so it won't be cleaned up">Kept</span>
+{% else %}{% set ex = expires(e, podcast) %}{% if ex %}<span class="ep-expiry" title="Downloads go {{ podcast.retention_days }} days after they're ready unless kept">Cleaned up {{ ex|until }}</span>{% endif %}
+{% endif %}
