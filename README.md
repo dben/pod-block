@@ -13,7 +13,7 @@ Needs Python 3.10+ and `ffmpeg` on the `PATH`.
 
 ```sh
 pip install -e .
-FEED=https://example.com/podcast.rss
+FEED=https://example.com/podcast.rss  # any podcast RSS feed
 
 podblock analyze "$FEED" -n 5         # learn repeats and bumpers from 5 episodes
 podblock list                         # what was found
