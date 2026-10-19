@@ -24,8 +24,8 @@ podblock report --feed "$FEED"        # repeated sections in the newest episode
 
 | Command | What it does |
 | --- | --- |
-| `analyze SOURCE... [-n 5] [--podcast NAME]` | Download and fingerprint the newest *n* episodes of each feed (or local files), compare them with each other and everything stored, and store new blocks. Episodes already fingerprinted are skipped. |
-| `report TARGET` | List the repeated sections in one episode. `TARGET` is a stored episode id, an audio file or an audio URL; or use `--feed URL [--index N]` (0 = newest). |
+| `analyze SOURCE... [-n 5] [--podcast NAME]` | Download and fingerprint the newest *n* episodes of each feed (or local files), compare each with the episodes closest to it (see "Comparing"), and store new blocks. Episodes already fingerprinted are skipped. |
+| `report TARGET` | List the repeated sections in one episode. `TARGET` is a stored episode id, an audio file or an audio URL; or use `--feed URL [--index N]` (0 = newest). A feed or stored episode is first compared with the episodes closest to it, and the report is saved. |
 | `list [--podcast P] [--type T]` | Stored blocks, how many episodes each turns up in, and their types. |
 | `podcasts` | Podcasts in the store. |
 | `podcast P [--outro-bed]` | Show or change a podcast's settings (see "Outros read over music"). |
@@ -35,6 +35,7 @@ podblock report --feed "$FEED"        # repeated sections in the newest episode
 | `label ID TEXT` | Give a block a name. |
 | `export ID [-o file.mp3]` | Cut a block out of its source episode, to listen to it. |
 | `delete ID` | Remove a block. |
+| `prune` | Clear out old audio, fingerprints and blocks (see "Keeping it small"). |
 
 ### `report` options
 
@@ -48,6 +49,8 @@ podblock report --feed "$FEED"        # repeated sections in the newest episode
 - `--outro-bed`: look for an outro read over a music bed even when the
   podcast's setting is off.
 - `--detail`: list the parts that make up each section.
+- `--cached`: print the saved report for a stored episode without redoing it.
+- `--compare-same N` / `--compare-other N`: size of the comparison set.
 - `--json`: machine-readable output:
 
 ```json
@@ -105,8 +108,9 @@ A loudness curve is stored with each fingerprint, so this needs no audio.
      hashes.
    - A store keeps the setting it was created with; fingerprints from
      different settings never match.
-2. **Compare.** For each pair of episodes, matching hashes from the same
-   audio all sit at one time offset. Runs of densely matched seconds at least
+2. **Compare.** Each new episode is compared with its comparison set (see
+   "Comparing"). Matching hashes from the same audio all sit at one time
+   offset. Runs of densely matched seconds at least
    `--min-length` (1.5 s) long are shared audio. Runs under 10 s must turn up
    at least 3 times to be kept.
 3. **Store.** Each shared run becomes a block, unless stored blocks already
@@ -125,13 +129,48 @@ A loudness curve is stored with each fingerprint, so this needs no audio.
    90 s of new ads to known ones. Shows without bumpers get breaks from 60 s
    or more of known blocks back to back.
 
+## Comparing
+
+A new episode is compared with the 4 episodes of the same show closest to it
+in publish date, not the newest ones: people hop around a back catalogue, and
+the ads that ran when an episode came out sit in its neighbours. It is also
+compared with the closest episode of each other show, if published within 14
+days, to catch network ads. Only those episodes are rescanned afterwards, so
+a request costs the same however big the store grows. `report --neighbors K`
+first fetches the K episodes next to the target in its feed, so they can be
+in the set.
+
+## Keeping it small
+
+`podblock prune` clears out what is no longer needed:
+
+| Option | Default | What goes |
+| --- | --- | --- |
+| `--audio-days` | 0 | downloaded audio; only `export` needs it (local files you gave are never touched) |
+| `--fingerprint-days` | 30 | fingerprints; those episodes are fetched again if asked for |
+| `--block-days` | 30 | blocks no processed episode has played in that long, unless typed by hand |
+
+Episode rows and saved reports stay; each report is about 1 KB. Keep
+fingerprints as long as blocks: bumper tags lean on where blocks played, and
+a block that gets split has its matches rebuilt from the fingerprints.
+
+Measured on one CPU core:
+
+| | |
+| --- | --- |
+| Fingerprinting | about 30 s per hour of audio, about 0.3 GB of memory whatever the length |
+| Fingerprint file | about 2 MB per hour of audio |
+| Stored block | about 60 KB per minute of block (was 380 KB as one row per hash) |
+| Adding one 1-hour episode (download aside) | about 6 s after fingerprinting |
+| Report on a stored episode | about 1 s; 0.6 s with `--cached` |
+
 ## Data
 
 Everything lives in `./podblock-data` (change with `--data-dir`):
 
 | Path | What |
 | --- | --- |
-| `podblock.sqlite` | podcasts, episodes, blocks, block hashes, occurrences, settings |
+| `podblock.sqlite` | podcasts, episodes, blocks with their hashes, occurrences, saved reports, settings |
 | `fingerprints/*.npz` | full fingerprint of each episode, so comparisons never decode again |
 | `audio/` | downloaded episodes (`--delete-audio` drops them after fingerprinting; `export` then can't cut their blocks) |
 
@@ -139,10 +178,12 @@ Everything lives in `./podblock-data` (change with `--data-dir`):
 settings(key, value)                         -- schema version, fingerprint setting
 podcasts(id, name, feed_url, outro_bed)
 episodes(id, guid, podcast_id, title, pub_date, audio_url, audio_path, fingerprint_path, duration)
-segments(id, source_episode_id, podcast_id, source_start, source_end, label, type, type_manual)
-segment_hashes(segment_id, hash, t)          -- t in 32 ms frames from the block start
+segments(id, source_episode_id, podcast_id, source_start, source_end, label, type, type_manual,
+         hashes, times, created_at, last_seen)  -- hashes: packed uint32; times: packed int32,
+                                                -- 32 ms frames from the block start
 occurrences(segment_id, episode_id, start, end, segment_start, hits)
 compared_pairs(a_id, b_id)
+reports(episode_id, created_at, report)      -- the JSON `report --json` prints
 ```
 
 ## Tests

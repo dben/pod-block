@@ -3,23 +3,28 @@
 from __future__ import annotations
 
 import hashlib
-import itertools
 import logging
+import time
+from collections import Counter
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
 
 from .breaks import SHORT_BLOCK_SEC, classify_bumpers
 from .feed import Episode, Feed, download, fetch_feed
-from .fingerprint import (Fingerprint, FingerprintConfig, decode_audio, fingerprint_file,
-                          frames_to_seconds, loudness_curve)
+from .fingerprint import (Fingerprint, FingerprintConfig, fingerprint_file, frames_to_seconds,
+                          loudness_file)
 from .matcher import MatchParams, common_runs
 from .store import Store
 
 log = logging.getLogger(__name__)
 
 SHORT_MIN_OCCURRENCES = 3  # blocks under SHORT_BLOCK_SEC must turn up this often
+COMPARE_SAME = 4  # same-show episodes, closest in publish date, to compare each episode with
+COMPARE_OTHER = 1  # episodes from each other show to compare with, for network ads...
+OTHER_WINDOW_DAYS = 14.0  # ...if published within this many days
 
 
 @dataclass
@@ -89,6 +94,20 @@ def neighbours(episodes: list, index: int, count: int) -> list:
     return picked
 
 
+def refingerprint(store: Store, paths: Paths, episode_id: int) -> None:
+    """Fingerprint a stored feed episode again after its fingerprint was pruned."""
+    ep = store.episode(episode_id)
+    if not ep["audio_url"]:
+        raise RuntimeError(f"episode {episode_id} has no audio URL to fetch again")
+    audio_path = paths.audio(ep["guid"], ep["audio_url"])
+    download(ep["audio_url"], audio_path)
+    fp = fingerprint_file(audio_path, store.config)
+    fp_path = paths.fingerprint(ep["guid"], store.config)
+    fp.save(fp_path)
+    store.upsert_episode(ep["guid"], fingerprint_path=str(fp_path), audio_path=str(audio_path),
+                         duration=fp.duration)
+
+
 def ingest_file(store: Store, paths: Paths, audio_path: Path, podcast_id: int | None = None) -> int:
     """Fingerprint a local file and register it as an episode."""
     audio_path = audio_path.resolve()
@@ -112,24 +131,61 @@ def episode_loudness(store: Store, episode_id: int) -> np.ndarray | None:
         return fp.loudness
     audio = store.episode(episode_id)["audio_path"]
     if audio and Path(audio).exists():
-        rate = store.config.sample_rate
-        return loudness_curve(decode_audio(audio, rate), rate)
+        return loudness_file(audio, store.config.sample_rate)
     return None
 
 
-def rescan(store: Store, episode_id: int, params: MatchParams, fp: Fingerprint | None = None) -> None:
+def rescan(store: Store, episode_id: int, params: MatchParams, fp: Fingerprint | None = None,
+           heard: bool = False) -> None:
     """Refresh where stored blocks occur in one episode."""
     fp = fp or load_fingerprint(store, episode_id)
     store.replace_occurrences(
-        episode_id, store.scan(fp, params, podcast_id=store.episode(episode_id)["podcast_id"]))
+        episode_id, store.scan(fp, params, podcast_id=store.episode(episode_id)["podcast_id"], heard=heard))
+
+
+def _when(row) -> float:
+    """An episode's publish time as a timestamp, else when it was added."""
+    if row["pub_date"]:
+        try:
+            return datetime.fromisoformat(row["pub_date"]).timestamp()
+        except ValueError:
+            pass
+    return row["added_at"] or 0.0
+
+
+def comparison_set(store: Store, episode_id: int, same: int = COMPARE_SAME, other: int = COMPARE_OTHER,
+                   among: set[int] | None = None) -> list[int]:
+    """The stored episodes to compare one episode with.
+
+    From its own podcast, the `same` episodes closest to it in publish date:
+    listeners hop around a back catalogue, and ads that ran at the time an
+    episode was published sit in its neighbours, not in this week's episodes.
+    From every other podcast, the `other` closest within OTHER_WINDOW_DAYS, to
+    catch network ads. `among` limits the choice to those episodes.
+    """
+    ep = store.episode(episode_id)
+    when = _when(ep)
+    by_podcast: dict[int | None, list] = {}
+    for r in store.fingerprinted_episodes():
+        if r["id"] != episode_id and (among is None or r["id"] in among):
+            by_podcast.setdefault(r["podcast_id"], []).append(r)
+    picked = []
+    for podcast, eps in by_podcast.items():
+        eps.sort(key=lambda r: abs(_when(r) - when))
+        if podcast is not None and podcast == ep["podcast_id"]:
+            picked += eps[:same]
+        else:
+            picked += [r for r in eps[:other] if abs(_when(r) - when) <= OTHER_WINDOW_DAYS * 86400]
+    return [r["id"] for r in picked]
 
 
 def find_common_blocks(store: Store, episode_ids: list[int], params: MatchParams,
-                       compare_with_history: bool = True) -> int:
-    """Compare episodes pairwise and store new common blocks. Returns how many were added.
+                       same: int = COMPARE_SAME, other: int = COMPARE_OTHER,
+                       only_among_given: bool = False) -> int:
+    """Compare each episode with its comparison set and store new common blocks.
 
-    With `compare_with_history`, the given episodes are also compared with every
-    other episode already fingerprinted in the store.
+    Returns how many blocks were added. With `only_among_given`, the given
+    episodes are only compared with each other.
     """
     fps: dict[int, Fingerprint] = {}
 
@@ -138,14 +194,16 @@ def find_common_blocks(store: Store, episode_ids: list[int], params: MatchParams
             fps[ep_id] = load_fingerprint(store, ep_id)
         return fps[ep_id]
 
-    pool = list(episode_ids)
-    if compare_with_history:
-        pool += [r["id"] for r in store.fingerprinted_episodes() if r["id"] not in episode_ids]
     targets = set(episode_ids)
+    pairs = set()
+    for ep_id in episode_ids:
+        for other_id in comparison_set(store, ep_id, same, other, targets if only_among_given else None):
+            pairs.add(tuple(sorted((ep_id, other_id))))
+    involved = targets | {e for pair in pairs for e in pair}
 
     candidates: list[tuple[int, float, float, int]] = []  # (episode, start, end, hits)
-    for a_id, b_id in itertools.combinations(pool, 2):
-        if not ({a_id, b_id} & targets) or store.was_compared(a_id, b_id):
+    for a_id, b_id in sorted(pairs):
+        if store.was_compared(a_id, b_id):
             continue
         fa, fb = load(a_id), load(b_id)
         runs = common_runs(fa.hashes, fa.times, fb.hashes, fb.times, params)
@@ -166,11 +224,11 @@ def find_common_blocks(store: Store, episode_ids: list[int], params: MatchParams
                               start + gap_start, start + gap_end)
             added += 1
 
-    # New segments may also appear in older episodes, so rescan all of them.
-    for ep_id in (pool if added else episode_ids):
-        rescan(store, ep_id, params, load(ep_id))
-    if split_segments(store, params, load):
-        for ep_id in [r["id"] for r in store.fingerprinted_episodes()]:
+    # New blocks may also play in the episodes compared against.
+    for ep_id in sorted(involved if added else targets):
+        rescan(store, ep_id, params, load(ep_id), heard=ep_id in targets)
+    for ep_id in sorted(split_segments(store)):
+        if store.episode(ep_id)["fingerprint_path"]:
             rescan(store, ep_id, params, load(ep_id))
     drop_nested_blocks(store)
     prune_short_blocks(store)
@@ -182,37 +240,30 @@ def drop_nested_blocks(store: Store, share: float = 0.8) -> int:
     """Drop blocks that nearly always play inside a longer block.
 
     Short runs found in one pair of episodes can be slivers of a longer block
-    found in another pair; they add nothing but clutter.
+    found in another pair; they add nothing but clutter. Blocks are judged
+    shortest first, so dropping one never changes the verdict on another.
     """
     summary = store.segment_summary()
     lengths = {r["id"]: r["duration"] for r in summary}
     by_hand = {r["id"] for r in summary if r["type_manual"]}
-    by_episode: dict[int, list] = {}
-    for ep in store.fingerprinted_episodes():
-        by_episode[ep["id"]] = store.occurrences_for_episode(ep["id"])
-
-    dropped = 0
-    for seg_id, length in sorted(lengths.items(), key=lambda kv: kv[1]):
-        if seg_id in by_hand:
-            continue
-        inside = total = 0
-        for matches in by_episode.values():
-            for m in matches:
-                if m.segment_id != seg_id:
-                    continue
-                total += 1
-                inside += any(
-                    lengths.get(o.segment_id, 0) > length
-                    and min(m.end, o.end) - max(m.start, o.start) >= 0.5 * (m.end - m.start)
-                    for o in matches
-                )
-        if total and inside >= share * total:
-            store.delete_segment(seg_id)
-            del lengths[seg_id]
-            for ep_id, matches in by_episode.items():
-                by_episode[ep_id] = [m for m in matches if m.segment_id != seg_id]
-            dropped += 1
-    return dropped
+    inside, total = Counter(), Counter()
+    for ep_id in store.episodes_with_occurrences():
+        matches = sorted(store.occurrences_for_episode(ep_id), key=lambda m: m.start)
+        for i, m in enumerate(matches):
+            total[m.segment_id] += 1
+            need = 0.5 * (m.end - m.start)
+            for o in matches:
+                if o.start >= m.end:
+                    break
+                if (lengths.get(o.segment_id, 0) > lengths.get(m.segment_id, 0)
+                        and min(m.end, o.end) - max(m.start, o.start) >= need):
+                    inside[m.segment_id] += 1
+                    break
+    dropped = [seg_id for seg_id in lengths
+               if seg_id not in by_hand and total[seg_id] and inside[seg_id] >= share * total[seg_id]]
+    for seg_id in dropped:
+        store.delete_segment(seg_id)
+    return len(dropped)
 
 
 def prune_short_blocks(store: Store, min_occurrences: int = SHORT_MIN_OCCURRENCES) -> int:
@@ -225,38 +276,39 @@ def prune_short_blocks(store: Store, min_occurrences: int = SHORT_MIN_OCCURRENCE
     return len(weak)
 
 
-def split_segments(store: Store, params: MatchParams, load) -> int:
+def split_segments(store: Store) -> set[int]:
     """Cut blocks at points where their occurrences start or stop.
 
     A block first found as one long run (say a 5 minute ad break) often turns up
     elsewhere only in parts (one ad from that break). Those part boundaries mark
-    where the separate pieces of audio begin and end. Returns how many blocks
-    were split.
+    where the separate pieces of audio begin and end. The pieces are cut from
+    the block's own hashes, so the source episode need not be kept. Returns the
+    episodes whose occurrences were lost with the split blocks.
     """
-    split = 0
+    touched: set[int] = set()
     for seg in store.segments():
-        if seg["source_episode_id"] is None:
-            continue
         length = seg["source_end"] - seg["source_start"]
+        occurrences = store.occurrences_for_segment(seg["id"])
         edges = []
-        for start, end in _joined_spans(store.occurrences_for_segment(seg["id"])):
+        for start, end in _joined_spans(occurrences):
             edges += [start, end]
         cuts = _cut_points(edges, length, SHORT_BLOCK_SEC)
         if not cuts:
             continue
-        source = load(seg["source_episode_id"])
+        whole = store.segment_fingerprint(seg["id"])
         bounds = [0.0, *cuts, length]
         for lo, hi in zip(bounds, bounds[1:]):
-            start, end = seg["source_start"] + lo, seg["source_start"] + hi
-            new_id = store.add_segment(source.slice(start, end), seg["source_episode_id"], start, end)
+            new_id = store.add_segment(whole.slice(lo, hi), seg["source_episode_id"],
+                                       seg["source_start"] + lo, seg["source_start"] + hi,
+                                       podcast_id=seg["podcast_id"])
             if seg["label"]:
                 store.set_label(new_id, seg["label"])
             if seg["type_manual"]:
                 store.set_type(new_id, seg["type"])
         store.delete_segment(seg["id"])
+        touched |= {o["episode_id"] for o in occurrences}
         log.info("split block %d into %d", seg["id"], len(bounds) - 1)
-        split += 1
-    return split
+    return touched
 
 
 def _joined_spans(occurrences, gap: float = 15.0, tolerance: float = 0.2) -> list[tuple[float, float]]:
@@ -296,3 +348,53 @@ def _cut_points(edges: list[float], length: float, min_length: float,
     return cuts
 
 
+
+
+def prune(store: Store, audio_days: float = 0.0, fingerprint_days: float = 30.0,
+          block_days: float = 30.0, dry_run: bool = False) -> Counter:
+    """Clear out what is no longer needed. Returns counts of what went (or would go).
+
+    - Downloaded audio older than `audio_days`; only `export` needs it.
+      Local files given to `analyze` are never touched.
+    - Fingerprints older than `fingerprint_days`; those episodes can no longer
+      be compared or rescanned, and are fetched again if asked for.
+    - Blocks not heard in `block_days`, unless their type was set by hand.
+    - Block matches in episodes whose fingerprints are gone, once older than
+      `block_days`. Episode rows and their saved reports stay; both are tiny.
+    """
+    now, day = time.time(), 86400.0
+    gone = Counter()
+
+    def older(path: str | None, days: float) -> bool:
+        return bool(path) and Path(path).exists() and now - Path(path).stat().st_mtime > days * day
+
+    for ep in store.db.execute("SELECT * FROM episodes").fetchall():
+        if not ep["guid"].startswith("file:") and older(ep["audio_path"], audio_days):
+            gone["audio files"] += 1
+            if not dry_run:
+                Path(ep["audio_path"]).unlink()
+                store.upsert_episode(ep["guid"], audio_path=None)
+        if older(ep["fingerprint_path"], fingerprint_days):
+            gone["fingerprints"] += 1
+            if not dry_run:
+                Path(ep["fingerprint_path"]).unlink()
+                store.upsert_episode(ep["guid"], fingerprint_path=None)
+
+    stale = [r["id"] for r in store.segments()
+             if not r["type_manual"] and (r["last_seen"] or 0) < now - block_days * day]
+    gone["blocks"] += len(stale)
+    old_matches = store.db.execute(
+        "SELECT COUNT(*) FROM occurrences WHERE episode_id IN "
+        "(SELECT id FROM episodes WHERE fingerprint_path IS NULL AND added_at < ?)",
+        (now - block_days * day,)).fetchone()[0]
+    gone["old block matches"] += old_matches
+    if not dry_run:
+        for seg_id in stale:
+            store.delete_segment(seg_id)
+        store.db.execute("DELETE FROM occurrences WHERE episode_id IN "
+                         "(SELECT id FROM episodes WHERE fingerprint_path IS NULL AND added_at < ?)",
+                         (now - block_days * day,))
+        store.db.commit()
+        if stale:
+            store.set_auto_types(classify_bumpers(store))
+    return gone
