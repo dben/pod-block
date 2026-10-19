@@ -1,4 +1,5 @@
 import json
+import re
 
 import pytest
 
@@ -450,6 +451,8 @@ def test_only_the_admin_removes_a_podcast_or_changes_its_feed_address(client, we
 
     show = bob.get(f"/podcasts/{pod}", headers=HTML).text
     assert "Remove podcast" not in show and "Make a new address" not in show
+    private = re.search(r'value="(http[^"]+/p/[^"]+/feed\.xml)"', show).group(1)
+    assert bob.get(private).status_code == 200  # every user gets the private feed of any podcast
     assert bob.post(f"/podcasts/{pod}/remove").status_code == 403
     assert bob.post(f"/podcasts/{pod}/feed-token").status_code == 403
     assert "Remove podcast" in client.get(f"/podcasts/{pod}", headers=HTML).text
