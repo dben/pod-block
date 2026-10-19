@@ -146,3 +146,15 @@ def test_ignored_blocks_are_never_reported_or_found_again(tmp_path):
     assert store.occurrences_for_episode(ep) == []
     # It still covers its audio, so the same audio is not stored again.
     assert [g for g in store.uncovered(fp, _params()) if g[1] - g[0] >= 1.5] == []
+
+
+def test_short_sections_are_left_in_unless_they_matter():
+    matches = [SegmentMatch(1, 100, 104, 0, 50),   # a 4 s match on its own: left in
+               SegmentMatch(2, 300, 400, 0, 500),  # a long ad
+               SegmentMatch(3, 401, 404, 0, 30),   # a sliver next to it: goes with it
+               SegmentMatch(4, 900, 905, 0, 40),   # short, but typed by hand
+               SegmentMatch(5, 2000, 2008, 0, 40)]  # a short outro
+    types = {1: REPEATED, 2: REPEATED, 3: REPEATED, 4: REPEATED, 5: OUTRO}
+    sections = build_sections(matches, types, 3000, pinned={4})
+    assert [(s.start, s.end) for s in sections] == [(300, 404), (900, 905), (2000, 3000)]
+    assert len(build_sections(matches, types, 3000, min_section=0)) == 4

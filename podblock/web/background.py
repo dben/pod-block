@@ -18,7 +18,7 @@ log = logging.getLogger(__name__)
 TICK_SECONDS = 60  # between checks for feeds due a refresh
 IDLE_SECONDS = 10  # between looks at an empty queue, in case a wake was missed
 
-RUNNERS = {"process": processing.run}
+RUNNERS = {"process": processing.run, "edit": processing.run_edit}
 
 
 def run_job(settings: Settings, db, job) -> str:

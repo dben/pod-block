@@ -41,6 +41,9 @@ podblock report --feed "$FEED"        # repeated sections in the newest episode
 
 ### `report` options
 
+- `--min-section 15`: leave out sections shorter than this (default 15 s),
+  unless they are ad breaks, intros, outros, show blocks or typed by hand.
+  `0` lists them all.
 - `--fill-gaps 30`: take in up to 30 s of unique audio when it sits between
   two repeated parts, so a short gap between ads doesn't split a break.
 - `--neighbors 3`: first fetch the 3 nearest episodes in the feed (newer and

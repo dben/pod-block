@@ -21,7 +21,7 @@ class Cancelled(Exception):
 
 
 def enqueue(db: sqlite3.Connection, kind: str, episode_ids: list[int], user_id: int | None,
-            skip_ready: bool = True) -> list[int]:
+            skip_ready: bool = True, payload: str | None = None, note: str | None = None) -> list[int]:
     """Queue a job per episode, unless it already has one queued or running. Returns the episodes queued."""
     ids = list(dict.fromkeys(episode_ids))
     if not ids:
@@ -33,9 +33,9 @@ def enqueue(db: sqlite3.Connection, kind: str, episode_ids: list[int], user_id: 
     for ep_id in ids:
         if ep_id not in states or states[ep_id] in ACTIVE or (skip_ready and states[ep_id] == "ready"):
             continue
-        db.execute("INSERT INTO jobs (kind, episode_id, requested_by, created_at) VALUES (?, ?, ?, ?)",
-                   (kind, ep_id, user_id, now))
-        db.execute("UPDATE episodes SET state = 'queued', state_note = NULL WHERE id = ?", (ep_id,))
+        db.execute("INSERT INTO jobs (kind, episode_id, requested_by, created_at, payload) VALUES (?, ?, ?, ?, ?)",
+                   (kind, ep_id, user_id, now, payload))
+        db.execute("UPDATE episodes SET state = 'queued', state_note = ? WHERE id = ?", (note, ep_id))
         queued.append(ep_id)
     db.commit()
     return queued
@@ -90,7 +90,7 @@ def retry(db: sqlite3.Connection, job_id: int, user_id: int | None) -> bool:
     job = db.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
     if job is None or job["state"] not in ("failed", "cancelled") or not job["episode_id"]:
         return False
-    return bool(enqueue(db, job["kind"], [job["episode_id"]], user_id, skip_ready=False))
+    return bool(enqueue(db, job["kind"], [job["episode_id"]], user_id, skip_ready=False, payload=job["payload"]))
 
 
 def recover(db: sqlite3.Connection) -> int:

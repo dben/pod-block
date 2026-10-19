@@ -8,6 +8,12 @@ half of an episode is stretched back to the start, and the last outro in the
 second half forward to the end, so whatever plays before the intro or after
 the outro (patron thank-yous, trailers) is included. Parts that touch, or sit
 no more than `fill_gaps` seconds apart, merge into one section.
+
+Sections shorter than `min_section` are dropped: a few seconds that happen to
+match another episode (a laugh, a catchphrase, a sting) are rarely worth
+cutting. Ad breaks, intros, outros, show blocks and blocks typed by hand
+(`pinned`) are kept whatever their length. Short blocks stay in the store
+all the same: bumpers are short, and they are how breaks are found.
 """
 
 from __future__ import annotations
@@ -15,10 +21,11 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 
 from .breaks import BUMPER_TYPES, find_breaks
-from .store import INTRO, OUTRO, REPEATED, TYPES, SegmentMatch
+from .store import INTRO, OUTRO, REPEATED, SHOW, TYPES, SegmentMatch
 
 BREAK = "break"
 JOIN_SEC = 2.0  # parts this close always merge
+MIN_SECTION_SEC = 15.0  # shorter sections are left in, unless they are breaks or typed by hand
 ORDER = [INTRO, OUTRO, BREAK, *TYPES]  # how a section's types are listed
 
 
@@ -59,8 +66,10 @@ class Section:
 
 
 def build_sections(matches: list[SegmentMatch], types: dict[int, str], duration: float,
-                   fill_gaps: float = 0.0, outro_bed_start: float | None = None) -> list[Section]:
-    """`outro_bed_start` is where a talked-over music-bed outro begins, if one was found."""
+                   fill_gaps: float = 0.0, outro_bed_start: float | None = None,
+                   min_section: float = MIN_SECTION_SEC, pinned: set[int] = frozenset()) -> list[Section]:
+    """`outro_bed_start` is where a talked-over music-bed outro begins, if one was found.
+    `pinned` blocks (typed by hand) make a section stay however short it is."""
     # Bumpers only mark breaks; hosts often talk over them, so they are left out.
     parts = [Part(m.start, m.end, types.get(m.segment_id, REPEATED), m.segment_id) for m in matches
              if types.get(m.segment_id) not in BUMPER_TYPES]
@@ -90,4 +99,6 @@ def build_sections(matches: list[SegmentMatch], types: dict[int, str], duration:
             last.parts.append(p)
         else:
             sections.append(Section(p.start, p.end, [p]))
-    return sections
+    keeps = {INTRO, OUTRO, SHOW, BREAK}
+    return [s for s in sections if s.length >= min_section
+            or any(p.type in keeps or p.block in pinned for p in s.parts)]

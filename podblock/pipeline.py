@@ -19,7 +19,7 @@ from .fingerprint import (Fingerprint, FingerprintConfig, fingerprint_file, fram
                           loudness_file)
 from .matcher import MatchParams, common_runs
 from .outro import music_bed_outro
-from .report import build_sections
+from .report import MIN_SECTION_SEC, build_sections
 from .store import BUMPER, BUMPER_IN, BUMPER_OUT, SegmentMatch, Store
 
 log = logging.getLogger(__name__)
@@ -140,7 +140,7 @@ def episode_loudness(store: Store, episode_id: int) -> np.ndarray | None:
 
 
 def episode_report(store: Store, episode_id: int, params: MatchParams, fill_gaps: float = 0.0,
-                   outro_bed: bool | None = None) -> dict:
+                   outro_bed: bool | None = None, min_section: float = MIN_SECTION_SEC) -> dict:
     """List a stored episode's repeated sections and save that as its report.
 
     `outro_bed` looks for a music-bed outro (True) or not (False); None
@@ -152,7 +152,8 @@ def episode_report(store: Store, episode_id: int, params: MatchParams, fill_gaps
     wanted = outro_bed if outro_bed is not None else bool(pod and pod["outro_bed"])
     loudness = episode_loudness(store, episode_id) if wanted else None
     bed = music_bed_outro(loudness) if loudness is not None else None
-    sections = build_sections(matches, store.types(), ep["duration"], fill_gaps=fill_gaps, outro_bed_start=bed)
+    sections = build_sections(matches, store.types(), ep["duration"], fill_gaps=fill_gaps, outro_bed_start=bed,
+                              min_section=min_section, pinned=store.hand_typed())
     data = {"episode_id": episode_id, "title": ep["title"], "duration": round(ep["duration"], 2),
             "repeated_sec": round(sum(s.length for s in sections), 2),
             "sections": [s.to_dict() for s in sections]}

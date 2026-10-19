@@ -19,7 +19,7 @@ from .outro import music_bed_outro
 from .pipeline import (COMPARE_OTHER, COMPARE_SAME, OTHER_WINDOW_DAYS, Paths, episode_report,
                        find_common_blocks, ingest_episodes, ingest_feed, ingest_file,
                        neighbours, prune, refingerprint)
-from .report import build_sections
+from .report import MIN_SECTION_SEC, build_sections
 from .store import TYPES, Store, StoreError
 
 
@@ -97,7 +97,8 @@ def cmd_report(args, store: Store, paths: Paths) -> None:
         sys.exit("Give an episode id, file or URL, or --feed URL [--index N].")
 
     find_common_blocks(store, [ep_id], params, same=args.compare_same, other=args.compare_other)
-    show(args, episode_report(store, ep_id, params, fill_gaps=args.fill_gaps, outro_bed=args.outro_bed or None))
+    show(args, episode_report(store, ep_id, params, fill_gaps=args.fill_gaps, outro_bed=args.outro_bed or None,
+                              min_section=args.min_section))
 
 
 def fetch_neighbours(args, store: Store, paths: Paths, ep_id: int) -> None:
@@ -131,7 +132,8 @@ def outro_start(args, store: Store, podcast: int | None, loudness) -> float | No
 def report_data(args, store: Store, title: str, duration: float, matches,
                 ep_id: int | None = None, outro_bed_start: float | None = None) -> dict:
     sections = build_sections(matches, store.types(), duration, fill_gaps=args.fill_gaps,
-                              outro_bed_start=outro_bed_start)
+                              outro_bed_start=outro_bed_start, min_section=args.min_section,
+                              pinned=store.hand_typed())
     return {"episode_id": ep_id, "title": title, "duration": round(duration, 2),
             "repeated_sec": round(sum(s.length for s in sections), 2),
             "sections": [s.to_dict() for s in sections]}
@@ -380,6 +382,9 @@ def main(argv: list[str] | None = None) -> None:
                    help="take in up to SEC seconds of unique audio between repeats (default: 0)")
     p.add_argument("--outro-bed", action="store_true",
                    help="look for an outro read over a music bed, even if the podcast setting is off")
+    p.add_argument("--min-section", type=float, default=MIN_SECTION_SEC, metavar="SEC",
+                   help="leave out sections shorter than this, unless they are breaks, intros, outros, "
+                        "show blocks or typed by hand (default: %(default)s; 0 lists them all)")
     p.add_argument("--detail", action="store_true", help="list the parts of each section")
     p.add_argument("--json", action="store_true", help="print JSON")
     p.add_argument("--cached", action="store_true",

@@ -19,7 +19,7 @@ from podblock.web.db import connect
 
 URL = "https://example.com/show.rss"
 SR = 16000
-JINGLE, AD, FILLER = 15.0, 12.0, 30.0
+JINGLE, AD, FILLER = 20.0, 18.0, 30.0
 
 
 def fake_audio(seconds, seed):
@@ -120,7 +120,7 @@ def test_download_finds_repeats_and_cuts_them(env):
     assert episode(env, "ep-1")["state"] is None
 
     report = env.client.get(f"/episodes/{env.ids['ep-2']}").text
-    assert "What gets cut" in report and "0:00 – 0:1" in report
+    assert "Timeline" in report and 'id="timeline-data"' in report
     assert env.db.execute("SELECT state FROM jobs").fetchone()["state"] == "done"
 
 
@@ -221,3 +221,111 @@ def test_steps_on_companions_name_them(env):
     ctx.step("Downloading", env.ids["ep-2"])
     assert env.db.execute("SELECT step FROM jobs").fetchone()[0] == "Downloading “Episode 2”"
     assert episode(env, "ep-2")["state_note"] == "Downloading"
+
+
+# ---- timeline edits -------------------------------------------------------------
+
+def processed(env):
+    jobs.enqueue(env.db, "process", [env.ids["ep-2"]], None)
+    background.run_queue(env.settings)
+    return env.db.execute("SELECT * FROM jobs WHERE kind = 'process'").fetchone()
+
+
+def report_of(env, guid):
+    import json
+    row = env.db.execute("SELECT report FROM reports WHERE episode_id = ?", (env.ids[guid],)).fetchone()
+    return json.loads(row["report"])
+
+
+def test_episode_page_has_a_timeline(env):
+    processed(env)
+    page = env.client.get(f"/episodes/{env.ids['ep-3']}").text
+    assert 'id="timeline-data"' in page and "timeline.js" in page
+    peaks = env.client.get(f"/episodes/{env.ids['ep-3']}/peaks").json()
+    assert peaks["per_second"] == 10
+    duration = episode(env, "ep-3")["duration"]
+    assert abs(len(peaks["peaks"]) - duration * 10) < 20 and max(peaks["peaks"]) > 200
+
+
+def test_marking_a_block_changes_it_everywhere_and_recuts(env):
+    processed(env)
+    first = report_of(env, "ep-3")["sections"][0]
+    assert first["start"] < 0.5 and first["blocks"]
+    before = {g: episode(env, g)["processed_at"] for g in ("ep-2", "ep-4", "ep-5")}
+
+    res = env.client.post(f"/episodes/{env.ids['ep-3']}/edits",
+                          json={"types": [{"type": "ignored", "blocks": first["blocks"], "bumpers": []}]})
+    assert res.status_code == 200, res.text
+    assert episode(env, "ep-3")["state"] == "queued"
+    assert env.client.post(f"/episodes/{env.ids['ep-3']}/edits", json={"types": []}).status_code == 409  # busy
+
+    background.run_queue(env.settings)
+    types = dict(env.db.execute("SELECT id, type FROM segments").fetchall())
+    assert all(types[b] == "ignored" for b in first["blocks"])
+    for guid in ("ep-2", "ep-3", "ep-4", "ep-5"):
+        ep = episode(env, guid)
+        assert ep["state"] == "ready", (guid, ep["state_note"])
+        assert ep["cut_duration"] == pytest.approx(JINGLE + 2 * FILLER, abs=3), guid  # the jingle stays now
+        assert report_of(env, guid)["sections"][0]["start"] > 0
+    assert all(episode(env, g)["processed_at"] > before[g] for g in before)
+
+
+def test_cutting_a_stretch_by_hand(env):
+    processed(env)
+    ep_id = env.ids["ep-4"]
+    full = episode(env, "ep-4")["cut_duration"]
+    res = env.client.post(f"/episodes/{ep_id}/edits", json={"add": [{"start": 20, "end": 30, "as_block": False}]})
+    assert res.status_code == 200
+    background.run_queue(env.settings)
+    assert episode(env, "ep-4")["cut_duration"] == pytest.approx(full - 10, abs=0.5)
+    edit = env.db.execute("SELECT * FROM edits").fetchone()
+    assert (edit["start"], edit["end"]) == (20, 30)
+    assert env.db.execute("SELECT COUNT(*) FROM jobs WHERE kind = 'process' AND state = 'done'").fetchone()[0] == 1
+
+    page = env.client.get(f"/episodes/{ep_id}").text
+    assert f'"edit": {edit["id"]}' in page or f'"edit":{edit["id"]}' in page
+    env.client.post(f"/episodes/{ep_id}/edits", json={"remove": [edit["id"]]})
+    background.run_queue(env.settings)
+    assert episode(env, "ep-4")["cut_duration"] == pytest.approx(full, abs=0.5)
+
+
+def test_a_section_saved_as_a_block_is_found_in_other_episodes(env, tmp_path):
+    processed(env)
+    blocks = env.db.execute("SELECT COUNT(*) FROM segments").fetchone()[0]
+    # a stretch of episode 4's own show audio: unique, so nothing else has it
+    env.client.post(f"/episodes/{env.ids['ep-4']}/edits",
+                    json={"add": [{"start": 20, "end": 35, "as_block": True, "type": "outro"}]})
+    background.run_queue(env.settings)
+    assert env.db.execute("SELECT COUNT(*) FROM segments").fetchone()[0] == blocks + 1
+    new = env.db.execute("SELECT * FROM segments ORDER BY id DESC LIMIT 1").fetchone()
+    assert new["type"] == "outro" and new["type_manual"] == 1
+    assert episode(env, "ep-4")["state"] == "ready"
+    # the show's other ready episodes were checked again; they don't have it, so their cut files stay
+    assert env.db.execute("SELECT COUNT(*) FROM jobs WHERE kind = 'process' AND state = 'done'").fetchone()[0] == 4
+
+
+def test_edits_that_make_no_sense_are_refused(env):
+    processed(env)
+    ep_id = env.ids["ep-3"]
+    for body in ({}, {"types": [{"type": "intro", "blocks": [99999]}]}, {"add": [{"start": 5, "end": 5.5}]},
+                 {"types": [{"type": "bogus", "blocks": report_of(env, "ep-3")["sections"][0]["blocks"]}]},
+                 {"remove": [123]}):
+        assert env.client.post(f"/episodes/{ep_id}/edits", json=body).status_code == 400, body
+    assert env.client.post(f"/episodes/{ep_id}/edits", content=b"not json",
+                           headers={"content-type": "application/json"}).status_code == 400
+    assert episode(env, "ep-3")["state"] == "ready"
+
+
+def test_intro_marks_only_the_block_that_ends_the_section(env):
+    from podblock.web.processing import check_edits
+    processed(env)
+    ep_id = env.ids["ep-3"]
+    plays = env.db.execute("SELECT segment_id, start, end FROM occurrences WHERE episode_id = ? ORDER BY start",
+                           (ep_id,)).fetchall()
+    blocks = [r["segment_id"] for r in plays]
+    out = check_edits(env.db, ep_id, {"types": [{"type": "intro", "blocks": blocks, "start": 0, "end": 1e9}]})
+    assert out["types"][0]["blocks"] == [max(plays, key=lambda r: r["end"])["segment_id"]]
+    out = check_edits(env.db, ep_id, {"types": [{"type": "outro", "blocks": blocks, "start": 0, "end": 1e9}]})
+    assert out["types"][0]["blocks"] == [plays[0]["segment_id"]]
+    out = check_edits(env.db, ep_id, {"types": [{"type": "ignored", "blocks": blocks}]})
+    assert sorted(out["types"][0]["blocks"]) == sorted(blocks)

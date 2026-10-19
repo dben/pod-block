@@ -204,3 +204,42 @@ def render(source: Path, dest_stem: Path, keep: list[tuple[float, float]],
             dec.stdout.close()
     tmp.replace(dest)
     return Rendered(dest, out.mime, written / sr, dest.stat().st_size)
+
+
+def peaks(path: Path, per_second: int = 10) -> list[int]:
+    """How loud each 1/per_second of a second is (its RMS), scaled to 0-255, for drawing a waveform.
+
+    RMS rather than the loudest sample: podcasts are compressed so hard that their peaks are all
+    near full scale, and a waveform of peaks is a solid bar."""
+    rate = 8000
+    step = rate // per_second
+    cmd = ["ffmpeg", "-v", "error", "-nostdin", "-i", str(path), "-map", "0:a:0", "-f", "s16le",
+           "-acodec", "pcm_s16le", "-ar", str(rate), "-ac", "1", "pipe:1"]
+    found, left = [], np.zeros(0, np.int16)
+    with tempfile.TemporaryFile() as err:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=err)
+        try:
+            while raw := proc.stdout.read(step * 2 * 4096):
+                samples = np.concatenate([left, np.frombuffer(raw[:len(raw) - len(raw) % 2], "<i2")])
+                whole = len(samples) - len(samples) % step
+                if whole:
+                    bins = samples[:whole].astype(np.float64).reshape(-1, step)
+                    found.append(np.sqrt((bins ** 2).mean(axis=1)))
+                left = samples[whole:]
+        finally:
+            proc.stdout.close()
+            proc.wait()
+        if proc.returncode != 0 and not found:
+            err.seek(0)
+            raise CutError(f"ffmpeg couldn't read {path.name}: {err.read().decode(errors='replace').strip()[:200]}")
+    if len(left):
+        found.append(np.array([np.sqrt((left.astype(np.float64) ** 2).mean())]))
+    if not found:
+        return []
+    # In decibels, from the quiet end of this episode to its loud end: compressed speech sits in a
+    # narrow band, and a linear scale draws it as one flat bar.
+    loud = 20 * np.log10(np.concatenate(found).astype(float) + 1.0)
+    floor, top = np.percentile(loud, 10), np.percentile(loud, 99.8)
+    scaled = np.clip((loud - floor) / max(top - floor, 1.0), 0.0, 1.0) ** 1.6
+    return (scaled * 245 + 10).astype(np.uint8).tolist()
+

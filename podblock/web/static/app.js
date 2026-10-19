@@ -30,6 +30,8 @@
     hideLater(el, action ? 8000 : 5000);
   }
 
+  window.podblock = { toast };
+
   // ---- menus and confirmations --------------------------------------------
 
   document.addEventListener("click", (e) => {

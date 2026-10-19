@@ -13,6 +13,7 @@ what is done, and what comes later. Update it as work lands.
 | Milestone 1: skeleton | done: `podblock serve`, API-key login, dark theme, Dockerfile |
 | Milestone 2: feeds | done: add and refresh feeds, show header, episode list, archive, remove |
 | Milestone 3: processing | done: job queue and worker, download, detect, cut, episode and jobs pages |
+| Milestone 6: timeline editor | done, ahead of 4 and 5 |
 | Milestone 4: private feed | next |
 
 Last updated: 2026-10-19.
@@ -30,6 +31,8 @@ Answers to the first round of questions, kept here so they don't get lost.
 | Retention | Counts from when an episode was processed, not its publish date. A keep pin stops the clock. |
 | Users | Built for a few users, but round one has one login. Feeds, downloads, processing and blocks are shared. Archived and kept are per user. The private feed is per podcast and shared; per-user feeds come later. |
 | Downloads | Manual for now, apart from the comparison episodes above. |
+| Short repeats | Sections under 15 seconds aren't cut (`report.MIN_SECTION_SEC`; the CLI's `--min-section`), unless they are ad breaks, intros, outros, show blocks or blocks typed by hand. Short blocks are still stored, since bumpers are short and are how breaks are found. |
+| Intro and outro marks | Marking a section Intro types only its last block, and Outro only its first: the report runs those to the ends anyway, and a section's other blocks are often ads that also play in mid-roll breaks. Keep and Show only type every block in the section. |
 | Keeping it generic | No real feed URLs, show names or audio in the repo, its history or its tests. Real feeds for trying things by hand live in the environment variable `PODBLOCK_TEST_FEEDS` (space-separated), set in the cloud environment's settings. |
 
 ## Stack
@@ -193,26 +196,45 @@ Ticked items are built. Each has an id so commits and issues can point at it.
 
 ### Timeline editor
 
-- [ ] **T1** For a ready episode, a timeline of the whole episode with each
-  detected section drawn on it, coloured by type, plus a list of the same
-  sections for small screens.
-- [ ] **T2** Play the original audio from any point; tap a section to play
-  from a few seconds before it.
-- [ ] **T3** Mark a section's block as:
-  - **intro**: cut everything up to its end;
-  - **outro**: cut everything from its start;
-  - **show**: only matched within this podcast;
-  - **ignored**: keep it (a false positive);
-  - back to **auto**.
-
-  This changes the block everywhere, so every ready episode it plays in is
-  re-rendered.
-- [ ] **T4** Add a section by hand: drag on the timeline or type start and
-  end times, then nudge the edges. Choose whether it is only cut here or also
-  saved as a block so later episodes catch it.
-- [ ] **T5** Preview the result: play across a cut to hear the join.
-- [ ] **T6** Saving queues a re-render; the private feed keeps serving the
-  old cut file until the new one is done.
+- [x] **T1** For a ready episode, a timeline of the whole episode
+  (`static/timeline.js`, no library): the waveform, each cut section drawn
+  on it in its type's colour, the bumpers around ad breaks as darker bands,
+  a time ruler, and a strip above with the whole episode and a box for the
+  part in view (drag it to move). Zoom with −, Fit and +, or ctrl/⌘ and the
+  wheel. Below it, a card per section with the same controls.
+  - The waveform is worked out once on the server (loudness in dB, ten
+    values a second) and saved under `media/peaks/`, so the browser never
+    decodes the audio. Episodes processed earlier get one on first view.
+  - The canvas only ever covers what is in view, so zooming into a long
+    episode stays smooth.
+  - Labels sit in two rows above the waveform: a dropdown where there is
+    room, a small icon for the type where there isn't (click it to zoom in),
+    else nothing; the selected section gets room first. Play buttons sit
+    under each section when there is room. The cards always have it all.
+  - Phones: the same timeline, horizontal and fitted to the screen, with the
+    cards below. Vertical was ruled out: dragging to mark a section and
+    dragging to scroll the page would fight.
+- [x] **T2** Play the original from any point (click the waveform), or from
+  two seconds before a section with its play button.
+- [x] **T3** Set a section to Intro, Outro, Show only, Keep, or back to how
+  it was found. This changes its blocks everywhere (see Decisions for which
+  blocks), so other ready episodes they play in are cut again. Keep on an
+  ad break also marks its bumpers as false hits, so the break stays.
+- [x] **T4** Add a section by hand: drag across the waveform (even over a
+  section already there), or on a phone tap "Add section" at the player's
+  place. Drag its edges, or type times and nudge them a second at a time or
+  set them to the player's place. Choose to cut it here only, or to catch it
+  in other episodes too (saved as a block of the chosen type, and the show's
+  other ready episodes are checked again). Hand-cut sections can be put back.
+- [x] **T5** "Skip cuts" on the player jumps over everything that would be
+  cut, unsaved changes included, to hear the joins.
+- [x] **T6** Nothing is written until Save, in a bar that counts the unsaved
+  changes; Discard puts it all back, and leaving the page asks first. Saving
+  queues an `edit` job; the episode page shows it working and reloads when
+  done. The old cut file is served until the new one replaces it. Episodes
+  whose cut would come out the same aren't cut again.
+- [ ] **T7** Move the edges of a section the detector found (today: mark the
+  extra by hand, or Keep it and mark the right span).
 
 ### Login and users
 
@@ -298,12 +320,20 @@ Audio lives under the media folder: `original/<key>.<ext>` and
 SHA-1. Fingerprints stay under the data folder, named as the CLI names them,
 so episodes the CLI fingerprinted are reused.
 
+Built in migration 5:
+
+```
+jobs      + payload                                          -- JSON: what an edit job is to change
+episodes  + cut_spec,                                        -- the stretches kept in the cut file
+            peaks_path                                       -- the waveform
+edits(id, episode_id, start, end, created_by, created_at)    -- sections cut by hand, this episode only
+```
+
 Planned:
 
 ```
 podcasts  + public_token, retention_days
 episodes  + public_token, expires_at
-edits(id, episode_id, kind, start, end, segment_id, created_at)  -- kind: cut (hand-added section)
 ```
 
 Guids are unique across the whole store. If two shows use the same guid,
@@ -331,7 +361,8 @@ only looks at fingerprinted ones, so they don't affect it.
 | `GET /episodes/{id}/original` | yes | original audio, with byte ranges | built |
 | `POST /episodes/{id}/process` | yes | queue it, or process it again | built |
 | `GET /jobs`, `POST /jobs/{id}/cancel`, `POST /jobs/{id}/retry` | yes | job queue | built |
-| `POST /episodes/{id}/edits` | yes | save timeline edits | |
+| `GET /episodes/{id}/peaks` | yes | the waveform, made on first ask | built |
+| `POST /episodes/{id}/edits` | yes | save timeline changes (JSON: `types`, `add`, `remove`); queues an edit job | built |
 | `GET /p/{token}/feed.xml` | no | private feed | |
 | `GET /p/{token}/{episode_token}.{ext}` | no | cut audio | |
 
@@ -346,8 +377,8 @@ only looks at fingerprinted ones, so they don't affect it.
    episodes, detect, render cut audio, episode page, jobs page.
 4. **Private feed**: tokens, feed XML, audio with byte ranges.
 5. **Retention**: expiry job, keep pins, settings.
-6. **Timeline editor**: waveform, sections, marks, manual sections,
-   re-render.
+6. **Timeline editor** (done, ahead of 4 and 5): waveform, sections,
+   marks, manual sections, re-cut.
 7. **Deploy**: Kubernetes manifests (Deployment, PVCs, Service, Ingress
    example), backup notes.
 
@@ -392,4 +423,5 @@ None right now.
 
 - 2026-10-19: plan written; first round of questions answered; milestone 1
   built. Real feed URLs and show names taken out of the repo and its
-  history. Milestone 2 built. Milestone 3 built.
+  history. Milestone 2 built. Milestone 3 built. Timeline editor (milestone
+  6) built ahead of 4 and 5; sections under 15 seconds are no longer cut.

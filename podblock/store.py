@@ -325,6 +325,10 @@ class Store:
                             [(seg_id,) for seg_id in confirm])
         self.db.commit()
 
+    def hand_typed(self) -> set[int]:
+        """Blocks whose type was set by hand."""
+        return {r[0] for r in self.db.execute("SELECT id FROM segments WHERE type_manual = 1")}
+
     def types(self) -> dict[int, str]:
         return dict(self.db.execute("SELECT id, type FROM segments").fetchall())
 

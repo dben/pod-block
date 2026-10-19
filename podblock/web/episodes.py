@@ -8,9 +8,10 @@ import sqlite3
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import FileResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 
-from . import jobs
+from .. import cut
+from . import jobs, processing
 from .deps import current_user, get_db
 from .feeds import show_notes
 from .templating import flash, page
@@ -54,8 +55,47 @@ def show_episode(request: Request, episode_id: int, user=Depends(current_user),
     saved = db.execute("SELECT report FROM reports WHERE episode_id = ?", (episode_id,)).fetchone()
     report = json.loads(saved["report"]) if saved else None
     job = db.execute("SELECT * FROM jobs WHERE episode_id = ? ORDER BY id DESC LIMIT 1", (episode_id,)).fetchone()
+    data = None
+    if report is not None and ep["original_path"] and Path(ep["original_path"]).exists():
+        data = {**processing.timeline(db, episode_id, report), "duration": ep["duration"],
+                "editable": ep["state"] == "ready", "audio": f"/episodes/{episode_id}/original",
+                "peaks": f"/episodes/{episode_id}/peaks", "save": f"/episodes/{episode_id}/edits"}
     return page(request, "episode.html", title=ep["title"], nav="podcasts", user=user, episode=ep,
-                podcast=podcast, report=report, job=job, notes=show_notes(ep["item_xml"]))
+                podcast=podcast, report=report, job=job, notes=show_notes(ep["item_xml"]), timeline=data)
+
+
+@router.get("/episodes/{episode_id}/peaks")
+def episode_peaks(request: Request, episode_id: int, user=Depends(current_user),
+                  db: sqlite3.Connection = Depends(get_db)) -> Response:
+    """The waveform of the original, made on first ask for episodes processed before waveforms were."""
+    _episode(db, user["id"], episode_id)
+    try:
+        path = processing.ensure_peaks(db, request.app.state.settings, episode_id)
+    except cut.CutError as e:
+        raise HTTPException(500, str(e))
+    if path is None:
+        raise HTTPException(404, "No audio to draw")
+    return FileResponse(path, media_type="application/json", headers={"Cache-Control": "private, max-age=86400"})
+
+
+@router.post("/episodes/{episode_id}/edits")
+async def save_edits(request: Request, episode_id: int, user=Depends(current_user),
+                     db: sqlite3.Connection = Depends(get_db)) -> Response:
+    """Save the changes made on the timeline: queue a job to apply them and cut the episode again."""
+    ep = _episode(db, user["id"], episode_id)
+    if ep["state"] in jobs.ACTIVE:
+        return JSONResponse({"error": "It's being processed; save again when that's done."}, status_code=409)
+    try:
+        changes = processing.check_edits(db, episode_id, await request.json())
+    except processing.ProcessError as e:
+        return JSONResponse({"error": f"Nothing saved: {e}."}, status_code=400)
+    except (ValueError, TypeError, KeyError, AttributeError):
+        return JSONResponse({"error": "Those changes didn't make sense."}, status_code=400)
+    jobs.enqueue(db, "edit", [episode_id], user["id"], skip_ready=False, payload=json.dumps(changes),
+                 note="Saving your changes")
+    wake_worker(request)
+    flash(request, "Saved. Cutting it again with your changes.")
+    return JSONResponse({"ok": True, "changes": changes})
 
 
 @router.get("/episodes/{episode_id}/row")

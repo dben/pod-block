@@ -107,6 +107,22 @@ MIGRATIONS = [
     CREATE INDEX jobs_state ON jobs(state, id);
     CREATE INDEX jobs_episode ON jobs(episode_id);
     """,
+    # 5: the timeline editor. Sections cut by hand, what a job is asked to change,
+    # the waveform, and what each cut file was made from (so unchanged ones aren't redone).
+    """
+    ALTER TABLE jobs ADD COLUMN payload TEXT;  -- JSON, for jobs that need more than an episode
+    ALTER TABLE episodes ADD COLUMN cut_spec TEXT;  -- JSON list of the [start, end] kept in the cut file
+    ALTER TABLE episodes ADD COLUMN peaks_path TEXT;  -- the waveform, as JSON
+    CREATE TABLE edits (
+        id INTEGER PRIMARY KEY,
+        episode_id INTEGER NOT NULL REFERENCES episodes(id) ON DELETE CASCADE,
+        start REAL NOT NULL,
+        end REAL NOT NULL,
+        created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        created_at REAL NOT NULL
+    );
+    CREATE INDEX edits_episode ON edits(episode_id);
+    """,
 ]
 
 
