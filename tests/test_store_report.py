@@ -101,3 +101,33 @@ def test_parse_feed_keeps_the_feed_url_and_title():
 def _params():
     from podblock.matcher import MatchParams
     return MatchParams(min_length_sec=5, min_hits_per_bin=3)
+
+
+def test_music_bed_outro_found_where_the_floor_steadies():
+    from podblock.fingerprint import FRAME_SEC
+    from podblock.outro import music_bed_outro
+    rng = np.random.default_rng(5)
+    frames = lambda sec: int(sec / FRAME_SEC)
+    # The show: talk whose quiet moments swing between near-silence and a bed.
+    show = np.repeat(rng.choice([-70.0, -40.0], size=frames(1800) // 50), 50)
+    show = show + rng.normal(0, 3, len(show))
+    # The outro: talk over a steady bed, so the floor holds still.
+    outro = -38.0 + rng.normal(0, 1, frames(300)) + np.where(rng.random(frames(300)) < 0.5, 15, 0)
+
+    start = music_bed_outro(np.concatenate([show, outro]).astype(np.float16))
+
+    assert start == pytest.approx(len(show) * FRAME_SEC, abs=20)
+    assert music_bed_outro(show.astype(np.float16)) is None
+
+
+def test_outro_bed_runs_to_the_end_of_the_report():
+    matches = [SegmentMatch(1, 100, 160, 0, 99)]
+    sections = build_sections(matches, {1: REPEATED}, 3000, outro_bed_start=2600)
+    assert [(s.start, s.end, s.types) for s in sections] == [(100, 160, [REPEATED]), (2600, 3000, [OUTRO])]
+
+
+def test_fingerprint_keeps_its_loudness_curve(tmp_path):
+    fp = tones(6)
+    fp.loudness = np.linspace(-60, -20, 100).astype(np.float16)
+    fp.save(tmp_path / "fp.npz")
+    assert np.array_equal(Fingerprint.load(tmp_path / "fp.npz").loudness, fp.loudness)

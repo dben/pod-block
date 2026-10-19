@@ -28,6 +28,7 @@ podblock report --feed "$FEED"        # repeated sections in the newest episode
 | `report TARGET` | List the repeated sections in one episode. `TARGET` is a stored episode id, an audio file or an audio URL; or use `--feed URL [--index N]` (0 = newest). |
 | `list [--podcast P] [--type T]` | Stored blocks, how many episodes each turns up in, and their types. |
 | `podcasts` | Podcasts in the store. |
+| `podcast P [--outro-bed]` | Show or change a podcast's settings (see "Outros read over music"). |
 | `breaks [EPISODE_ID...]` | Ad breaks found in stored episodes. |
 | `show ID` | Where a block occurs. |
 | `type ID TYPE` | Set a block's type by hand (see below). `auto` hands it back to automatic tagging. |
@@ -44,6 +45,8 @@ podblock report --feed "$FEED"        # repeated sections in the newest episode
   catching ads that only ran for a week or two.
 - `--podcast P`: for a file or URL, which podcast's `intro`, `outro` and
   `show` blocks apply.
+- `--outro-bed`: look for an outro read over a music bed even when the
+  podcast's setting is off.
 - `--detail`: list the parts that make up each section.
 - `--json`: machine-readable output:
 
@@ -66,6 +69,26 @@ podblock report --feed "$FEED"        # repeated sections in the newest episode
 
 A block's podcast is the one it was first found in. Automatic tagging never
 overwrites a type set by hand.
+
+## Outros read over music
+
+Some shows end with minutes of talk over a music bed: patron names, plugs,
+announcements. The talk changes every week and buries the music, so the bed
+seldom matches between episodes and no block covers it. It still stands out
+in the loudness floor, the level of the quietest moments: during the show it
+swings as people pause and talk over each other, while under a steady bed it
+holds still. With the setting on, a report runs the steady stretch at the end
+of each episode as `outro`, through to the end.
+
+```sh
+podblock podcast "My Show" --outro-bed
+podblock report --feed https://example.com/my-show.rss
+```
+
+On four episodes of one show it found outros of 6 to 8.5 minutes; on the two
+given by hand it started at 1:02:19 (given: 1:02:19) and 1:06:31 (given:
+around 1:07:32). It found none in the eight episodes of other shows tried.
+A loudness curve is stored with each fingerprint, so this needs no audio.
 
 ## How it works
 
@@ -114,7 +137,7 @@ Everything lives in `./podblock-data` (change with `--data-dir`):
 
 ```
 settings(key, value)                         -- schema version, fingerprint setting
-podcasts(id, name, feed_url)
+podcasts(id, name, feed_url, outro_bed)
 episodes(id, guid, podcast_id, title, pub_date, audio_url, audio_path, fingerprint_path, duration)
 segments(id, source_episode_id, podcast_id, source_start, source_end, label, type, type_manual)
 segment_hashes(segment_id, hash, t)          -- t in 32 ms frames from the block start

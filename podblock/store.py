@@ -33,7 +33,8 @@ CREATE TABLE IF NOT EXISTS settings (
 CREATE TABLE IF NOT EXISTS podcasts (
     id INTEGER PRIMARY KEY,
     name TEXT NOT NULL,
-    feed_url TEXT UNIQUE
+    feed_url TEXT UNIQUE,
+    outro_bed INTEGER NOT NULL DEFAULT 0  -- episodes end with talk over a music bed
 );
 CREATE TABLE IF NOT EXISTS episodes (
     id INTEGER PRIMARY KEY,
@@ -112,6 +113,9 @@ class Store:
         if "episodes" in tables and "settings" not in tables:
             raise StoreError(f"{path} was made by an older pod-block; start a new --data-dir")
         self.db.executescript(SCHEMA)
+        columns = {r["name"] for r in self.db.execute("PRAGMA table_info(podcasts)")}
+        if "outro_bed" not in columns:  # stores made before outro detection
+            self.db.execute("ALTER TABLE podcasts ADD COLUMN outro_bed INTEGER NOT NULL DEFAULT 0")
         self.config = self._settle_config(config)
         self._index: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
 
@@ -160,6 +164,13 @@ class Store:
             (key, key, key),
         ).fetchone()
         return row["id"] if row else None
+
+    def podcast(self, podcast_id: int | None) -> sqlite3.Row | None:
+        return self.db.execute("SELECT * FROM podcasts WHERE id = ?", (podcast_id,)).fetchone()
+
+    def set_outro_bed(self, podcast_id: int, on: bool) -> None:
+        self.db.execute("UPDATE podcasts SET outro_bed = ? WHERE id = ?", (int(on), podcast_id))
+        self.db.commit()
 
     def podcasts(self) -> list[sqlite3.Row]:
         return self.db.execute(

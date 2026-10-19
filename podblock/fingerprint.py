@@ -100,12 +100,14 @@ class Fingerprint:
     times: np.ndarray  # int32, anchor frame index
     duration: float  # seconds
     config: FingerprintConfig | None = None
+    loudness: np.ndarray | None = None  # float16 dB per frame, for spotting music beds
 
     def save(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
+        extra = {"loudness": self.loudness} if self.loudness is not None else {}
         np.savez_compressed(
             path, hashes=self.hashes, times=self.times, duration=np.float64(self.duration),
-            config=np.array(self.config.to_json() if self.config else ""),
+            config=np.array(self.config.to_json() if self.config else ""), **extra,
         )
 
     @classmethod
@@ -113,7 +115,8 @@ class Fingerprint:
         with np.load(path) as data:
             config = str(data["config"]) if "config" in data else ""
             return cls(data["hashes"], data["times"], float(data["duration"]),
-                       FingerprintConfig.from_json(config) if config else None)
+                       FingerprintConfig.from_json(config) if config else None,
+                       data["loudness"] if "loudness" in data else None)
 
     def slice(self, start_sec: float, end_sec: float) -> "Fingerprint":
         """Hashes whose anchor falls inside [start, end), re-timed to start at 0."""
@@ -211,6 +214,16 @@ def landmark_hashes(t: np.ndarray, f: np.ndarray, band: int = 0) -> tuple[np.nda
     return np.concatenate(hashes), np.concatenate(anchors).astype(np.int32)
 
 
+def loudness_curve(samples: np.ndarray, sample_rate: int) -> np.ndarray:
+    """Loudness in dB of each 32 ms frame, as float16."""
+    if samples.dtype != np.float32:
+        samples = samples.astype(np.float32) / 32768.0
+    hop = int(round(sample_rate * FRAME_SEC))
+    n = len(samples) // hop
+    power = (samples[:n * hop].reshape(n, hop) ** 2).mean(axis=1)
+    return (10.0 * np.log10(power + 1e-12)).astype(np.float16)
+
+
 def fingerprint_samples(samples: np.ndarray, config: FingerprintConfig) -> Fingerprint:
     """Fingerprint samples already at `config.sample_rate`."""
     hashes, times = [], []
@@ -219,7 +232,8 @@ def fingerprint_samples(samples: np.ndarray, config: FingerprintConfig) -> Finge
         hashes.append(h)
         times.append(a)
     return Fingerprint(np.concatenate(hashes), np.concatenate(times),
-                       len(samples) / config.sample_rate, config)
+                       len(samples) / config.sample_rate, config,
+                       loudness_curve(samples, config.sample_rate))
 
 
 def fingerprint_file(path: str | Path, config: FingerprintConfig) -> Fingerprint:

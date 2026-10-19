@@ -1,7 +1,8 @@
 """Turn the block matches in one episode into a list of repeated sections.
 
 Every match of a stored block is a part. Ad breaks found from bumpers are parts
-too, covering the new ads between the bumpers. The first intro in the first
+too, covering the new ads between the bumpers, and so is an outro read over a
+music bed (see outro.py). The first intro in the first
 half of an episode is stretched back to the start, and the last outro in the
 second half forward to the end, so whatever plays before the intro or after
 the outro (patron thank-yous, trailers) is included. Parts that touch, or sit
@@ -57,8 +58,11 @@ class Section:
 
 
 def build_sections(matches: list[SegmentMatch], types: dict[int, str], duration: float,
-                   fill_gaps: float = 0.0) -> list[Section]:
+                   fill_gaps: float = 0.0, outro_bed_start: float | None = None) -> list[Section]:
+    """`outro_bed_start` is where a talked-over music-bed outro begins, if one was found."""
     parts = [Part(m.start, m.end, types.get(m.segment_id, REPEATED), m.segment_id) for m in matches]
+    if outro_bed_start is not None:
+        parts.append(Part(outro_bed_start, duration, OUTRO))
 
     intros = [p for p in parts if p.type == INTRO and p.start < duration / 2]
     if intros:
