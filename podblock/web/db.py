@@ -128,6 +128,13 @@ MIGRATIONS = [
     "ALTER TABLE podcasts ADD COLUMN public_token TEXT; CREATE UNIQUE INDEX podcasts_token ON podcasts(public_token);",
     lambda db: db.executemany("UPDATE podcasts SET public_token = ? WHERE id = ?",
                               [(new_token(), r["id"]) for r in db.execute("SELECT id FROM podcasts")]),
+    # 7: retention. Downloads are deleted a set time after they were first made ready, unless kept.
+    """
+    ALTER TABLE podcasts ADD COLUMN retention_days INTEGER NOT NULL DEFAULT 7;  -- 0 keeps downloads for good
+    ALTER TABLE episodes ADD COLUMN ready_at REAL;  -- first made ready since its download: retention counts from here
+    ALTER TABLE episodes ADD COLUMN expired_at REAL;  -- when retention deleted its audio (state 'expired')
+    UPDATE episodes SET ready_at = processed_at WHERE state = 'ready';
+    """,
 ]
 
 

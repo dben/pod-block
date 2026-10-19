@@ -15,7 +15,8 @@ what is done, and what comes later. Update it as work lands.
 | Milestone 3: processing | done: job queue and worker, download, detect, cut, episode and jobs pages |
 | Milestone 6: timeline editor | done, ahead of 4 and 5 |
 | Milestone 4: private feed | done: tokens, feed XML, audio with byte ranges, copy and QR code |
-| Milestone 5: retention | next |
+| Milestone 5: retention | done: clean-up after N days, keep, settings, cleaned-up episodes shown and archived in one go |
+| Milestone 7: deploy | next |
 
 Last updated: 2026-10-19.
 
@@ -127,11 +128,11 @@ Ticked items are built. Each has an id so commits and issues can point at it.
   - [x] Processing state per episode: Queued, what it is doing ("Downloading
     45%", "Fingerprinting", "Cutting"), Ready with the cut length, Failed.
     A row being processed refreshes itself every 3 seconds.
-  - [ ] `expired` (milestone 5).
+  - [x] Cleaned up, with the date (milestone 5).
 - [x] **F4** Refresh feeds by hand, and in the background when due (every 60
   minutes by default; `podcasts.refresh_minutes`). Refreshes send the last
   ETag and Last-Modified, so an unchanged feed costs one short request.
-  - [ ] A page to change the interval per podcast.
+  - [x] A page to change the interval per podcast (the Settings panel).
 - [x] **F5** Store our own copy of each episode's metadata, including the raw
   `<item>` XML (show notes come from it later), so the episode survives after
   it leaves the feed.
@@ -153,7 +154,7 @@ Ticked items are built. Each has an id so commits and issues can point at it.
   - "Archive this and older" in each row's menu.
   - [x] Download in the bar and in each row's menu ("Download and cut";
     "Process again" once ready or failed).
-  - [ ] Keep in the bar (milestone 5).
+  - [x] Keep in the bar and in each row's menu (milestone 5).
 - [x] **F8** Remove a podcast, after a confirmation saying what happens:
   episodes never downloaded are deleted; downloaded ones, and the blocks
   learned from the show, stay (blocks may be ads other shows share). The
@@ -282,16 +283,32 @@ Ticked items are built. Each has an id so commits and issues can point at it.
 
 ### Retention
 
-- [ ] **R1** Downloaded episodes are deleted a set time after processing
-  (default 7 days, set per podcast). Audio goes; the episode's metadata and
-  report stay, and it shows as `expired` and can be downloaded again while
-  the source audio is still online.
-- [ ] **R2** A keep pin (per user) stops an episode from being deleted while
-  any user has it pinned. Kept episodes also keep their fingerprint, so
-  timeline edits still work on them later.
-- [ ] **R3** A daily job does the deleting and also runs the detector's
-  `prune` with settings that fit the app.
-- [ ] **R4** Show on each ready episode when it will be deleted.
+- [x] **R1** Downloads are cleaned up a set time after the episode was first
+  made ready (default 7 days, set per podcast; 0 keeps them for good).
+  Processing again or saving timeline changes doesn't restart the clock.
+  The download, cut file and waveform go; the episode's metadata, report and
+  hand-cut sections stay. It shows as "Cleaned up" with the date, leaves the
+  private feed, and "Download again" brings it back, cut the same way.
+  Downloads that never became ready (failed jobs, companions of a cancelled
+  one) go on the same clock. The check runs every minute in the background
+  (`podblock/web/retention.py`).
+- [x] **R2** Keep (per user) stops an episode from being cleaned up while
+  anyone keeps it: in each row's menu, in the selection bar, and on the
+  episode page. Kept and ready episodes keep their fingerprints too.
+- [x] **R3** Once a day the detector's own clean-up runs: fingerprints no
+  longer in use go after 30 days, blocks not heard in 90 days (unless typed
+  by hand), bumpers after a year. Fingerprints of ready and kept episodes are
+  marked fresh first, since the detector ages them by file time. Audio the
+  CLI downloaded is left alone.
+- [x] **R4** Ready rows say "Cleaned up in 5 days"; the episode page gives
+  the date, with Keep beside it.
+- [x] **R5** Episodes cleaned up show dimmed in the list with their date, and
+  in a Downloaded tab (everything downloaded at some point, until archived).
+  A note above the list counts them, with "Archive them all"; the home page
+  shows each podcast's ready and cleaned-up counts and an "Archive N
+  cleaned-up episodes" button across all podcasts. Both are per user.
+- [x] **R6** A Settings panel on the show page: days before clean-up, and how
+  often to check the feed (15 minutes to a week).
 
 ### Look and feel
 
@@ -348,12 +365,9 @@ edits(id, episode_id, start, end, created_by, created_at)    -- sections cut by 
 Built in migration 6: `podcasts.public_token` (unique), made for every
 podcast that had none.
 
-Planned:
-
-```
-podcasts  + retention_days
-episodes  + expires_at
-```
+Built in migration 7: `podcasts.retention_days` (default 7),
+`episodes.ready_at` (the clock) and `episodes.expired_at`; episodes gain the
+state `expired`.
 
 Guids are unique across the whole store. If two shows use the same guid,
 the second show's copy is stored under `feed URL#guid`.
@@ -385,6 +399,10 @@ only looks at fingerprinted ones, so they don't affect it.
 | `GET /p/{token}/feed.xml` | no | private feed | built |
 | `GET /p/{token}/{key}.{ext}` | no | cut audio, with byte ranges | built |
 | `POST /podcasts/{id}/feed-token` | yes | new private feed address | built |
+| `POST /podcasts/{id}/settings` | yes | clean-up days and refresh interval | built |
+| `POST /podcasts/{id}/episodes` with `action` = keep, unkeep or archive_expired | yes | keep a selection; archive every cleaned-up episode | built |
+| `POST /episodes/archive-expired` | yes | archive every cleaned-up episode of every podcast | built |
+| `POST /episodes/{id}/keep` | yes | keep it or stop keeping it | built |
 
 ## Milestones
 
@@ -397,7 +415,8 @@ only looks at fingerprinted ones, so they don't affect it.
    episodes, detect, render cut audio, episode page, jobs page.
 4. **Private feed** (done): tokens, feed XML, audio with byte ranges, copy
    and QR code.
-5. **Retention**: expiry job, keep pins, settings.
+5. **Retention** (done): clean-up job, keep, settings, cleaned-up episodes
+   shown and archived in one go.
 6. **Timeline editor** (done, ahead of 4 and 5): waveform, sections,
    marks, manual sections, re-cut.
 7. **Deploy**: Kubernetes manifests (Deployment, PVCs, Service, Ingress
@@ -461,4 +480,4 @@ None right now.
   built. Real feed URLs and show names taken out of the repo and its
   history. Milestone 2 built. Milestone 3 built. Timeline editor (milestone
   6) built ahead of 4 and 5; sections under 15 seconds are no longer cut.
-  Milestone 4 built.
+  Milestone 4 built. Milestone 5 built.

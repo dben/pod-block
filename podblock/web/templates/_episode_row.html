@@ -1,6 +1,6 @@
 {% set art = e.image_url|web_url or podcast.image_url|web_url %}
 {% set busy = e.state in ('queued', 'running') %}
-<li class="ep{% if not e.in_feed %} ep-gone{% endif %}" data-id="{{ e.id }}"
+<li class="ep{% if not e.in_feed %} ep-gone{% endif %}{% if e.state == 'expired' %} ep-expired{% endif %}" data-id="{{ e.id }}"
     {% if busy %}hx-get="/episodes/{{ e.id }}/row" hx-trigger="every 3s" hx-swap="outerHTML"{% endif %}>
   <label class="ep-select">
     <input class="ep-check" type="checkbox" name="ids" value="{{ e.id }}" form="bulk" aria-label="Select “{{ e.title }}”">
@@ -29,9 +29,15 @@
         <input type="hidden" name="ids" value="{{ e.id }}">
         <input type="hidden" name="next" value="{{ here }}">
         {% if not busy and e.state != 'ready' %}
-        <button type="submit" name="action" value="download">Download and cut</button>
-        {% elif e.state in ('ready', 'failed') %}
+        <button type="submit" name="action" value="download">{{ 'Download again' if e.state == 'expired' else 'Download and cut' }}</button>
+        {% endif %}
+        {% if e.state in ('ready', 'failed') %}
         <button type="submit" name="action" value="reprocess">Process again</button>
+        {% endif %}
+        {% if e.kept %}
+        <button type="submit" name="action" value="unkeep">Stop keeping</button>
+        {% else %}
+        <button type="submit" name="action" value="keep">Keep (never clean up)</button>
         {% endif %}
         {% if e.archived %}
         <button type="submit" name="action" value="unarchive">Unarchive</button>

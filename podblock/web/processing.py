@@ -119,7 +119,8 @@ def _render(ctx: Context, settings: Settings, episode_id: int, report: dict) -> 
         raise ProcessError("the whole episode was found to repeat, so nothing would be left")
     spec = json.dumps([[round(a, 2), round(b, 2)] for a, b in keep])
     if spec == ep["cut_spec"] and ep["cut_path"] and Path(ep["cut_path"]).exists():
-        ctx.db.execute("UPDATE episodes SET state = 'ready', state_note = NULL WHERE id = ?", (episode_id,))
+        ctx.db.execute("UPDATE episodes SET state = 'ready', state_note = NULL, ready_at = COALESCE(ready_at, ?) "
+                       "WHERE id = ?", (time.time(), episode_id))
         ctx.db.commit()  # nothing to cut differently
         return
     ctx.step("Cutting", episode_id)
@@ -132,8 +133,9 @@ def _render(ctx: Context, settings: Settings, episode_id: int, report: dict) -> 
         Path(ep["cut_path"]).unlink(missing_ok=True)
     ctx.db.execute(
         """UPDATE episodes SET state = 'ready', state_note = NULL, cut_path = ?, cut_type = ?, cut_duration = ?,
-                  cut_bytes = ?, cut_spec = ?, processed_at = ?, ever_downloaded = 1 WHERE id = ?""",
-        (str(out.path), out.mime, out.duration, out.size, spec, time.time(), episode_id))
+                  cut_bytes = ?, cut_spec = ?, processed_at = ?, ready_at = COALESCE(ready_at, ?), expired_at = NULL,
+                  ever_downloaded = 1 WHERE id = ?""",
+        (str(out.path), out.mime, out.duration, out.size, spec, time.time(), time.time(), episode_id))
     ctx.db.commit()
 
 

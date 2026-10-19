@@ -101,10 +101,31 @@ def active_jobs(request: Request) -> int:
         db.close()
 
 
+def expires(ep, podcast=None) -> float | None:
+    """When a ready episode will be cleaned up, or None if it won't (kept, or the podcast keeps everything)."""
+    days = podcast["retention_days"] if podcast is not None else ep["retention_days"]
+    if ep["state"] != "ready" or ep["kept_any"] or not days or not ep["ready_at"]:
+        return None
+    return ep["ready_at"] + days * 86400
+
+
+def until(ts: float | None) -> str:
+    """How long until a time: "in 3 days", "in 5 hr", "soon"."""
+    if not ts:
+        return ""
+    secs = ts - time.time()
+    if secs < 3600:
+        return "soon"
+    if secs < 86400:
+        return f"in {int(secs // 3600)} hr"
+    days = round(secs / 86400)
+    return f"in {days} {'day' if days == 1 else 'days'}"
+
+
 def plural(n: int, one: str, many: str | None = None) -> str:
     return f"{n:,} {one if n == 1 else (many or one + 's')}"
 
 
-templates.env.globals.update(static=static, flashes=take_flashes, active_jobs=active_jobs)
-templates.env.filters.update(ago=ago, day=day, duration=duration, clock=clock, web_url=web_url, plural=plural,
+templates.env.globals.update(static=static, flashes=take_flashes, active_jobs=active_jobs, expires=expires)
+templates.env.filters.update(until=until, ago=ago, day=day, duration=duration, clock=clock, web_url=web_url, plural=plural,
                              text=html_to_text, fromjson=lambda text: json.loads(text) if text else [])

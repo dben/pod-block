@@ -7,11 +7,11 @@ import re
 import sqlite3
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 
 from .. import cut
-from . import jobs, processing
+from . import jobs, library, processing
 from .deps import current_user, get_db
 from .feeds import show_notes
 from .templating import flash, page
@@ -26,7 +26,8 @@ def wake_worker(request: Request) -> None:
 
 def _episode(db: sqlite3.Connection, user_id: int, episode_id: int) -> sqlite3.Row:
     row = db.execute(
-        """SELECT e.*, COALESCE(ue.archived, 0) AS archived, COALESCE(ue.kept, 0) AS kept
+        f"""SELECT e.*, COALESCE(ue.archived, 0) AS archived, COALESCE(ue.kept, 0) AS kept,
+                  {library.KEPT_ANY} AS kept_any, p.retention_days
            FROM episodes e JOIN podcasts p ON p.id = e.podcast_id AND p.followed = 1
            LEFT JOIN user_episodes ue ON ue.episode_id = e.id AND ue.user_id = ?
            WHERE e.id = ?""", (user_id, episode_id)).fetchone()
@@ -128,6 +129,16 @@ def cut_audio(episode_id: int, download: bool = False, user=Depends(current_user
 def original_audio(episode_id: int, user=Depends(current_user), db: sqlite3.Connection = Depends(get_db)) -> Response:
     ep = _episode(db, user["id"], episode_id)
     return _audio(ep["original_path"], ep["title"], False)
+
+
+@router.post("/episodes/{episode_id}/keep")
+def keep_episode(request: Request, episode_id: int, keep: bool = Form(...), user=Depends(current_user),
+                 db: sqlite3.Connection = Depends(get_db)) -> Response:
+    """Keep an episode, so it is never cleaned up, or stop keeping it."""
+    ep = _episode(db, user["id"], episode_id)
+    library.set_kept(db, user["id"], ep["podcast_id"], [episode_id], keep)
+    flash(request, "Kept: it won't be cleaned up." if keep else "No longer kept.")
+    return RedirectResponse(f"/episodes/{episode_id}", status_code=303)
 
 
 @router.post("/episodes/{episode_id}/process")

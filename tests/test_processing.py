@@ -405,3 +405,128 @@ def test_public_url_setting_is_used_for_links(env):
     env.settings.public_url = "https://pods.example.com"
     token, anon = feed_of(env)
     assert b"https://pods.example.com/p/" in anon.get(f"/p/{token}/feed.xml").content
+
+
+# ---- retention ------------------------------------------------------------------------
+
+def age(env, guid, days):
+    env.db.execute("UPDATE episodes SET ready_at = ready_at - ? WHERE guid = ?", (days * 86400, guid))
+    env.db.commit()
+
+
+def test_downloads_are_cleaned_up_after_the_retention_period(env):
+    from podblock.web import retention
+    processed(env)
+    ep = episode(env, "ep-3")
+    files = [Path(ep[k]) for k in ("original_path", "cut_path", "peaks_path")]
+    assert all(f.exists() for f in files) and ep["ready_at"]
+    assert retention.expire_due(env.db) == []
+
+    age(env, "ep-3", 8)
+    assert retention.expire_due(env.db) == [env.ids["ep-3"]]
+    ep = episode(env, "ep-3")
+    assert ep["state"] == "expired" and ep["expired_at"] and not any(f.exists() for f in files)
+    assert ep["cut_path"] is None and env.db.execute("SELECT 1 FROM reports WHERE episode_id = ?", (ep["id"],)).fetchone()
+
+    token, anon = feed_of(env)
+    assert b"Episode 3" not in anon.get(f"/p/{token}/feed.xml").content
+    row = env.client.get(f"/podcasts/{env.pod}").text
+    assert "Cleaned up" in row and "Download again" in row
+    assert "Download again" in env.client.get(f"/episodes/{ep['id']}").text
+
+
+def test_kept_episodes_and_keep_forever_podcasts_stay(env):
+    from podblock.web import library, retention
+    processed(env)
+    for guid in ("ep-2", "ep-3", "ep-4"):
+        age(env, guid, 30)
+    env.client.post(f"/podcasts/{env.pod}/episodes", data={"action": "keep", "ids": env.ids["ep-2"]})
+    other = env.db.execute("INSERT INTO users (username, created_at) VALUES ('guest', 0)").lastrowid
+    env.db.commit()
+    library.set_kept(env.db, other, env.pod, [env.ids["ep-3"]], True)  # kept by someone else counts too
+    assert retention.expire_due(env.db) == [env.ids["ep-4"]]
+    assert "Kept" in env.client.get(f"/podcasts/{env.pod}?view=downloaded").text
+
+    env.client.post(f"/podcasts/{env.pod}/settings", data={"retention_days": 0, "refresh_minutes": 60})
+    age(env, "ep-5", 400)
+    assert retention.expire_due(env.db) == []
+    env.client.post(f"/podcasts/{env.pod}/settings", data={"retention_days": 9999, "refresh_minutes": 60})
+    assert env.db.execute("SELECT retention_days FROM podcasts").fetchone()[0] == 0  # out of range: unchanged
+
+
+def test_ready_shows_when_it_will_be_cleaned_up(env):
+    processed(env)
+    page = env.client.get(f"/episodes/{env.ids['ep-3']}").text
+    assert "cleaned up in 7 days" in page
+    assert "Cleaned up in 7 days" in env.client.get(f"/podcasts/{env.pod}").text
+    env.client.post(f"/episodes/{env.ids['ep-3']}/keep", data={"keep": "true"})
+    assert "You're keeping it" in env.client.get(f"/episodes/{env.ids['ep-3']}").text
+
+
+def test_processing_again_doesnt_restart_the_clock(env):
+    processed(env)
+    age(env, "ep-3", 3)
+    before = episode(env, "ep-3")["ready_at"]
+    env.client.post(f"/episodes/{env.ids['ep-3']}/process")
+    background.run_queue(env.settings)
+    assert episode(env, "ep-3")["ready_at"] == before
+
+
+def test_a_cleaned_up_episode_downloads_again(env):
+    from podblock.web import retention
+    processed(env)
+    age(env, "ep-3", 8)
+    retention.expire_due(env.db)
+    fetched = len(env.cdn.fetched)
+    env.client.post(f"/podcasts/{env.pod}/episodes", data={"action": "download", "ids": env.ids["ep-3"]})
+    background.run_queue(env.settings)
+    ep = episode(env, "ep-3")
+    assert ep["state"] == "ready" and Path(ep["cut_path"]).exists() and ep["expired_at"] is None
+    assert len(env.cdn.fetched) == fetched + 1 and ep["ready_at"] > 0
+
+
+def test_archiving_everything_cleaned_up(env):
+    from podblock.web import retention
+    processed(env)
+    for guid in ("ep-2", "ep-3"):
+        age(env, guid, 8)
+    retention.expire_due(env.db)
+    page = env.client.get(f"/podcasts/{env.pod}").text
+    assert "2 episodes were downloaded and cleaned up since." in page
+    assert "Archive 2 cleaned-up episodes" in env.client.get("/").text
+
+    env.client.post(f"/podcasts/{env.pod}/episodes", data={"action": "archive_expired"})
+    page = env.client.get(f"/podcasts/{env.pod}").text
+    assert "cleaned up since" not in page and "Episode 3" not in page and "Episode 4" in page
+    assert "Episode 3" in env.client.get(f"/podcasts/{env.pod}?view=archived").text
+
+    age(env, "ep-4", 8)
+    retention.expire_due(env.db)
+    env.client.post("/episodes/archive-expired")
+    assert "Episode 4" not in env.client.get(f"/podcasts/{env.pod}?view=downloaded").text
+
+
+def test_leftover_downloads_of_failed_jobs_go_too(env):
+    import os
+    from podblock.web import retention
+    env.cdn.fail.add("https://cdn.example.com/2.mp3")  # a companion fails after the chosen one downloaded
+    jobs.enqueue(env.db, "process", [env.ids["ep-1"]], None)
+    background.run_queue(env.settings)
+    ep = episode(env, "ep-1")
+    assert ep["state"] == "failed" and Path(ep["original_path"]).exists()
+    old = Path(ep["original_path"]).stat().st_mtime - 8 * 86400
+    os.utime(ep["original_path"], (old, old))
+    retention.expire_due(env.db)
+    assert episode(env, "ep-1")["original_path"] is None
+
+
+def test_daily_prune_spares_fingerprints_in_use(env):
+    import os
+    from podblock.web import retention
+    processed(env)
+    fp = Path(episode(env, "ep-3")["fingerprint_path"])
+    old = fp.stat().st_mtime - 90 * 86400
+    os.utime(fp, (old, old))
+    assert retention.prune_store(env.db, env.settings) is not None
+    assert fp.exists()
+    assert retention.prune_store(env.db, env.settings) is None  # once a day

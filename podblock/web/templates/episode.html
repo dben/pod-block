@@ -43,7 +43,29 @@
           <button class="btn btn-ghost btn-sm" type="submit">Process again</button>
         </form>
       </div>
-      {% if e.processed_at %}<p class="hint">Processed {{ e.processed_at|ago }}.</p>{% endif %}
+      {% set ex = expires(e) %}
+      <div class="keep-row">
+        <p class="hint">
+          {% if e.processed_at %}Processed {{ e.processed_at|ago }}.{% endif %}
+          {% if e.kept %}You're keeping it, so it won't be cleaned up.
+          {% elif e.kept_any %}Someone is keeping it, so it won't be cleaned up.
+          {% elif ex %}Its download is cleaned up {{ ex|until }} ({{ ex|day }}) unless you keep it.
+          {% endif %}
+        </p>
+        <form method="post" action="/episodes/{{ e.id }}/keep">
+          <input type="hidden" name="keep" value="{{ 'false' if e.kept else 'true' }}">
+          <button class="btn btn-ghost btn-sm" type="submit">{{ 'Stop keeping' if e.kept else 'Keep' }}</button>
+        </form>
+      </div>
+    </section>
+    {% elif e.state == 'expired' %}
+    <section class="card status-card">
+      <h2>Cleaned up</h2>
+      <p class="muted">Its download was deleted {{ e.expired_at|ago if e.expired_at else '' }}, {{ e.retention_days }} days after it was
+        ready. The report and any changes you made stay, so downloading it again cuts it the same way.</p>
+      <form method="post" action="/episodes/{{ e.id }}/process">
+        <button class="btn btn-primary" type="submit">Download again</button>
+      </form>
     </section>
     {% elif e.state == 'failed' %}
     <section class="card status-card">
@@ -145,7 +167,7 @@
         </li>
         {% endfor %}
       </ol>
-      <p class="hint">The download is gone, so there is no timeline to edit. Process it again to get one.</p>
+      <p class="hint">The download is gone, so there is no timeline to edit. Download it again to get one.</p>
     </section>
     {% endif %}
   </div>

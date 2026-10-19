@@ -695,3 +695,28 @@ a.podcast-card:hover { border-color: var(--border-strong); background: var(--sur
   .feed-panel-body { width: 100%; }
   .qr { width: 148px; }
 }
+
+/* ---- retention ------------------------------------------------------------ */
+
+.badge-gone { background: var(--surface-3); color: var(--faint); }
+.badge-kept { background: rgb(143 180 255 / 0.14); color: var(--focus); }
+.badge-kept .icon { width: 12px; height: 12px; }
+.ep-expiry { font-size: 0.8rem; color: var(--faint); }
+.ep-expired .ep-art, .ep-expired .ep-title { opacity: 0.6; }
+.cleanup-note {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 6px 0 10px;
+  padding: 10px 14px; border-radius: var(--radius-sm); background: var(--surface); border: 1px dashed var(--border-strong);
+}
+.cleanup-note .muted { font-size: 0.9rem; margin-right: auto; }
+.keep-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; }
+.settings-panel { display: grid; gap: 14px; padding: 20px; margin: -4px 0 20px; }
+.settings-form { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 16px 24px; }
+.settings-form .field { flex: 1 1 240px; }
+.settings-form .btn { align-self: flex-end; margin-bottom: 22px; }
+.input-with-unit { display: flex; align-items: center; gap: 10px; }
+.input-with-unit .input { max-width: 120px; }
+select.input { appearance: auto; }
+@media (max-width: 720px) {
+  .tabs { overflow-x: auto; max-width: 100%; }
+  .tabs a { white-space: nowrap; padding: 0 10px; gap: 6px; font-size: 0.86rem; }
+}

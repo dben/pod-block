@@ -1,6 +1,6 @@
-"""Work that runs apart from any request: feed refreshes, and the job queue.
+"""Work that runs apart from any request: feed refreshes, clean-up, and the job queue.
 
-One thread refreshes feeds when they are due. `workers` threads take jobs
+One thread refreshes feeds when they are due and cleans up old downloads. `workers` threads take jobs
 from the queue; pages call `wake()` after adding one so it starts at once.
 """
 
@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 import threading
 
-from . import feeds, jobs, processing
+from . import feeds, jobs, processing, retention
 from .config import Settings
 from .db import connect
 
@@ -86,10 +86,12 @@ class Background:
                 db = connect(self.settings.db_path)
                 try:
                     feeds.refresh_due(db)
+                    retention.expire_due(db)
+                    retention.prune_store(db, self.settings)
                 finally:
                     db.close()
             except Exception:  # keep going; the next tick may well work
-                log.exception("refreshing feeds failed")
+                log.exception("refreshing feeds or cleaning up failed")
             self._stop.wait(self.tick)
 
     def _work(self) -> None:
