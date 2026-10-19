@@ -1,0 +1,5 @@
+{% if e.state == 'ready' %}<span class="badge badge-ok">Ready{% if e.cut_duration %} · {{ e.cut_duration|duration }}{% endif %}</span>
+{% elif e.state == 'running' %}<span class="badge badge-busy"><span class="spinner" aria-hidden="true"></span>{{ e.state_note or 'Working' }}</span>
+{% elif e.state == 'queued' %}<span class="badge badge-busy">{{ e.state_note or 'Queued' }}</span>
+{% elif e.state == 'failed' %}<span class="badge badge-error" title="{{ e.state_note or '' }}">Failed</span>
+{% endif %}

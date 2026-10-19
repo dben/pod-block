@@ -9,6 +9,7 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Callable
 
 import requests
 
@@ -210,16 +211,29 @@ def fetch_feed(url: str, timeout: float = 60) -> Feed:
     return parse_feed(get_feed(url, timeout=timeout).xml, url)
 
 
-def download(url: str, dest: Path, timeout: float = 60) -> Path:
-    """Download to `dest`, skipping the request when the file already exists."""
+def download(url: str, dest: Path, timeout: float = 60,
+             progress: Callable[[int, int | None], None] | None = None) -> Path:
+    """Download to `dest`, skipping the request when the file already exists.
+
+    `progress(done, total)` is called after each chunk; `total` is None when
+    the server doesn't say. An exception it raises stops the download.
+    """
     if dest.exists() and dest.stat().st_size > 0:
         return dest
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_suffix(dest.suffix + ".part")
-    with requests.get(url, headers={"User-Agent": USER_AGENT}, stream=True, timeout=timeout) as resp:
-        resp.raise_for_status()
-        with open(tmp, "wb") as fh:
-            for chunk in resp.iter_content(chunk_size=1 << 20):
-                fh.write(chunk)
-    tmp.rename(dest)
+    try:
+        with requests.get(url, headers={"User-Agent": USER_AGENT}, stream=True, timeout=timeout) as resp:
+            resp.raise_for_status()
+            total = int(resp.headers["Content-Length"]) if resp.headers.get("Content-Length", "").isdigit() else None
+            done = 0
+            with open(tmp, "wb") as fh:
+                for chunk in resp.iter_content(chunk_size=1 << 20):
+                    fh.write(chunk)
+                    done += len(chunk)
+                    if progress:
+                        progress(done, total)
+        tmp.rename(dest)
+    finally:
+        tmp.unlink(missing_ok=True)
     return dest

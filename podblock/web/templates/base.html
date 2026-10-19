@@ -22,6 +22,8 @@
     </a>
     <nav class="topnav" aria-label="Main">
       <a href="/" {% if nav == 'podcasts' %}aria-current="page"{% endif %}>Podcasts</a>
+      {% set working = active_jobs(request) %}
+      <a href="/jobs" {% if nav == 'jobs' %}aria-current="page"{% endif %}>Jobs{% if working %} <span class="nav-count">{{ working }}</span>{% endif %}</a>
     </nav>
     <form method="post" action="/logout" class="topbar-end">
       <button class="btn btn-ghost btn-sm" type="submit">Log out</button>
@@ -36,6 +38,10 @@
     <a href="/" {% if nav == 'podcasts' %}aria-current="page"{% endif %}>
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a6 6 0 0 0-6 6v3a6 6 0 0 0 12 0V9a6 6 0 0 0-6-6Zm0 15v3m-4 0h8"/></svg>
       <span>Podcasts</span>
+    </a>
+    <a href="/jobs" {% if nav == 'jobs' %}aria-current="page"{% endif %}>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h10M4 18h7M17 15l2 2 3-4"/></svg>
+      <span>Jobs{% if working %} ({{ working }}){% endif %}</span>
     </a>
     <form method="post" action="/logout">
       <button type="submit">

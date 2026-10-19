@@ -12,7 +12,8 @@ what is done, and what comes later. Update it as work lands.
 | Repeat detection (`podblock` CLI, `podblock/*.py`) | done; see `README.md` |
 | Milestone 1: skeleton | done: `podblock serve`, API-key login, dark theme, Dockerfile |
 | Milestone 2: feeds | done: add and refresh feeds, show header, episode list, archive, remove |
-| Milestone 3: processing | next |
+| Milestone 3: processing | done: job queue and worker, download, detect, cut, episode and jobs pages |
+| Milestone 4: private feed | next |
 
 Last updated: 2026-10-19.
 
@@ -40,8 +41,8 @@ Answers to the first round of questions, kept here so they don't get lost.
 | Timeline and player | wavesurfer.js with its regions plugin | waveform, draggable regions, click-to-play at a region |
 | Styling | hand-written CSS with custom properties | dark by default, mobile first, no build step |
 | Database | `podblock.sqlite`, through `sqlite3` as the detector's `Store` does | one file on a volume; the app's tables are added by numbered steps in `podblock/web/db.py` |
-| Background work | a worker thread in the same process, taking jobs from a table in the database | survives restarts, needs no broker; can move to its own process or pod later without code changes |
-| Audio cutting | ffmpeg | already required by the detector |
+| Background work | worker threads in the same process (`PODBLOCK_WORKERS`, default 1), taking jobs from a table in the database; one more thread refreshes feeds | survives restarts, needs no broker; can move to its own process or pod later without code changes |
+| Audio cutting | `podblock/cut.py`: one ffmpeg decodes to raw samples, Python drops the cut stretches and fades each join, a second ffmpeg encodes | flat memory whatever the length, cuts on the exact sample, real fades; one decode and one encode |
 
 ## How it fits together
 
@@ -87,6 +88,7 @@ Other settings:
 | `PODBLOCK_SECRET_KEY` | signs session cookies; made and stored on first start when unset |
 | `PODBLOCK_SECURE_COOKIES` | `true` to send the session cookie over HTTPS only; set it behind TLS |
 | `PODBLOCK_PUBLIC_URL` | base URL for links in the private feed, e.g. `https://pods.example.com`; falls back to the request's host (not used yet) |
+| `PODBLOCK_WORKERS` | threads running jobs (default 1). Fingerprinting takes about 0.3 GB and one core per thread |
 | `FORWARDED_ALLOW_IPS` | Uvicorn's own: which proxies to trust for `X-Forwarded-*` headers; set it to the ingress's address range |
 
 Run notes:
@@ -118,8 +120,10 @@ Ticked items are built. Each has an id so commits and issues can point at it.
 - [x] **F3** Episode list: artwork, title, date, length, season and episode
   number, trailer and bonus badges, two lines of show notes as plain text.
   Newest first, 50 at a time with "Load more". Search by title as you type.
-  - [ ] Processing state per episode (`queued`, `processing`, `ready`,
-    `failed`, `expired`): milestone 3.
+  - [x] Processing state per episode: Queued, what it is doing ("Downloading
+    45%", "Fingerprinting", "Cutting"), Ready with the cut length, Failed.
+    A row being processed refreshes itself every 3 seconds.
+  - [ ] `expired` (milestone 5).
 - [x] **F4** Refresh feeds by hand, and in the background when due (every 60
   minutes by default; `podcasts.refresh_minutes`). Refreshes send the last
   ETag and Last-Modified, so an unchanged feed costs one short request.
@@ -143,7 +147,9 @@ Ticked items are built. Each has an id so commits and issues can point at it.
     while anything is selected. Archiving takes the rows out without a page
     load, with Undo in the toast.
   - "Archive this and older" in each row's menu.
-  - [ ] Download and Keep in the bar (milestones 3 and 5).
+  - [x] Download in the bar and in each row's menu ("Download and cut";
+    "Process again" once ready or failed).
+  - [ ] Keep in the bar (milestone 5).
 - [x] **F8** Remove a podcast, after a confirmation saying what happens:
   episodes never downloaded are deleted; downloaded ones, and the blocks
   learned from the show, stay (blocks may be ads other shows share). The
@@ -152,22 +158,35 @@ Ticked items are built. Each has an id so commits and issues can point at it.
 
 ### Processing
 
-- [ ] **P1** "Download" on an episode, or on a selection, queues a job:
+- [x] **P1** "Download" on an episode, or on a selection, queues a job:
   download, fingerprint, compare with nearby episodes, build the report,
-  render the cut audio.
-- [ ] **P2** When the show has fewer than 4 fingerprinted episodes, the job
+  render the cut audio. Episodes already ready or queued are skipped;
+  "Process again" redoes a ready one, reusing its download.
+- [x] **P2** When the show has fewer than 4 fingerprinted episodes, the job
   takes the episodes after the chosen one until it has 4, then older ones if
   the feed runs out. They are fingerprinted first and compared as one group,
-  then each is reported and rendered like a chosen one.
-- [ ] **P3** Jobs run in the background; the UI shows progress per episode
-  and a jobs page shows the queue, running, done and failed jobs with their
-  errors, and lets you retry or cancel.
-- [ ] **P4** Jobs left running when the app stops are picked up again on
-  start.
-- [ ] **P5** Cut audio keeps the source format and about the source bitrate,
-  with short fades at each cut so joins don't click.
-- [ ] **P6** Every section the report lists is cut. Blocks marked `ignored`
+  then each is reported and rendered like a chosen one. If the job fails or
+  is cancelled, companions not yet ready go back to rest quietly.
+- [x] **P3** Jobs run in the background; each row shows its progress, and
+  the jobs page (with a count in the nav) shows running, queued and recent
+  jobs with their step, progress bar and errors, and lets you cancel or
+  retry. Cancelling stops a running job between steps or mid-download.
+- [x] **P4** Jobs left running when the app stops go back in the queue on
+  start, unless they were being cancelled.
+- [x] **P5** Cut audio keeps the source format (MP3, AAC in M4A, Opus,
+  Vorbis; anything else becomes MP3) at the nearest standard bitrate, with a
+  40 ms fade either side of each join. Tags and cover art are copied;
+  chapters are dropped. Kept stretches under a second between two cuts go
+  too.
+- [x] **P6** Every section the report lists is cut. Blocks marked `ignored`
   never show up in a report, so they stay.
+- [x] **P7** An episode page: status (queued and running ones update
+  themselves), a player and a download for the cut file, how much was cut,
+  the list of cut sections with a button to play the original from a few
+  seconds before each, and the show notes.
+- [ ] **P8** Run each job in a child process, so a crash or a memory spike
+  in fingerprinting can't take the web side down, and so cancelling can stop
+  fingerprinting too (today it stops only between steps).
 
 ### Timeline editor
 
@@ -262,15 +281,26 @@ episodes  + pub_ts, summary, image_url, link, audio_type, audio_length, feed_dur
             in_feed, ever_downloaded
 ```
 
+Built in migration 4:
+
+```
+episodes  + state, state_note,                               -- NULL, queued, running, ready, failed
+            original_path, cut_path, cut_type, cut_duration, cut_bytes, processed_at
+jobs(id, kind, episode_id, state, step, progress, error, cancel_requested, attempts,
+     requested_by, created_at, started_at, finished_at)
+```
+
+Audio lives under the media folder: `original/<key>.<ext>` and
+`cut/<key>.<ext>`, where the key is the first 16 hex digits of the guid's
+SHA-1. Fingerprints stay under the data folder, named as the CLI names them,
+so episodes the CLI fingerprinted are reused.
+
 Planned:
 
 ```
 podcasts  + public_token, retention_days
-episodes  + state, public_token, original_path, cut_path, cut_duration, cut_length,
-            processed_at, expires_at
+episodes  + public_token, expires_at
 edits(id, episode_id, kind, start, end, segment_id, created_at)  -- kind: cut (hand-added section)
-jobs(id, kind, episode_id, podcast_id, state, progress, error,
-     attempts, created_at, started_at, finished_at)
 ```
 
 Guids are unique across the whole store. If two shows use the same guid,
@@ -291,10 +321,14 @@ only looks at fingerprinted ones, so they don't affect it.
 | `POST /podcasts/{id}/refresh` | yes | refresh now | built |
 | `POST /podcasts/{id}/episodes` | yes | `action` = archive, unarchive or archive_older on `ids`; JSON when asked | built |
 | `POST /podcasts/{id}/remove` | yes | stop following | built |
-| `GET /episodes/{id}` | yes | timeline editor | |
+| `POST /podcasts/{id}/episodes` with `action` = download or reprocess | yes | queue jobs for a selection | built |
+| `GET /episodes/{id}` | yes | episode page; the timeline editor later | built |
+| `GET /episodes/{id}/row`, `/status` | yes | pieces of pages that poll while an episode is processed | built |
+| `GET /episodes/{id}/audio[?download=1]` | yes | cut audio, with byte ranges | built |
+| `GET /episodes/{id}/original` | yes | original audio, with byte ranges | built |
+| `POST /episodes/{id}/process` | yes | queue it, or process it again | built |
+| `GET /jobs`, `POST /jobs/{id}/cancel`, `POST /jobs/{id}/retry` | yes | job queue | built |
 | `POST /episodes/{id}/edits` | yes | save timeline edits | |
-| `GET /episodes/{id}/original` | yes | original audio for the timeline | |
-| `GET /jobs` | yes | job queue | |
 | `GET /p/{token}/feed.xml` | no | private feed | |
 | `GET /p/{token}/{episode_token}.{ext}` | no | cut audio | |
 
@@ -305,8 +339,8 @@ only looks at fingerprinted ones, so they don't affect it.
    `podblock serve`, `podblock api-key`, Dockerfile.
 2. **Feeds** (done): add, refresh, show header, episode list, prune,
    archive with multi-select, remove.
-3. **Processing**: jobs table and worker, download with comparison
-   episodes, detect, render cut audio, jobs page.
+3. **Processing** (done): jobs table and worker, download with comparison
+   episodes, detect, render cut audio, episode page, jobs page.
 4. **Private feed**: tokens, feed XML, audio with byte ranges.
 5. **Retention**: expiry job, keep pins, settings.
 6. **Timeline editor**: waveform, sections, marks, manual sections,
@@ -342,6 +376,9 @@ None right now.
   episode's artwork straight from the feed's host, lazily, and some feeds
   use 3000 px images.
 - Follow feeds that move: a 301 redirect or `itunes:new-feed-url`.
+- Cut ready episodes again when a later download finds new blocks in them
+  (the detector already rescans those episodes; only their cut files go
+  stale). For now, "Process again" does it by hand.
 - A real job for feed refreshes, once the job queue exists, so they show on
   the jobs page.
 - Helm chart.
@@ -350,4 +387,4 @@ None right now.
 
 - 2026-10-19: plan written; first round of questions answered; milestone 1
   built. Real feed URLs and show names taken out of the repo and its
-  history. Milestone 2 built.
+  history. Milestone 2 built. Milestone 3 built.

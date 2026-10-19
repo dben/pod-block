@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block content %}
+{% set busy = jobs.running or jobs.queued %}
+<section id="jobs" {% if busy %}hx-get="/jobs" hx-trigger="every 3s" hx-select="#jobs" hx-swap="outerHTML"{% endif %}>
+  <div class="page-head">
+    <div>
+      <h1>Jobs</h1>
+      <p class="muted">{{ jobs.running|length }} running · {{ jobs.queued|length }} queued</p>
+    </div>
+  </div>
+
+  {% for group, label in [('running', 'Running'), ('queued', 'Queued'), ('finished', 'Recent')] %}
+  {% if jobs[group] %}
+  <h2 class="group-title">{{ label }}</h2>
+  <ul class="job-list">
+    {% for j in jobs[group] %}
+    <li class="card job job-{{ j.state }}">
+      <div class="job-body">
+        <p class="job-title">
+          {% if j.episode_id %}<a href="/episodes/{{ j.episode_id }}">{{ j.episode_title or 'Untitled' }}</a>{% else %}{{ j.kind|capitalize }}{% endif %}
+        </p>
+        <p class="muted job-meta">
+          {% if j.podcast_name %}<span>{{ j.podcast_name }}</span>{% endif %}
+          {% if j.state == 'running' %}<span>{{ j.step or 'Starting' }}{% if j.progress is not none %} · {{ (j.progress * 100)|round|int }}%{% endif %}</span>
+          {% elif j.state == 'queued' %}<span>Queued {{ j.created_at|ago }}</span>
+          {% else %}<span>{{ j.state|capitalize }} {{ j.finished_at|ago }}</span>
+            {% if j.started_at and j.finished_at %}<span>took {{ (j.finished_at - j.started_at)|duration }}</span>{% endif %}
+          {% endif %}
+        </p>
+        {% if j.state == 'running' %}
+        <div class="progress{% if j.progress is none %} progress-idle{% endif %}">
+          <span {% if j.progress is not none %}style="width: {{ (j.progress * 100)|round(1) }}%"{% endif %}></span>
+        </div>
+        {% endif %}
+        {% if j.error %}<p class="text-error job-error">{{ j.error }}</p>{% endif %}
+      </div>
+      <div class="job-actions">
+        {% if j.state in ('queued', 'running') %}
+        <form method="post" action="/jobs/{{ j.id }}/cancel">
+          <button class="btn btn-ghost btn-sm" type="submit" {% if j.cancel_requested %}disabled{% endif %}>
+            {{ 'Stopping' if j.cancel_requested else 'Cancel' }}</button>
+        </form>
+        {% elif j.state in ('failed', 'cancelled') %}
+        <form method="post" action="/jobs/{{ j.id }}/retry">
+          <button class="btn btn-ghost btn-sm" type="submit">Retry</button>
+        </form>
+        {% endif %}
+      </div>
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+  {% endfor %}
+
+  {% if not busy and not jobs.finished %}
+  <div class="card empty">
+    <h2>No jobs yet</h2>
+    <p class="muted">Download an episode from a podcast's list and it shows up here while it's processed.</p>
+  </div>
+  {% endif %}
+</section>
+{% endblock %}

@@ -13,12 +13,14 @@ import re
 import sqlite3
 import threading
 import time
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from html.parser import HTMLParser
 
 import requests
 
-from ..feed import Feed, FeedError, get_feed, parse_feed
+from ..feed import CONTENT, ITUNES, Feed, FeedError, get_feed, parse_feed
+from . import jobs
 
 log = logging.getLogger(__name__)
 
@@ -206,12 +208,11 @@ def _apply(db: sqlite3.Connection, podcast_id: int, feed: Feed, etag: str | None
 
     if feed.episodes:  # an empty feed is more likely broken than emptied; leave what we have
         missing = [r for r in db.execute(
-            "SELECT id, in_feed, ever_downloaded, fingerprint_path FROM episodes WHERE podcast_id = ?",
+            "SELECT id, in_feed, ever_downloaded, fingerprint_path, state FROM episodes WHERE podcast_id = ?",
             (podcast_id,)) if r["id"] not in seen]
-        keep = {r["id"] for r in db.execute(
-            "SELECT DISTINCT episode_id AS id FROM occurrences UNION SELECT episode_id FROM reports")}
+        keep = _known_to_detector(db)
         for r in missing:
-            if r["ever_downloaded"] or r["fingerprint_path"] or r["id"] in keep:
+            if _downloaded(r, keep):
                 if r["in_feed"]:
                     db.execute("UPDATE episodes SET in_feed = 0 WHERE id = ?", (r["id"],))
                     result.gone += 1
@@ -224,18 +225,32 @@ def _apply(db: sqlite3.Connection, podcast_id: int, feed: Feed, etag: str | None
     return result
 
 
+def _known_to_detector(db: sqlite3.Connection) -> set[int]:
+    return {r["id"] for r in db.execute(
+        "SELECT DISTINCT episode_id AS id FROM occurrences UNION SELECT episode_id FROM reports")}
+
+
+def _downloaded(row: sqlite3.Row, known: set[int]) -> bool:
+    """Whether an episode is ours to keep: downloaded, being downloaded, or used by the detector."""
+    return bool(row["ever_downloaded"] or row["fingerprint_path"] or row["id"] in known
+                or row["state"] in jobs.ACTIVE)
+
+
 def remove_podcast(db: sqlite3.Connection, podcast_id: int) -> int:
     """Stop following a podcast. Episodes never downloaded go; returns how many stayed.
 
     The podcast row stays, hidden, with its downloaded episodes and the blocks
     learned from it: those blocks may be ads shared with other shows.
     """
+    for job in db.execute("""SELECT j.id FROM jobs j JOIN episodes e ON e.id = j.episode_id
+                             WHERE e.podcast_id = ? AND j.state IN ('queued', 'running')""",
+                          (podcast_id,)).fetchall():
+        jobs.cancel(db, job["id"])
     stayed = 0
-    keep = {r["id"] for r in db.execute(
-        "SELECT DISTINCT episode_id AS id FROM occurrences UNION SELECT episode_id FROM reports")}
-    for r in db.execute("SELECT id, ever_downloaded, fingerprint_path FROM episodes WHERE podcast_id = ?",
+    keep = _known_to_detector(db)
+    for r in db.execute("SELECT id, ever_downloaded, fingerprint_path, state FROM episodes WHERE podcast_id = ?",
                         (podcast_id,)).fetchall():
-        if r["ever_downloaded"] or r["fingerprint_path"] or r["id"] in keep:
+        if _downloaded(r, keep):
             stayed += 1
         else:
             db.execute("DELETE FROM compared_pairs WHERE a_id = ? OR b_id = ?", (r["id"], r["id"]))
@@ -260,3 +275,18 @@ def refresh_due(db: sqlite3.Connection, now: float | None = None) -> list[int]:
         except RefreshError as e:
             log.warning("refreshing podcast %d failed: %s", podcast_id, e)
     return due
+
+
+def show_notes(item_xml: str | None) -> str:
+    """An episode's full show notes as plain text, from the <item> we kept."""
+    if not item_xml:
+        return ""
+    try:
+        item = ET.fromstring(item_xml)
+    except ET.ParseError:
+        return ""
+    for path in (f"{CONTENT}encoded", "description", f"{ITUNES}summary"):
+        text = item.findtext(path)
+        if text and text.strip():
+            return html_to_text(text)
+    return ""

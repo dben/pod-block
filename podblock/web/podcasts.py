@@ -8,7 +8,8 @@ from urllib.parse import urlencode
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 
-from . import feeds, library
+from . import feeds, jobs, library
+from .episodes import wake_worker
 from .deps import current_user, get_db
 from .templating import flash, page
 
@@ -86,8 +87,23 @@ def refresh_podcast(request: Request, podcast_id: int, user=Depends(current_user
 def change_episodes(request: Request, podcast_id: int, action: str = Form(...), ids: list[int] = Form([]),
                     next: str = Form(""), user=Depends(current_user),
                     db: sqlite3.Connection = Depends(get_db)) -> Response:
-    """Archive or unarchive a selection, or archive one episode and everything before it."""
+    """Archive, unarchive or download a selection, or archive one episode and everything before it."""
     _podcast_or_404(db, podcast_id)
+    if action in {"download", "reprocess"}:
+        mine = [r["id"] for r in db.execute(
+            f"SELECT id FROM episodes WHERE podcast_id = ? AND id IN ({', '.join('?' * len(ids))})",
+            (podcast_id, *ids))] if ids else []
+        changed = jobs.enqueue(db, "process", mine, user["id"], skip_ready=action == "download")
+        if changed:
+            wake_worker(request)
+        if _wants_json(request):
+            return JSONResponse({"action": action, "changed": changed})
+        skipped = len(mine) - len(changed)
+        note = f" {skipped:,} already ready or queued." if skipped else ""
+        flash(request, f"Queued {len(changed):,} {'episode' if len(changed) == 1 else 'episodes'}.{note}"
+              if changed else "Those are already ready or queued.")
+        back = next if next.startswith(f"/podcasts/{podcast_id}") else f"/podcasts/{podcast_id}"
+        return RedirectResponse(back, status_code=303)
     if action == "archive_older" and ids:
         changed = library.archive_older(db, user["id"], podcast_id, ids[0])
         verb = "Archived"

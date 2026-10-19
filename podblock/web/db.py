@@ -78,6 +78,35 @@ MIGRATIONS = [
     lambda db: db.executemany("UPDATE episodes SET pub_ts = ? WHERE id = ?", [
         (ts, r["id"]) for r in db.execute("SELECT id, pub_date FROM episodes WHERE pub_date IS NOT NULL")
         if (ts := iso_ts(r["pub_date"])) is not None]),
+    # 4: processing. Each episode's place in it, the files it made, and the jobs.
+    """
+    ALTER TABLE episodes ADD COLUMN state TEXT;  -- NULL, queued, running, ready, failed
+    ALTER TABLE episodes ADD COLUMN state_note TEXT;  -- what it is doing, or why it failed
+    ALTER TABLE episodes ADD COLUMN original_path TEXT;  -- the download, under the media folder
+    ALTER TABLE episodes ADD COLUMN cut_path TEXT;  -- the audio with repeats cut out
+    ALTER TABLE episodes ADD COLUMN cut_type TEXT;
+    ALTER TABLE episodes ADD COLUMN cut_duration REAL;
+    ALTER TABLE episodes ADD COLUMN cut_bytes INTEGER;
+    ALTER TABLE episodes ADD COLUMN processed_at REAL;
+
+    CREATE TABLE jobs (
+        id INTEGER PRIMARY KEY,
+        kind TEXT NOT NULL,  -- process
+        episode_id INTEGER REFERENCES episodes(id) ON DELETE CASCADE,
+        state TEXT NOT NULL DEFAULT 'queued',  -- queued, running, done, failed, cancelled
+        step TEXT,  -- what it is doing now
+        progress REAL,  -- 0 to 1 through the step, when known
+        error TEXT,
+        cancel_requested INTEGER NOT NULL DEFAULT 0,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        requested_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        created_at REAL NOT NULL,
+        started_at REAL,
+        finished_at REAL
+    );
+    CREATE INDEX jobs_state ON jobs(state, id);
+    CREATE INDEX jobs_episode ON jobs(episode_id);
+    """,
 ]
 
 

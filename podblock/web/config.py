@@ -19,7 +19,8 @@ class Settings:
     api_key: str | None = None  # fixed login key; else one is made on first start
     secret_key: str | None = None  # signs session cookies; else one is made and stored
     secure_cookies: bool = False  # send the session cookie over HTTPS only
-    background: bool = True  # refresh feeds (and later, run jobs) in a background thread
+    background: bool = True  # refresh feeds and run jobs in background threads
+    workers: int = 1  # threads running jobs
 
     @property
     def db_path(self) -> Path:
@@ -36,4 +37,5 @@ class Settings:
             api_key=os.environ.get("PODBLOCK_API_KEY") or None,
             secret_key=os.environ.get("PODBLOCK_SECRET_KEY") or None,
             secure_cookies=_flag("PODBLOCK_SECURE_COOKIES"),
+            workers=int(os.environ.get("PODBLOCK_WORKERS") or 1),
         )

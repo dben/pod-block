@@ -12,6 +12,8 @@ from fastapi import Request
 from fastapi.responses import Response
 from fastapi.templating import Jinja2Templates
 
+from . import jobs
+from .db import connect
 from .feeds import html_to_text
 
 HERE = Path(__file__).parent
@@ -84,10 +86,25 @@ def web_url(url: str | None) -> str | None:
     return url if url and url.split(":", 1)[0].lower() in {"http", "https"} else None
 
 
+def clock(secs: float | None) -> str:
+    secs = int(round(secs or 0))
+    h, rem = divmod(secs, 3600)
+    m, s = divmod(rem, 60)
+    return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+
+
+def active_jobs(request: Request) -> int:
+    db = connect(request.app.state.settings.db_path)
+    try:
+        return jobs.active_count(db)
+    finally:
+        db.close()
+
+
 def plural(n: int, one: str, many: str | None = None) -> str:
     return f"{n:,} {one if n == 1 else (many or one + 's')}"
 
 
-templates.env.globals.update(static=static, flashes=take_flashes)
-templates.env.filters.update(ago=ago, day=day, duration=duration, web_url=web_url, plural=plural,
+templates.env.globals.update(static=static, flashes=take_flashes, active_jobs=active_jobs)
+templates.env.filters.update(ago=ago, day=day, duration=duration, clock=clock, web_url=web_url, plural=plural,
                              text=html_to_text, fromjson=lambda text: json.loads(text) if text else [])

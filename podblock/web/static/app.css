@@ -421,3 +421,86 @@ a.podcast-card:hover { border-color: var(--border-strong); background: var(--sur
 .toast-action { margin-left: auto; padding: 4px 8px; border: 0; background: none; color: var(--accent); font: inherit; font-weight: 700; cursor: pointer; }
 @keyframes toast-in { from { opacity: 0; transform: translateY(-8px); } }
 .auth .toasts { top: 16px; }
+
+/* ---- processing ----------------------------------------------------------- */
+
+.badge-ok { background: rgb(61 220 151 / 0.14); color: var(--ok); }
+.badge-busy { background: var(--accent-soft); color: var(--accent); }
+.badge-busy .spinner { width: 10px; height: 10px; border-width: 1.5px; }
+.nav-count {
+  display: inline-grid; place-items: center; min-width: 20px; height: 20px; padding: 0 6px; margin-left: 4px;
+  border-radius: 999px; background: var(--accent); color: var(--accent-ink); font-size: 0.75rem; font-weight: 700;
+}
+.ep-link { color: inherit; text-decoration: none; }
+.ep-link:hover { text-decoration: underline; text-underline-offset: 3px; }
+
+.progress { position: relative; height: 6px; border-radius: 999px; background: var(--surface-3); overflow: hidden; }
+.progress > span { position: absolute; inset: 0 auto 0 0; width: 0; border-radius: inherit; background: var(--accent); transition: width 0.4s; }
+.progress-idle > span, .status-card .progress > span {
+  width: 35%; animation: slide 1.4s ease-in-out infinite;
+}
+.progress-idle > span { background: var(--border-strong); }
+@keyframes slide { from { left: -35%; } to { left: 100%; } }
+
+/* ---- episode page --------------------------------------------------------- */
+
+.back {
+  display: inline-flex; align-items: center; gap: 4px; margin-bottom: 16px;
+  color: var(--muted); text-decoration: none; font-weight: 600; font-size: 0.9rem;
+}
+.back:hover { color: var(--text); }
+.ep-head { display: flex; gap: 20px; align-items: center; margin-bottom: 24px; }
+.ep-head-art { flex: none; width: 120px; height: 120px; border-radius: 14px; object-fit: cover; box-shadow: 0 10px 30px rgb(0 0 0 / 0.5); }
+.ep-head-info { display: grid; gap: 8px; min-width: 0; }
+.ep-head-info h1 { font-size: 1.6rem; }
+.ep-page { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 360px); gap: 20px; align-items: start; }
+.ep-main { display: grid; gap: 20px; min-width: 0; }
+.status-card, .sections-card, .notes-card { display: grid; gap: 12px; padding: 20px; }
+.card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.row-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.row-actions form { display: contents; }
+.player { width: 100%; height: 44px; color-scheme: dark; }
+
+.section-list { list-style: none; margin: 0; padding: 0; display: grid; }
+.section {
+  display: grid; grid-template-columns: auto 1fr auto auto; align-items: center; gap: 12px;
+  padding: 8px 0; border-top: 1px solid var(--border);
+}
+.section:first-child { border-top: 0; }
+.section-time { font-size: 0.88rem; white-space: nowrap; }
+.section-types { display: flex; flex-wrap: wrap; gap: 6px; }
+.section-len { font-size: 0.85rem; white-space: nowrap; }
+.type {
+  padding: 2px 8px; border-radius: 6px; font-size: 0.75rem; font-weight: 700; text-transform: capitalize;
+  background: var(--surface-3); color: var(--muted);
+}
+.type-intro { background: rgb(139 123 255 / 0.18); color: var(--type-intro); }
+.type-outro { background: rgb(95 179 255 / 0.18); color: var(--type-outro); }
+.type-break, .type-repeated { background: var(--accent-soft); color: var(--type-ad); }
+.type-show { background: rgb(61 220 151 / 0.14); color: var(--type-show); }
+.notes p { white-space: pre-line; color: #c9cfda; display: -webkit-box; -webkit-line-clamp: 12; -webkit-box-orient: vertical; overflow: hidden; }
+.notes.open p { display: block; }
+
+@media (max-width: 900px) {
+  .ep-page { grid-template-columns: 1fr; }
+}
+@media (max-width: 720px) {
+  .ep-head { align-items: flex-start; gap: 14px; }
+  .ep-head-art { width: 84px; height: 84px; }
+  .ep-head-info h1 { font-size: 1.25rem; }
+  .section { grid-template-columns: auto 1fr auto; }
+  .section-len { display: none; }
+}
+
+/* ---- jobs ----------------------------------------------------------------- */
+
+.group-title { margin: 24px 0 10px; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--faint); }
+.job-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.job { display: flex; align-items: center; gap: 16px; padding: 14px 16px; }
+.job-body { display: grid; gap: 6px; flex: 1; min-width: 0; }
+.job-title { font-weight: 600; }
+.job-title a { color: inherit; text-decoration: none; }
+.job-title a:hover { text-decoration: underline; }
+.job-meta { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 0.85rem; }
+.job-error { font-size: 0.85rem; }
+.job-failed { border-color: rgb(255 93 108 / 0.35); }

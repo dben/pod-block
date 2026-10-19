@@ -16,8 +16,8 @@ from .feed import download, fetch_feed
 from .fingerprint import FingerprintConfig, fingerprint_file
 from .matcher import MatchParams
 from .outro import music_bed_outro
-from .pipeline import (COMPARE_OTHER, COMPARE_SAME, OTHER_WINDOW_DAYS, Paths, episode_loudness,
-                       find_common_blocks, ingest_episodes, ingest_feed, ingest_file, load_fingerprint,
+from .pipeline import (COMPARE_OTHER, COMPARE_SAME, OTHER_WINDOW_DAYS, Paths, episode_report,
+                       find_common_blocks, ingest_episodes, ingest_feed, ingest_file,
                        neighbours, prune, refingerprint)
 from .report import build_sections
 from .store import TYPES, Store, StoreError
@@ -97,14 +97,7 @@ def cmd_report(args, store: Store, paths: Paths) -> None:
         sys.exit("Give an episode id, file or URL, or --feed URL [--index N].")
 
     find_common_blocks(store, [ep_id], params, same=args.compare_same, other=args.compare_other)
-    ep = store.episode(ep_id)
-    matches = store.scan(load_fingerprint(store, ep_id), params, podcast_id=ep["podcast_id"], heard=True)
-    pod = store.podcast(ep["podcast_id"])
-    wanted = args.outro_bed or (pod and pod["outro_bed"])
-    bed = outro_start(args, store, ep["podcast_id"], episode_loudness(store, ep_id) if wanted else None)
-    data = report_data(args, store, ep["title"], ep["duration"], matches, ep_id, outro_bed_start=bed)
-    store.save_report(ep_id, json.dumps(data))
-    show(args, data)
+    show(args, episode_report(store, ep_id, params, fill_gaps=args.fill_gaps, outro_bed=args.outro_bed or None))
 
 
 def fetch_neighbours(args, store: Store, paths: Paths, ep_id: int) -> None:

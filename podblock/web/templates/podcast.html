@@ -104,10 +104,11 @@
   </label>
   <span class="bulk-count"><b data-selected-count>0</b> selected</span>
   <div class="bulk-actions">
+    <button class="btn btn-primary btn-sm" name="action" value="download">Download</button>
     {% if view == 'archived' %}
-    <button class="btn btn-primary btn-sm" name="action" value="unarchive">Unarchive</button>
+    <button class="btn btn-ghost btn-sm" name="action" value="unarchive">Unarchive</button>
     {% else %}
-    <button class="btn btn-primary btn-sm" name="action" value="archive">Archive</button>
+    <button class="btn btn-ghost btn-sm" name="action" value="archive">Archive</button>
     {% endif %}
     <button class="btn btn-ghost btn-sm" type="button" data-clear>Clear</button>
   </div>

@@ -65,8 +65,9 @@ podblock report --feed "$FEED"        # repeated sections in the newest episode
 ## Web app
 
 A web app to manage it all is under way; `WEBAPP.md` has the plan and its
-status. So far you can log in, add feeds, browse and search their episodes,
-and archive them a selection at a time.
+status. So far you can log in, add feeds, browse, search and archive their
+episodes, and download episodes: a background job finds their repeats and
+makes a copy with them cut out, to play or download from the episode's page.
 
 ```sh
 pip install -e '.[web]'

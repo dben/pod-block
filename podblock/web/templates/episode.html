@@ -1,0 +1,112 @@
+{% extends "base.html" %}
+{% block content %}
+{% set e = episode %}
+{% set art = e.image_url|web_url or podcast.image_url|web_url %}
+<a class="back" href="/podcasts/{{ podcast.id }}">
+  <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>{{ podcast.name }}
+</a>
+
+<section class="ep-head">
+  {% if art %}<img class="ep-head-art" src="{{ art }}" alt="" referrerpolicy="no-referrer">
+  {% else %}<div class="ep-head-art cover-blank" aria-hidden="true"></div>{% endif %}
+  <div class="ep-head-info">
+    <h1>{{ e.title or 'Untitled' }}</h1>
+    <p class="ep-meta">
+      {% if e.pub_ts %}<span>{{ e.pub_ts|day }}</span>{% endif %}
+      {% if e.duration or e.feed_duration %}<span>{{ (e.duration or e.feed_duration)|duration }}</span>{% endif %}
+      {% if e.season or e.episode_number %}<span>{% if e.season %}Season {{ e.season }}{% endif %}{% if e.season and e.episode_number %} · {% endif %}{% if e.episode_number %}Episode {{ e.episode_number }}{% endif %}</span>{% endif %}
+      {% if not e.in_feed %}<span class="badge badge-warn">No longer in feed</span>{% endif %}
+      {% include "_state_badge.html" %}
+    </p>
+  </div>
+</section>
+
+<div class="ep-page">
+  <div class="ep-main">
+    {% if e.state in ('queued', 'running') %}
+      {% set episode = e %}{% include "_episode_status.html" %}
+    {% elif e.state == 'ready' %}
+    <section class="card status-card">
+      <h2>Ready</h2>
+      {% if report and e.duration %}
+      {% set cut_sec = e.duration - (e.cut_duration or e.duration) %}
+      <p class="muted">{{ cut_sec|duration or 'Nothing' }} cut from {{ e.duration|duration }}
+        ({{ (100 * cut_sec / e.duration)|round|int }}%), in {{ report.sections|length|plural('section') }}.
+        {{ e.cut_duration|duration }} left.</p>
+      {% endif %}
+      {% if e.state_note %}<p class="alert alert-error">{{ e.state_note }}</p>{% endif %}
+      <audio class="player" controls preload="none" src="/episodes/{{ e.id }}/audio"></audio>
+      <div class="row-actions">
+        <a class="btn btn-primary btn-sm" href="/episodes/{{ e.id }}/audio?download=1">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11m0 0-4-4m4 4 4-4M5 20h14"/></svg>Download file</a>
+        <form method="post" action="/episodes/{{ e.id }}/process">
+          <button class="btn btn-ghost btn-sm" type="submit">Process again</button>
+        </form>
+      </div>
+      {% if e.processed_at %}<p class="hint">Processed {{ e.processed_at|ago }}.</p>{% endif %}
+    </section>
+    {% elif e.state == 'failed' %}
+    <section class="card status-card">
+      <h2>Processing failed</h2>
+      <p class="alert alert-error">{{ e.state_note or 'Something went wrong.' }}</p>
+      <form method="post" action="/episodes/{{ e.id }}/process">
+        <button class="btn btn-primary btn-sm" type="submit">Try again</button>
+      </form>
+    </section>
+    {% else %}
+    <section class="card status-card">
+      <h2>Not downloaded yet</h2>
+      <p class="muted">Download it to find its repeats and make a copy with them cut out.
+        If the show has few episodes downloaded, a few of the episodes after it come along, so
+        there is something to compare with.</p>
+      <form method="post" action="/episodes/{{ e.id }}/process">
+        <button class="btn btn-primary" type="submit">Download and cut</button>
+      </form>
+    </section>
+    {% endif %}
+
+    {% if report %}
+    <section class="card sections-card">
+      <div class="card-head">
+        <h2>What gets cut</h2>
+        <span class="muted">{{ report.sections|length|plural('section') }}</span>
+      </div>
+      {% if e.original_path %}
+      <audio class="player" controls preload="none" src="/episodes/{{ e.id }}/original" data-original></audio>
+      <p class="hint">The original, with nothing cut. Play from any section to hear it.</p>
+      {% endif %}
+      {% if report.sections %}
+      <ol class="section-list">
+        {% for s in report.sections %}
+        <li class="section">
+          <span class="section-time mono">{{ s.start|clock }} – {{ s.end|clock }}</span>
+          <span class="section-types">
+            {% for t in s.types %}<span class="type type-{{ t }}">{{ t|replace('-', ' ') }}</span>{% endfor %}
+          </span>
+          <span class="section-len muted">{{ s.length|duration }}</span>
+          {% if e.original_path %}
+          <button class="icon-btn" type="button" data-seek="{{ [s.start - 3, 0]|max }}" aria-label="Play from {{ s.start|clock }}">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.5v13l10-6.5z"/></svg>
+          </button>
+          {% endif %}
+        </li>
+        {% endfor %}
+      </ol>
+      {% else %}
+      <p class="muted">No repeats found yet. More downloaded episodes of this show give it more to compare with.</p>
+      {% endif %}
+    </section>
+    {% endif %}
+  </div>
+
+  {% if notes %}
+  <section class="card notes-card">
+    <h2>Show notes</h2>
+    <div class="notes" x-data="{ open: false }" :class="open && 'open'">
+      <p>{{ notes }}</p>
+      {% if notes|length > 600 %}<button class="link-btn" type="button" x-cloak @click="open = !open" x-text="open ? 'Less' : 'More'">More</button>{% endif %}
+    </div>
+  </section>
+  {% endif %}
+</div>
+{% endblock %}

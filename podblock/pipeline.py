@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import time
 from collections import Counter
@@ -17,6 +18,8 @@ from .feed import Episode, Feed, download, fetch_feed
 from .fingerprint import (Fingerprint, FingerprintConfig, fingerprint_file, frames_to_seconds,
                           loudness_file)
 from .matcher import MatchParams, common_runs
+from .outro import music_bed_outro
+from .report import build_sections
 from .store import BUMPER, BUMPER_IN, BUMPER_OUT, SegmentMatch, Store
 
 log = logging.getLogger(__name__)
@@ -134,6 +137,27 @@ def episode_loudness(store: Store, episode_id: int) -> np.ndarray | None:
     if audio and Path(audio).exists():
         return loudness_file(audio, store.config.sample_rate)
     return None
+
+
+def episode_report(store: Store, episode_id: int, params: MatchParams, fill_gaps: float = 0.0,
+                   outro_bed: bool | None = None) -> dict:
+    """List a stored episode's repeated sections and save that as its report.
+
+    `outro_bed` looks for a music-bed outro (True) or not (False); None
+    leaves it to the podcast's setting.
+    """
+    ep = store.episode(episode_id)
+    matches = store.scan(load_fingerprint(store, episode_id), params, podcast_id=ep["podcast_id"], heard=True)
+    pod = store.podcast(ep["podcast_id"])
+    wanted = outro_bed if outro_bed is not None else bool(pod and pod["outro_bed"])
+    loudness = episode_loudness(store, episode_id) if wanted else None
+    bed = music_bed_outro(loudness) if loudness is not None else None
+    sections = build_sections(matches, store.types(), ep["duration"], fill_gaps=fill_gaps, outro_bed_start=bed)
+    data = {"episode_id": episode_id, "title": ep["title"], "duration": round(ep["duration"], 2),
+            "repeated_sec": round(sum(s.length for s in sections), 2),
+            "sections": [s.to_dict() for s in sections]}
+    store.save_report(episode_id, json.dumps(data))
+    return data
 
 
 def rescan(store: Store, episode_id: int, params: MatchParams, fp: Fingerprint | None = None,

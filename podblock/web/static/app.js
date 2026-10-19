@@ -132,7 +132,10 @@
     if (e.target.closest("[data-clear]")) { clearSelection(); return; }
     const row = e.target.closest("[data-select-list] .ep");
     if (!row || !document.body.classList.contains("selecting")) return;
-    if (e.target.closest("a, button, summary, details, label, input")) return;
+    if (e.target.closest("button, summary, details, label, input")) return;
+    const link = e.target.closest("a");
+    if (link && !link.matches(".ep-link")) return;
+    e.preventDefault();  // while selecting, the title selects rather than opens
     toggle(row.querySelector(".ep-check"), e.shiftKey);
   }, true);
 
@@ -170,7 +173,33 @@
     if (e.target.closest("[data-select-list] .ep") && matchMedia("(hover: none)").matches) e.preventDefault();
   });
 
-  document.addEventListener("htmx:afterSettle", update);
+  // A row being processed refreshes itself; keep its tick across the swap.
+  const ticked = new Set();
+  document.addEventListener("htmx:beforeSwap", (e) => {
+    const row = e.detail.target;
+    if (row.matches?.(".ep") && row.querySelector(".ep-check")?.checked) ticked.add(row.dataset.id);
+  });
+  document.addEventListener("htmx:afterSettle", () => {
+    for (const id of ticked) {
+      const box = document.querySelector(`[data-select-list] .ep[data-id="${id}"] .ep-check`);
+      if (box) box.checked = true;
+    }
+    ticked.clear();
+    update();
+  });
+
+  // ---- play the original from a section ---------------------------------------
+
+  document.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-seek]");
+    const player = document.querySelector("audio[data-original]");
+    if (!btn || !player) return;
+    const at = parseFloat(btn.dataset.seek);
+    const go = () => { player.currentTime = at; player.play(); };
+    if (player.readyState >= 1) go();
+    else { player.addEventListener("loadedmetadata", go, { once: true }); player.load(); }
+    player.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  });
   document.addEventListener("DOMContentLoaded", () => {
     update();
     for (const el of $$("[data-autohide]")) hideLater(el);

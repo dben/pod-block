@@ -1,0 +1,45 @@
+{% set art = e.image_url|web_url or podcast.image_url|web_url %}
+{% set busy = e.state in ('queued', 'running') %}
+<li class="ep{% if not e.in_feed %} ep-gone{% endif %}" data-id="{{ e.id }}"
+    {% if busy %}hx-get="/episodes/{{ e.id }}/row" hx-trigger="every 3s" hx-swap="outerHTML"{% endif %}>
+  <label class="ep-select">
+    <input class="ep-check" type="checkbox" name="ids" value="{{ e.id }}" form="bulk" aria-label="Select “{{ e.title }}”">
+    {% if art %}<img class="ep-art" src="{{ art }}" alt="" loading="lazy" referrerpolicy="no-referrer">
+    {% else %}<span class="ep-art cover-blank" aria-hidden="true"></span>{% endif %}
+    <span class="ep-tick" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg></span>
+  </label>
+  <div class="ep-body">
+    <h3 class="ep-title"><a class="ep-link" href="/episodes/{{ e.id }}">{{ e.title or 'Untitled' }}</a></h3>
+    <p class="ep-meta">
+      {% if e.pub_ts %}<span>{{ e.pub_ts|day }}</span>{% endif %}
+      {% if e.duration or e.feed_duration %}<span>{{ (e.duration or e.feed_duration)|duration }}</span>{% endif %}
+      {% if e.season or e.episode_number %}<span>{% if e.season %}S{{ e.season }}{% endif %}{% if e.season and e.episode_number %} · {% endif %}{% if e.episode_number %}E{{ e.episode_number }}{% endif %}</span>{% endif %}
+      {% if e.episode_type in ('trailer', 'bonus') %}<span class="badge">{{ e.episode_type|capitalize }}</span>{% endif %}
+      {% if not e.in_feed %}<span class="badge badge-warn">No longer in feed</span>{% endif %}
+      {% include "_state_badge.html" %}
+    </p>
+    {% if e.summary %}<p class="ep-summary">{{ e.summary }}</p>{% endif %}
+  </div>
+  <details class="menu ep-menu">
+    <summary class="icon-btn" aria-label="More for “{{ e.title }}”">
+      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="5" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="12" cy="19" r="1.6"/></svg>
+    </summary>
+    <div class="menu-pop">
+      <form method="post" action="/podcasts/{{ podcast.id }}/episodes" data-bulk>
+        <input type="hidden" name="ids" value="{{ e.id }}">
+        <input type="hidden" name="next" value="{{ here }}">
+        {% if not busy and e.state != 'ready' %}
+        <button type="submit" name="action" value="download">Download and cut</button>
+        {% elif e.state in ('ready', 'failed') %}
+        <button type="submit" name="action" value="reprocess">Process again</button>
+        {% endif %}
+        {% if e.archived %}
+        <button type="submit" name="action" value="unarchive">Unarchive</button>
+        {% else %}
+        <button type="submit" name="action" value="archive">Archive</button>
+        <button type="submit" name="action" value="archive_older">Archive this and older</button>
+        {% endif %}
+      </form>
+    </div>
+  </details>
+</li>

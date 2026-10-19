@@ -1,0 +1,7 @@
+<section class="card status-card" id="status"
+         hx-get="/episodes/{{ episode.id }}/status" hx-trigger="every 3s" hx-swap="outerHTML">
+  <h2>{% if episode.state == 'queued' %}Queued{% else %}Working on it{% endif %}</h2>
+  <p class="muted">{{ episode.state_note or ('Waiting for a free worker.' if episode.state == 'queued' else 'Starting.') }}</p>
+  <div class="progress{% if episode.state == 'queued' %} progress-idle{% endif %}"><span></span></div>
+  <p class="hint">This page updates by itself. <a href="/jobs">See all jobs</a></p>
+</section>

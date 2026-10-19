@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import accounts, podcasts
+from . import accounts, episodes, podcasts
 from .background import Background
 from .config import Settings
 from .db import connect, prepare, setting
@@ -58,7 +58,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        background = Background(settings.db_path) if settings.background else None
+        background = Background(settings, workers=settings.workers) if settings.background else None
+        app.state.background = background
         if background:
             background.start()
         yield
@@ -67,10 +68,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app = FastAPI(title="pod-block", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
     app.state.settings = settings
+    app.state.background = None
     app.add_middleware(SessionMiddleware, secret_key=secret, session_cookie="podblock_session",
                        max_age=SESSION_DAYS * 86400, same_site="lax", https_only=settings.secure_cookies)
     app.mount("/static", StaticFiles(directory=STATIC), name="static")
     app.include_router(podcasts.router)
+    app.include_router(episodes.router)
 
     @app.exception_handler(LoginRequired)
     async def login_required(request: Request, exc: LoginRequired) -> Response:
