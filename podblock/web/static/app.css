@@ -83,7 +83,7 @@ code { font-family: var(--mono); font-size: 0.88em; background: var(--surface-3)
 }
 .topnav a:hover { color: var(--text); background: var(--surface-2); }
 .topnav a[aria-current="page"] { color: var(--text); background: var(--surface-2); }
-.topbar-end { margin-left: auto; }
+.topbar-end { margin-left: auto; display: flex; align-items: center; gap: 8px; }
 
 .page {
   max-width: var(--page-w); margin: 0 auto;
@@ -242,7 +242,15 @@ code { font-family: var(--mono); font-size: 0.88em; background: var(--surface-3)
 }
 
 a.podcast-card { color: inherit; text-decoration: none; transition: border-color 0.15s, background-color 0.15s; height: 100%; }
-a.podcast-card:hover { border-color: var(--border-strong); background: var(--surface-2); }
+.podcast-item { display: flex; flex-direction: column; overflow: hidden; }
+.podcast-item > .podcast-card { flex: 1; height: auto; }
+a.podcast-card:hover { background: var(--surface-2); }
+.podcast-item:has(a.podcast-card:hover) { border-color: var(--border-strong); }
+.podcast-pick {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 8px 14px; border-top: 1px solid var(--border); font-size: 0.85rem;
+}
+.home-tabs { width: fit-content; margin: 0 0 16px; }
 
 /* ---- menus ---------------------------------------------------------------- */
 
@@ -721,3 +729,48 @@ select.input { appearance: auto; }
   .tabs a { white-space: nowrap; padding: 0 10px; gap: 6px; font-size: 0.86rem; }
 }
 .settings-check { flex: 1 1 100%; }
+
+/* ---- users and account ---------------------------------------------------- */
+
+.topbar-end a[aria-current="page"] { color: var(--text); background: var(--surface-2); }
+.form-card { display: grid; gap: 14px; max-width: 480px; padding: 20px; }
+.stack-form { display: grid; gap: 14px; }
+.stack-form .btn { justify-self: start; }
+.add-user { display: grid; gap: 12px; padding: 20px; margin-bottom: 20px; }
+.add-user-fields { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; }
+.add-user-fields .field { flex: 1 1 220px; }
+.user-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.user-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; padding: 14px 16px; }
+.user-body { display: grid; gap: 4px; flex: 1 1 220px; min-width: 0; }
+.user-name { font-weight: 600; overflow-wrap: anywhere; }
+.user-meta { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 0.85rem; }
+.user-actions { display: flex; gap: 8px; }
+.user-reset { position: relative; }
+.user-reset > summary { list-style: none; cursor: pointer; }
+.user-reset > summary::-webkit-details-marker { display: none; }
+.user-reset[open] > summary { color: var(--text); background: var(--surface-2); }
+.user-reset-pop {
+  position: absolute; right: 0; top: calc(100% + 6px); z-index: 30;
+  display: grid; gap: 10px; width: min(300px, calc(100vw - 2 * var(--gutter))); padding: 14px;
+  background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+  box-shadow: 0 12px 32px rgb(0 0 0 / 0.5);
+}
+.user-reset-pop .btn { justify-self: start; }
+@media (max-width: 720px) {
+  .user-reset-pop { right: auto; left: 0; }
+}
+
+/* ---- filters -------------------------------------------------------------- */
+
+.filters-panel { display: grid; gap: 14px; padding: 20px; margin: -4px 0 20px; }
+.filter-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.filter-row {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px;
+  padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-2);
+}
+.filter-pattern { overflow-wrap: anywhere; }
+.filter-meta { flex: 1 1 200px; font-size: 0.85rem; }
+.filter-form { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px 16px; }
+.filter-field { flex: 1 1 260px; }
+.filter-scope { flex: 0 1 180px; }
+.filter-check { flex: 1 1 100%; align-items: flex-start; }

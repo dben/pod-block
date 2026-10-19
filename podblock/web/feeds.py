@@ -20,7 +20,7 @@ from html.parser import HTMLParser
 import requests
 
 from ..feed import CONTENT, ITUNES, Feed, FeedError, get_feed, parse_feed
-from . import jobs
+from . import filters, jobs
 from .db import new_token
 
 log = logging.getLogger(__name__)
@@ -161,7 +161,10 @@ def refresh(db: sqlite3.Connection, podcast_id: int, conditional: bool = True) -
         result = _apply(db, podcast_id, feed, fetched.etag, fetched.last_modified)
     result.moved_to = _follow_move(db, pod, fetched.moved_to or feed.new_url)
     if pod["auto_download"] and result.new_ids:
-        result.queued = len(jobs.enqueue(db, "process", result.new_ids[:AUTO_DOWNLOAD_MAX], None))
+        filtered = {r["id"] for r in db.execute("SELECT id FROM episodes WHERE podcast_id = ? AND skip_processing = 1",
+                                                (podcast_id,))}
+        wanted = [ep_id for ep_id in result.new_ids if ep_id not in filtered]
+        result.queued = len(jobs.enqueue(db, "process", wanted[:AUTO_DOWNLOAD_MAX], None))
     return result
 
 
@@ -247,6 +250,7 @@ def _apply(db: sqlite3.Connection, podcast_id: int, feed: Feed, etag: str | None
                 db.execute("DELETE FROM episodes WHERE id = ?", (r["id"],))
                 result.removed += 1
     db.commit()
+    filters.mark(db, podcast_id)  # new episodes, or new titles, may match a processing filter
     log.info("refreshed podcast %d: %s", podcast_id, result.describe())
     return result
 
@@ -263,7 +267,8 @@ def _downloaded(row: sqlite3.Row, known: set[int]) -> bool:
 
 
 def remove_podcast(db: sqlite3.Connection, podcast_id: int) -> int:
-    """Stop following a podcast. Episodes never downloaded go; returns how many stayed.
+    """Stop following a podcast, and take it off every user's home page. Episodes never downloaded go;
+    returns how many stayed.
 
     The podcast row stays, hidden, with its downloaded episodes and the blocks
     learned from it: those blocks may be ads shared with other shows.
@@ -283,6 +288,7 @@ def remove_podcast(db: sqlite3.Connection, podcast_id: int) -> int:
             db.execute("DELETE FROM episodes WHERE id = ?", (r["id"],))
     db.execute("UPDATE podcasts SET followed = 0, feed_etag = NULL, feed_last_modified = NULL WHERE id = ?",
                (podcast_id,))
+    db.execute("DELETE FROM user_podcasts WHERE podcast_id = ?", (podcast_id,))
     db.commit()
     return stayed
 

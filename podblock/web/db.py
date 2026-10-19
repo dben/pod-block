@@ -9,12 +9,16 @@ functions given the connection. The last step applied is kept in
 
 from __future__ import annotations
 
+import functools
+import re
 import secrets
 import sqlite3
 from datetime import datetime
 from pathlib import Path
 
 from ..store import Store
+
+MAX_TITLE = 500  # characters of a title that filters look at
 
 MIGRATIONS = [
     # 1: accounts. Feeds, downloads and blocks are shared; what is per user
@@ -140,6 +144,50 @@ MIGRATIONS = [
     ALTER TABLE podcasts ADD COLUMN auto_download INTEGER NOT NULL DEFAULT 0;  -- download new episodes as they appear
     ALTER TABLE podcasts ADD COLUMN fill_gaps REAL NOT NULL DEFAULT 4;  -- seconds of new audio between cuts cut too
     """,
+    # 9: password logins, and the podcasts each user picked for their home page
+    """
+    ALTER TABLE users ADD COLUMN session_version INTEGER NOT NULL DEFAULT 0;  -- goes up on a password change, ending other sessions
+    ALTER TABLE users ADD COLUMN last_login_at REAL;
+    CREATE TABLE user_podcasts (
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        podcast_id INTEGER NOT NULL REFERENCES podcasts(id) ON DELETE CASCADE,
+        added_at REAL NOT NULL,
+        PRIMARY KEY (user_id, podcast_id)
+    );
+    """,
+    # 10: the admin, who saw every podcast until now, keeps seeing them all
+    """
+    INSERT OR IGNORE INTO user_podcasts (user_id, podcast_id, added_at)
+    SELECT u.id, p.id, strftime('%s', 'now') + 0.0 FROM users u, podcasts p WHERE u.is_admin = 1 AND p.followed = 1;
+    """,
+    # 11: filters. Each user's patterns for episode titles to hide; one marked `processing` hides the
+    # episodes for everyone and keeps them out of finding repeats (compilations, "best of" and rewind episodes).
+    """
+    CREATE TABLE episode_filters (
+        id INTEGER PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,  -- kept when its user goes, if it is for processing
+        podcast_id INTEGER REFERENCES podcasts(id) ON DELETE CASCADE,  -- NULL: every podcast
+        pattern TEXT NOT NULL,  -- a regular expression, matched anywhere in the title, ignoring case
+        processing INTEGER NOT NULL DEFAULT 0,
+        created_at REAL NOT NULL
+    );
+    CREATE INDEX episode_filters_user ON episode_filters(user_id);
+    ALTER TABLE episodes ADD COLUMN skip_processing INTEGER NOT NULL DEFAULT 0;  -- a processing filter matches it
+    """,
+    # 12: a private feed per user and podcast. Audio links keep the podcast's own token (podcasts.public_token);
+    # the feed each podcast had becomes the admin's, so apps already using it carry on.
+    """
+    CREATE TABLE user_feeds (
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        podcast_id INTEGER NOT NULL REFERENCES podcasts(id) ON DELETE CASCADE,
+        token TEXT UNIQUE NOT NULL,  -- the feed's address: /p/<token>/feed.xml
+        created_at REAL NOT NULL,
+        PRIMARY KEY (user_id, podcast_id)
+    );
+    INSERT INTO user_feeds (user_id, podcast_id, token, created_at)
+    SELECT u.id, p.id, p.public_token, strftime('%s', 'now') + 0.0 FROM users u, podcasts p
+    WHERE u.is_admin = 1 AND p.public_token IS NOT NULL;
+    """,
 ]
 
 
@@ -155,11 +203,26 @@ def iso_ts(text: str | None) -> float | None:
         return None
 
 
+@functools.lru_cache(maxsize=256)
+def title_pattern(pattern: str) -> re.Pattern:
+    """A filter's pattern, compiled as filters match: anywhere in the title, ignoring case."""
+    return re.compile(pattern, re.IGNORECASE)
+
+
+def _regexp(pattern: str | None, text: str | None) -> bool:
+    """SQLite's `text REGEXP pattern`."""
+    try:
+        return bool(pattern and text and title_pattern(pattern).search(text[:MAX_TITLE]))
+    except re.error:
+        return False
+
+
 def connect(path: Path) -> sqlite3.Connection:
     """A connection for one request or job. Safe to hand between threads, not to share."""
     db = sqlite3.connect(path, timeout=30, check_same_thread=False)
     db.row_factory = sqlite3.Row
     db.execute("PRAGMA foreign_keys = ON")
+    db.create_function("regexp", 2, _regexp, deterministic=True)
     return db
 
 

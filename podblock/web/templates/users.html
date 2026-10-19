@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Users</h1>
+    <p class="muted">{{ users|length|plural('user') }}. Podcasts and downloads are shared; each user picks the
+      podcasts on their home page, and has their own archived and kept episodes.</p>
+  </div>
+</div>
+
+<form class="card add-user" method="post" action="/users">
+  <h2>Add a user</h2>
+  {% if error %}<p class="alert alert-error" role="alert">{{ error }}</p>{% endif %}
+  <div class="add-user-fields">
+    <label class="field">
+      <span>User name</span>
+      <input class="input" type="text" name="username" value="{{ username or '' }}" required maxlength="40"
+             pattern="[A-Za-z0-9][A-Za-z0-9._\-]*" title="Letters, digits, dots, dashes or underscores"
+             autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
+    </label>
+    <label class="field">
+      <span>Password</span>
+      <input class="input" type="password" name="password" required minlength="{{ min_password }}" autocomplete="new-password">
+    </label>
+    <button class="btn btn-primary" type="submit">Add</button>
+  </div>
+  <p class="hint">At least {{ min_password }} characters. They can change it on their Account page.</p>
+</form>
+
+<ul class="user-list">
+  {% for u in users %}
+  <li class="card user-row">
+    <div class="user-body">
+      <p class="user-name">{{ u.username }}{% if u.is_admin %} <span class="badge">Admin</span>{% endif %}</p>
+      <p class="muted user-meta">
+        <span>{{ u.podcast_count|plural('podcast') }}</span>
+        <span>Added {{ u.created_at|day }}</span>
+        <span>Last login {{ u.last_login_at|ago }}</span>
+      </p>
+    </div>
+    {% if not u.is_admin %}
+    <div class="user-actions">
+      <details class="user-reset">
+        <summary class="btn btn-ghost btn-sm">Reset password</summary>
+        <form class="user-reset-pop" method="post" action="/users/{{ u.id }}/password">
+          <label class="field">
+            <span>New password for {{ u.username }}</span>
+            <input class="input" type="password" name="password" required minlength="{{ min_password }}"
+                   autocomplete="new-password">
+          </label>
+          <button class="btn btn-primary btn-sm" type="submit">Set password</button>
+          <p class="hint">Logs them out until they use it.</p>
+        </form>
+      </details>
+      <form method="post" action="/users/{{ u.id }}/remove"
+            data-confirm="Remove {{ u.username }}? Their archived and kept episodes and their podcast picks go. Podcasts, downloads and timeline changes stay.">
+        <button class="btn btn-ghost btn-sm danger" type="submit">Remove</button>
+      </form>
+    </div>
+    {% else %}
+    <p class="hint user-note">Logs in with the API key.</p>
+    {% endif %}
+  </li>
+  {% endfor %}
+</ul>
+{% endblock %}

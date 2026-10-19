@@ -1,4 +1,4 @@
-"""The FastAPI app: management pages behind a login, and (later) the public feed routes."""
+"""The FastAPI app: management pages behind a login, and the private feed routes."""
 
 from __future__ import annotations
 
@@ -11,13 +11,14 @@ from urllib.parse import quote
 from fastapi import Depends, FastAPI, Form, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import accounts, episodes, podcasts, publish
+from . import accounts, episodes, podcasts, publish, users
 from .background import Background
 from .config import Settings
 from .db import connect, prepare, setting
-from .deps import LoginRequired, get_db
+from .deps import LoginRequired, get_db, start_session
 from .templating import STATIC, page
 
 SESSION_DAYS = 30
@@ -75,6 +76,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(podcasts.router)
     app.include_router(episodes.router)
     app.include_router(publish.router)
+    app.include_router(users.router)
 
     @app.exception_handler(LoginRequired)
     async def login_required(request: Request, exc: LoginRequired) -> Response:
@@ -103,14 +105,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return page(request, "login.html", title="Log in", next=safe_next(next))
 
     @app.post("/login")
-    async def login(request: Request, key: str = Form(""), next: str = Form("/"),
-                    db: sqlite3.Connection = Depends(get_db)) -> Response:
-        if not accounts.check_api_key(db, key.strip()):
+    async def login(request: Request, username: str = Form(""), password: str = Form(""), key: str = Form(""),
+                    next: str = Form("/"), db: sqlite3.Connection = Depends(get_db)) -> Response:
+        # `key` alone is the old form, kept for scripts: the API key, logging in as the admin
+        name, secret = (accounts.ADMIN, key) if key else (username, password)
+        found = await run_in_threadpool(accounts.log_in, db, name, secret)
+        if found is None:
             await asyncio.sleep(FAILED_LOGIN_DELAY)
             return page(request, "login.html", status_code=401, title="Log in", next=safe_next(next),
-                        error="That key didn't work.")
+                        username=username, error="That user name and password didn't work.")
+        accounts.logged_in(db, found["id"])
         request.session.clear()
-        request.session.update(uid=accounts.admin_id(db), epoch=accounts.auth_epoch(db))
+        start_session(request, db, found)
         return RedirectResponse(safe_next(next), status_code=303)
 
     @app.post("/logout")

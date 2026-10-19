@@ -41,6 +41,14 @@ def enqueue(db: sqlite3.Connection, kind: str, episode_ids: list[int], user_id: 
     return queued
 
 
+def enqueue_task(db: sqlite3.Connection, kind: str, user_id: int | None, payload: str | None = None) -> int:
+    """Queue a job that works on no one episode, such as `unlearn`."""
+    cur = db.execute("INSERT INTO jobs (kind, requested_by, created_at, payload) VALUES (?, ?, ?, ?)",
+                     (kind, user_id, time.time(), payload))
+    db.commit()
+    return cur.lastrowid
+
+
 def claim(db: sqlite3.Connection) -> sqlite3.Row | None:
     """Take the oldest queued job and mark it running; None when there is none."""
     row = db.execute(
@@ -88,8 +96,10 @@ def cancel(db: sqlite3.Connection, job_id: int) -> bool:
 
 def retry(db: sqlite3.Connection, job_id: int, user_id: int | None) -> bool:
     job = db.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
-    if job is None or job["state"] not in ("failed", "cancelled") or not job["episode_id"]:
+    if job is None or job["state"] not in ("failed", "cancelled"):
         return False
+    if not job["episode_id"]:
+        return bool(enqueue_task(db, job["kind"], user_id, job["payload"]))
     return bool(enqueue(db, job["kind"], [job["episode_id"]], user_id, skip_ready=False, payload=job["payload"]))
 
 

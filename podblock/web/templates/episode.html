@@ -23,6 +23,10 @@
 
 <div class="ep-page{% if timeline %} ep-page-wide{% endif %}">
   <div class="ep-main">
+    {% if e.skip_processing %}
+    <p class="cleanup-note"><span class="muted">A filter from processing matches this episode, so it isn't used
+      to find repeats. If you download it, it's cut using the repeats found in other episodes.</span></p>
+    {% endif %}
     {% if e.state in ('queued', 'running') %}
       {% set episode = e %}{% include "_episode_status.html" %}
     {% elif e.state == 'ready' %}

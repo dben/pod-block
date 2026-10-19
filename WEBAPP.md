@@ -17,6 +17,9 @@ what is done, and what comes later. Update it as work lands.
 | Milestone 4: private feed | done: tokens, feed XML, audio with byte ranges, copy and QR code |
 | Milestone 5: retention | done: clean-up after N days, keep, settings, cleaned-up episodes shown and archived in one go |
 | Milestone 7: deploy | done: CI builds and publishes the image; Kubernetes example in `deployment/` |
+| Users | done: password logins, a users page for the admin, each user's own podcast list |
+| Filters | done: regex filters on titles per user; filters from processing for compilations and rewinds |
+| Per-user feeds | done: each user's own private feed of each podcast, without their archived and filtered episodes |
 
 Last updated: 2026-10-19.
 
@@ -31,7 +34,7 @@ Answers to the first round of questions, kept here so they don't get lost.
 | Block types | `show`: a block checked only against its own podcast's episodes, never other feeds'. `ignored`: a false positive, never reported, so never cut. Both are choices in the timeline. Every section a report lists is cut. |
 | Comparison episodes | When a show has fewer than 4 fingerprinted episodes, a download also pulls the episodes published after the chosen one, nearest first, and older ones only when it reaches the newest episode. These are fully processed too: shows often run in parts, so they are likely next anyway. |
 | Retention | Counts from when an episode was processed, not its publish date. A keep pin stops the clock. |
-| Users | Built for a few users, but round one has one login. Feeds, downloads, processing and blocks are shared. Archived and kept are per user. The private feed is per podcast and shared; per-user feeds come later. |
+| Users | Built for a few users. The admin logs in with the API key and adds the others, with user names and passwords. Feeds, downloads, processing, blocks and podcast settings are shared, and any user can add a feed, download and edit timelines. Removing a podcast is the admin's, since it changes things for everyone. Archived, kept, filters, which podcasts are on the home page, and private feeds are per user. |
 | Downloads | Manual for now, apart from the comparison episodes above. |
 | Short repeats | Sections under 15 seconds aren't cut (`report.MIN_SECTION_SEC`; the CLI's `--min-section`), unless they are ad breaks, intros, outros, show blocks or blocks typed by hand. Short blocks are still stored, since bumpers are short and are how breaks are found. |
 | Intro and outro marks | Marking a section Intro types only its last block, and Outro only its first: the report runs those to the ends anyway, and a section's other blocks are often ads that also play in mid-roll breaks. Keep and Show only type every block in the section. |
@@ -58,8 +61,8 @@ browser ──login──▶ management UI (FastAPI + Jinja + HTMX)
                    jobs table ◀── worker thread: refresh feeds, download,
                         │                         fingerprint, detect, render cut audio,
                         │                         expire old downloads
-podcast app ──no login, secret path──▶ /p/<feed-token>/feed.xml
-                                       /p/<feed-token>/<episode-token>.mp3
+podcast app ──no login, secret path──▶ /p/<user's feed token>/feed.xml
+                                       /p/<podcast's token>/<episode key>.mp3
 ```
 
 - The worker is the only thing that writes to the detector's tables. The UI
@@ -262,13 +265,66 @@ Ticked items are built. Each has an id so commits and issues can point at it.
   Scripts can send `Authorization: Bearer <key>` instead.
 - [x] **A2** A `users` table from the start; the API key logs in as `admin`,
   so per-user state has an owner.
+- [x] **A4** User names and passwords. The login page asks for both; the
+  admin's user name is `admin` and its password is the API key (the label
+  changes to "API key" when you type `admin`). Passwords are stored as
+  scrypt hashes; names are 1 to 40 letters, digits, dots, dashes or
+  underscores, kept in lower case. The old form with only `key` still works,
+  for scripts.
+- [x] **A5** A Users page for the admin: add a user with a password, set a
+  new password for one, or remove one (after a confirmation). Removing a
+  user deletes their archived and kept flags and podcast picks; jobs and
+  timeline changes they made stay. The list shows how many podcasts each has
+  picked and when they last logged in. Other users get 403.
+- [x] **A6** An Account page where users change their own password (current
+  one, then the new one twice). A new password, whether they set it or the
+  admin did, ends the user's other sessions (`users.session_version`); the
+  session that changed it carries on.
+- [x] **A7** Each user picks the podcasts on their home page: "My podcasts"
+  lists them, "All podcasts" lists every one with Subscribe and Unsubscribe,
+  and the show page has the same button. Adding a feed puts it on the adder's
+  page, even if someone else added it first. The admin starts with every
+  podcast. Removing a podcast takes it off everyone's page. "Archive N
+  cleaned-up episodes" on the home page covers only your podcasts.
 - [ ] **A3** Public feed and audio routes need no login.
+
+### Filters
+
+- [x] **E1** A Filters panel on the show page. A filter is a regular
+  expression matched anywhere in an episode's title, ignoring case, for this
+  podcast or for all of them. It hides matching episodes from your lists
+  (and from the counts on the home page); a Filtered tab lists them. Bad
+  patterns, and ones that match every title, are refused. The panel says
+  how many of the podcast's episodes each filter matches.
+- [x] **E2** "Filter from processing" on a filter hides its episodes from
+  everyone and keeps them out of finding repeats, for compilation, "best of"
+  and rewind episodes, which replay whole earlier episodes and would
+  otherwise make them look like one long repeat. Such episodes
+  (`episodes.skip_processing`, brought up to date on every feed refresh and
+  filter change) never download on their own, are never taken along as
+  comparison episodes, and are never compared with. Downloading one by hand
+  still works: it is cut using repeats found elsewhere, and nothing is
+  learned from it.
+- [x] **E3** When an episode the detector already learned from is filtered
+  from processing, an `unlearn` job forgets what it taught: every block not
+  typed by hand that, leaving filtered episodes out, plays in fewer than two
+  episodes is deleted, and the ready episodes that played one are cut again.
+  Its comparison records go too, so taking the filter away lets it be
+  compared afresh.
+- [x] **E4** Your filters are yours; anyone sees everyone's filters from
+  processing, with who added them. Only the owner or the admin removes a
+  filter. Removing a user deletes their own filters but keeps their filters
+  from processing.
 
 ### Private feed and streaming
 
-- [x] **S1** Each podcast gets a random token (128 bits, URL-safe). Its feed
-  is at `/p/<token>/feed.xml` and lists only ready episodes with their cut
-  audio on disk, newest first. No login.
+- [x] **S1** Each user gets a feed of each podcast, at `/p/<token>/feed.xml`
+  with a random token of their own (128 bits, URL-safe; `user_feeds`), made
+  the first time they open the show page. It lists ready episodes with their
+  cut audio on disk, newest first, except the ones that user archived or
+  that a filter hides from them. No login. The feed each podcast had before
+  became the admin's, at the same address, so apps already using it carry
+  on. Removing a user ends their feeds.
 - [x] **S2** The feed keeps the show's channel and each episode's `<item>` as
   the source had them (`podblock/web/publish.py`), with these changes: the
   enclosure points at the cut file with its length and type, and
@@ -279,17 +335,20 @@ Ticked items are built. Each has an id so commits and issues can point at it.
   to the source; `atom:link rel="self"` points at the private feed; and
   `itunes:block` asks directories not to list it. Namespace prefixes are
   kept as the source wrote them. Guids stay the source's.
-- [x] **S3** Each episode's audio is at `/p/<token>/<key>.<ext>`, where the key
-  is the one its files are named by (the guid's SHA-1, 16 hex digits). The
-  podcast's token guards the path, and the feed lists them all anyway, so a
-  second token per episode would add nothing. Byte ranges, `HEAD`, `ETag`
+- [x] **S3** Each episode's audio is at `/p/<token>/<key>.<ext>`, where the
+  token is the podcast's (`podcasts.public_token`), the same in every user's
+  feed, and the key is the one its files are named by (the guid's SHA-1, 16
+  hex digits). The podcast's token guards the path, and the feed lists them
+  all anyway, so a second token per episode would add nothing. Every ready
+  episode is there, including ones some users' feeds leave out. Byte ranges, `HEAD`, `ETag`
   and caching headers come with it; the feed itself answers
   `If-None-Match` with 304.
-- [x] **S4** "Make a new address" gives a podcast a new token, after a
-  confirmation; the old feed and audio links stop working at once.
+- [x] **S4** "Make a new address" gives your own feed a new token, after a
+  confirmation; the old feed address stops working at once. Anyone may, as
+  it changes no one else's feed. Audio links stay as they were.
 - [x] **S5** Unknown tokens, and podcasts removed in the app, get a plain
   "Not found" that says nothing more.
-- [x] **S6** A "Private feed" button on the show page opens the address with
+- [x] **S6** A "Private feed" button on the show page opens your address with
   Copy, a QR code (made on the server with `segno`), and how many episodes
   are in it.
 - [x] **S7** Feed links use `PODBLOCK_PUBLIC_URL`, else the address the
@@ -384,6 +443,29 @@ podcast that had none.
 
 Built in migration 8: `podcasts.auto_download` and `podcasts.fill_gaps`.
 
+Built in migrations 9 and 10:
+
+```
+users     + session_version,                                -- goes up on a new password, ending other sessions
+            last_login_at
+user_podcasts(user_id, podcast_id, added_at)                 -- the podcasts on each user's home page
+```
+
+The admin is given every podcast followed at the time.
+
+Built in migration 11:
+
+```
+episode_filters(id, user_id, podcast_id, pattern, processing, created_at)  -- podcast_id NULL: every podcast
+episodes  + skip_processing                                  -- a filter from processing matches it
+```
+
+Connections get a `REGEXP` function (`db.connect`), so filters run in SQL.
+
+Built in migration 12: `user_feeds(user_id, podcast_id, token, created_at)`,
+each user's private feed of each podcast. The admin is given each podcast's
+`public_token`, which now only guards audio links.
+
 Built in migration 7: `podcasts.retention_days` (default 7),
 `episodes.ready_at` (the clock) and `episodes.expired_at`; episodes gain the
 state `expired`.
@@ -398,7 +480,7 @@ only looks at fingerprinted ones, so they don't affect it.
 
 | Route | Login | What | State |
 | --- | --- | --- | --- |
-| `GET /` | yes | podcasts | built |
+| `GET /` (`?view=all`) | yes | your podcasts, or every podcast with Subscribe | built |
 | `GET /login`, `POST /login`, `POST /logout` | no | session | built |
 | `GET /healthz` | no | probe | built |
 | `POST /podcasts` | yes | add a feed | built |
@@ -417,11 +499,19 @@ only looks at fingerprinted ones, so they don't affect it.
 | `POST /episodes/{id}/edits` | yes | save timeline changes (JSON: `types`, `add`, `remove`); queues an edit job | built |
 | `GET /p/{token}/feed.xml` | no | private feed | built |
 | `GET /p/{token}/{key}.{ext}` | no | cut audio, with byte ranges | built |
-| `POST /podcasts/{id}/feed-token` | yes | new private feed address | built |
+| `POST /podcasts/{id}/feed-token` | yes | new address for your own private feed | built |
 | `POST /podcasts/{id}/settings` | yes | clean-up days and refresh interval | built |
 | `POST /podcasts/{id}/episodes` with `action` = keep, unkeep or archive_expired | yes | keep a selection; archive every cleaned-up episode | built |
 | `POST /episodes/archive-expired` | yes | archive every cleaned-up episode of every podcast | built |
 | `POST /episodes/{id}/keep` | yes | keep it or stop keeping it | built |
+| `POST /podcasts/{id}/subscribe` | yes | `on` = true or false: put it on your home page or take it off | built |
+| `GET /account`, `POST /account/password` | yes | change your own password | built |
+| `GET /users`, `POST /users` | admin | list users; add one (`username`, `password`) | built |
+| `POST /users/{id}/password`, `POST /users/{id}/remove` | admin | new password; remove | built |
+| `POST /podcasts/{id}/remove` | admin | (above) only the admin may | built |
+| `GET /podcasts/{id}?view=filtered` | yes | the episodes your filters hide | built |
+| `POST /podcasts/{id}/filters` | yes | add a filter: `pattern`, `scope` (podcast or all), `processing` | built |
+| `POST /filters/{id}/remove` | owner or admin | remove a filter | built |
 
 ## Milestones
 
@@ -451,8 +541,8 @@ None right now.
 
 ## Future features
 
-- Username and password logins and user management (the `users` table is
-  ready for it), then per-user private feeds.
+- Let the admin hand out more admin rights, and give the admin a password of
+  its own beside the API key.
 - Just-in-time streaming of episodes not yet downloaded: a quick pass and a
   stream that starts before the podcast app gives up.
 - Shift chapter and transcript timestamps to match the cut audio, and add
@@ -473,6 +563,11 @@ None right now.
   private feed as `podcast:transcript` (SRT or WebVTT). The text could also
   help name ad blocks and find repeats that differ in sound but not words.
 - OPML import and export.
+- When one episode of a job's group repeats from end to end (an unfiltered
+  rewind, say), the whole job fails, the other episodes with it. It could
+  fail that one episode and carry on with the rest.
+- Filters on show notes as well as titles, and a page listing all of your
+  filters across podcasts.
 - One combined private feed across podcasts.
 - Postgres, and the worker as its own Deployment, so the web side can run
   more than one replica.
@@ -497,4 +592,8 @@ None right now.
   Milestone 4 built. Milestone 5 built. Milestone 7 built: CI publishes the
   image; Kubernetes example. Then from the future list: downloading new
   episodes on their own, a per-podcast gap setting, re-cutting when new
-  repeats turn up, following moved feeds, and time cut per podcast.
+  repeats turn up, following moved feeds, and time cut per podcast. Then
+  users: password logins, the admin's Users page, the Account page, and each
+  user's own list of podcasts. Then filters on episode titles, per user, and
+  filters from processing for compilations and rewinds. Then a private feed
+  per user, without the episodes they archived or filtered.
