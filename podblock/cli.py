@@ -290,6 +290,33 @@ def cmd_prune(args, store: Store, paths: Paths) -> None:
     print(f"{verb}: " + (", ".join(f"{n} {what}" for what, n in gone.items() if n) or "nothing"))
 
 
+def cmd_serve(args, store: Store, paths: Paths) -> None:
+    try:
+        import uvicorn
+
+        from .web.app import create_app
+        from .web.config import Settings
+    except ImportError:
+        sys.exit("podblock: the web app needs its extras: pip install 'pod-block[web]'")
+    app = create_app(Settings.from_env(data_dir=paths.root, media_dir=args.media_dir))
+    uvicorn.run(app, host=args.host, port=args.port, proxy_headers=True)
+
+
+def cmd_api_key(args, store: Store, paths: Paths) -> None:
+    from .web import accounts
+    from .web.db import connect, prepare
+
+    prepare(paths.db)
+    db = connect(paths.db)
+    try:
+        print(accounts.new_api_key(db))
+    finally:
+        db.close()
+    if os.environ.get("PODBLOCK_API_KEY"):
+        print("podblock: PODBLOCK_API_KEY is set, and replaces this key when the server next starts",
+              file=sys.stderr)
+
+
 def open_store(args, paths: Paths) -> Store:
     """Open the store, checking any fingerprint flags against its setting."""
     flags = {k: v for k, v in (("high_band", args.high_band), ("split_bands", args.split_bands))
@@ -308,8 +335,10 @@ def open_store(args, paths: Paths) -> Store:
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="podblock", description=__doc__)
-    parser.add_argument("--data-dir", type=Path, default=Path("podblock-data"),
-                        help="where the database, fingerprints and audio live (default: %(default)s)")
+    parser.add_argument("--data-dir", type=Path,
+                        default=Path(os.environ.get("PODBLOCK_DATA_DIR", "podblock-data")),
+                        help="where the database, fingerprints and audio live "
+                             "(default: $PODBLOCK_DATA_DIR, else %(default)s)")
     parser.add_argument("--high-band", action=argparse.BooleanOptionalAction, default=None,
                         help="also fingerprint 4-8 kHz, where music under speech shows best "
                              "(only when creating a store; default on)")
@@ -420,6 +449,16 @@ def main(argv: list[str] | None = None) -> None:
     p = sub.add_parser("delete", help="remove a block from the store")
     p.add_argument("segment_id", type=int)
     p.set_defaults(func=cmd_delete)
+
+    p = sub.add_parser("serve", help="run the web app")
+    p.add_argument("--host", default="127.0.0.1", help="address to listen on (default: %(default)s)")
+    p.add_argument("--port", type=int, default=8000, help="(default: %(default)s)")
+    p.add_argument("--media-dir", type=Path, default=None,
+                   help="where episode audio lives (default: $PODBLOCK_MEDIA_DIR, else DATA_DIR/media)")
+    p.set_defaults(func=cmd_serve)
+
+    sub.add_parser("api-key", help="make a new login key for the web app, replacing the old one and "
+                                   "logging everyone out").set_defaults(func=cmd_api_key)
 
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO if args.verbose else logging.WARNING,

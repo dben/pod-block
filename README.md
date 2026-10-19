@@ -36,6 +36,8 @@ podblock report --feed "$FEED"        # repeated sections in the newest episode
 | `export ID [-o file.mp3]` | Cut a block out of its source episode, to listen to it. |
 | `delete ID` | Remove a block. |
 | `prune` | Clear out old audio, fingerprints and blocks (see "Keeping it small"). |
+| `serve [--host H] [--port P]` | Run the web app (see "Web app"). |
+| `api-key` | Make a new login key for the web app, logging everyone out. |
 
 ### `report` options
 
@@ -58,6 +60,23 @@ podblock report --feed "$FEED"        # repeated sections in the newest episode
  "sections": [{"start": 0.0, "end": 193.2, "length": 193.2,
                "types": ["intro", "repeated"], "blocks": [12, 47],
                "unique_sec": 0.0, "parts": [{"start": 0.0, "end": 94.3, "type": "intro", "block": 47}]}]}
+```
+
+## Web app
+
+A web app to manage it all is under way; `WEBAPP.md` has the plan and its
+status. So far it has a login and lists the podcasts in the store.
+
+```sh
+pip install -e '.[web]'
+podblock serve                        # http://127.0.0.1:8000; prints a login key on first start
+```
+
+Or in a container, with the database and the audio on their own volumes:
+
+```sh
+docker build -t pod-block .
+docker run -p 8000:8000 -v pb-data:/data -v pb-media:/media pod-block
 ```
 
 ## Block types
@@ -190,6 +209,7 @@ segments(id, source_episode_id, podcast_id, source_start, source_end, label, typ
 occurrences(segment_id, episode_id, start, end, segment_start, hits)
 compared_pairs(a_id, b_id)
 reports(episode_id, created_at, report)      -- the JSON `report --json` prints
+users(id, username, password_hash, is_admin, created_at)  -- web app logins
 ```
 
 ## Tests

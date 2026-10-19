@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Podcasts</h1>
+    <p class="muted">{{ podcasts|length }} {{ 'feed' if podcasts|length == 1 else 'feeds' }}</p>
+  </div>
+</div>
+
+{% if podcasts %}
+<ul class="grid podcast-grid">
+  {% for p in podcasts %}
+  <li class="card podcast-card">
+    <div class="cover cover-blank" aria-hidden="true">{{ (p.name or '?')[:1]|upper }}</div>
+    <div class="podcast-card-body">
+      <h2 class="podcast-name">{{ p.name }}</h2>
+      {% if p.feed_url %}<p class="muted truncate">{{ p.feed_url }}</p>{% endif %}
+      <p class="stats">
+        <span class="badge">{{ p.episodes }} episodes</span>
+        <span class="badge">{{ p.blocks }} blocks</span>
+      </p>
+    </div>
+  </li>
+  {% endfor %}
+</ul>
+{% else %}
+<div class="card empty">
+  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a6 6 0 0 0-6 6v3a6 6 0 0 0 12 0V9a6 6 0 0 0-6-6Zm0 15v3m-4 0h8"/></svg>
+  <h2>No podcasts yet</h2>
+  <p class="muted">Adding feeds from this page comes next. Until then,
+    <code>podblock analyze FEED_URL</code> adds one from the command line.</p>
+</div>
+{% endif %}
+{% endblock %}
