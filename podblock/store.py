@@ -18,12 +18,29 @@ import numpy as np
 from .fingerprint import Fingerprint, FingerprintConfig, frames_to_seconds
 from .matcher import MatchParams, find_runs, match_hashes
 
-SCHEMA_VERSION = "2"
+SCHEMA_VERSION = "3"
 
 REPEATED, INTRO, OUTRO, SHOW = "repeated", "intro", "outro", "show"
 BUMPER_IN, BUMPER_OUT, BUMPER = "bumper-in", "bumper-out", "bumper"
 TYPES = (REPEATED, INTRO, OUTRO, SHOW, BUMPER_IN, BUMPER_OUT, BUMPER)
 PODCAST_ONLY = {INTRO, OUTRO, SHOW}  # only checked against their own podcast
+
+SEGMENTS_TABLE = """
+CREATE TABLE IF NOT EXISTS {name} (
+    id INTEGER PRIMARY KEY,
+    source_episode_id INTEGER REFERENCES episodes(id) ON DELETE SET NULL,
+    podcast_id INTEGER REFERENCES podcasts(id),  -- podcast it was found in
+    source_start REAL NOT NULL,
+    source_end REAL NOT NULL,
+    label TEXT,
+    type TEXT NOT NULL DEFAULT 'repeated',
+    type_manual INTEGER NOT NULL DEFAULT 0,  -- set by hand; never retagged automatically
+    hashes BLOB NOT NULL,  -- uint32 per hash, little-endian
+    times BLOB NOT NULL,  -- int32 frame of each hash from the block start
+    created_at REAL,
+    last_seen REAL  -- when a scan last heard it
+);
+"""
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS settings (
@@ -53,25 +70,7 @@ CREATE TABLE IF NOT EXISTS compared_pairs (
     b_id INTEGER NOT NULL,
     PRIMARY KEY (a_id, b_id)
 );
-CREATE TABLE IF NOT EXISTS segments (
-    id INTEGER PRIMARY KEY,
-    source_episode_id INTEGER REFERENCES episodes(id),
-    podcast_id INTEGER REFERENCES podcasts(id),  -- podcast it was found in
-    source_start REAL NOT NULL,
-    source_end REAL NOT NULL,
-    label TEXT,
-    type TEXT NOT NULL DEFAULT 'repeated',
-    type_manual INTEGER NOT NULL DEFAULT 0,  -- set by hand; never retagged automatically
-    created_at REAL
-);
-CREATE TABLE IF NOT EXISTS segment_hashes (
-    segment_id INTEGER NOT NULL REFERENCES segments(id) ON DELETE CASCADE,
-    hash INTEGER NOT NULL,
-    t INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS segment_hashes_hash ON segment_hashes(hash);
-CREATE INDEX IF NOT EXISTS segment_hashes_segment ON segment_hashes(segment_id);
-CREATE TABLE IF NOT EXISTS occurrences (
+{segments}CREATE TABLE IF NOT EXISTS occurrences (
     id INTEGER PRIMARY KEY,
     segment_id INTEGER NOT NULL REFERENCES segments(id) ON DELETE CASCADE,
     episode_id INTEGER NOT NULL REFERENCES episodes(id) ON DELETE CASCADE,
@@ -82,7 +81,12 @@ CREATE TABLE IF NOT EXISTS occurrences (
 );
 CREATE INDEX IF NOT EXISTS occurrences_episode ON occurrences(episode_id);
 CREATE INDEX IF NOT EXISTS occurrences_segment ON occurrences(segment_id);
-"""
+CREATE TABLE IF NOT EXISTS reports (
+    episode_id INTEGER PRIMARY KEY REFERENCES episodes(id) ON DELETE CASCADE,
+    created_at REAL NOT NULL,
+    report TEXT NOT NULL  -- JSON, as `podblock report --json` prints it
+);
+""".replace("{segments}", SEGMENTS_TABLE.format(name="segments"))
 
 
 @dataclass
@@ -112,12 +116,39 @@ class Store:
         tables = {r[0] for r in self.db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         if "episodes" in tables and "settings" not in tables:
             raise StoreError(f"{path} was made by an older pod-block; start a new --data-dir")
+        if "segment_hashes" in tables:
+            self._upgrade_from_2()
         self.db.executescript(SCHEMA)
-        columns = {r["name"] for r in self.db.execute("PRAGMA table_info(podcasts)")}
-        if "outro_bed" not in columns:  # stores made before outro detection
-            self.db.execute("ALTER TABLE podcasts ADD COLUMN outro_bed INTEGER NOT NULL DEFAULT 0")
         self.config = self._settle_config(config)
         self._index: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
+
+    def _upgrade_from_2(self) -> None:
+        """Move block hashes from one row each into packed columns (schema 2 to 3)."""
+        db = self.db
+        db.execute("PRAGMA foreign_keys = OFF")
+        with db:
+            columns = {r["name"] for r in db.execute("PRAGMA table_info(podcasts)")}
+            if "outro_bed" not in columns:
+                db.execute("ALTER TABLE podcasts ADD COLUMN outro_bed INTEGER NOT NULL DEFAULT 0")
+            db.execute(SEGMENTS_TABLE.format(name="segments_v3"))
+            for seg in db.execute("SELECT * FROM segments").fetchall():
+                rows = db.execute("SELECT hash, t FROM segment_hashes WHERE segment_id = ? ORDER BY rowid",
+                                  (seg["id"],)).fetchall()
+                arr = np.array(rows, dtype=np.int64).reshape(-1, 2)
+                db.execute(
+                    "INSERT INTO segments_v3 (id, source_episode_id, podcast_id, source_start, source_end, "
+                    "label, type, type_manual, hashes, times, created_at, last_seen) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (seg["id"], seg["source_episode_id"], seg["podcast_id"], seg["source_start"],
+                     seg["source_end"], seg["label"], seg["type"], seg["type_manual"],
+                     _pack(arr[:, 0], "<u4"), _pack(arr[:, 1], "<i4"), seg["created_at"], seg["created_at"]),
+                )
+            db.execute("DROP TABLE segment_hashes")
+            db.execute("DROP TABLE segments")
+            db.execute("ALTER TABLE segments_v3 RENAME TO segments")
+            db.execute("UPDATE settings SET value = ? WHERE key = 'schema'", (SCHEMA_VERSION,))
+        db.execute("PRAGMA foreign_keys = ON")
+        db.execute("VACUUM")
 
     def _settle_config(self, wanted: FingerprintConfig | None) -> FingerprintConfig:
         rows = dict(self.db.execute("SELECT key, value FROM settings").fetchall())
@@ -226,24 +257,30 @@ class Store:
     # --- segments -----------------------------------------------------------
 
     def add_segment(self, fp: Fingerprint, source_episode_id: int | None,
-                    source_start: float, source_end: float) -> int:
-        """Store a common segment. `fp` must already be timed relative to the segment."""
-        podcast = None
+                    source_start: float, source_end: float, podcast_id: int | None = None) -> int:
+        """Store a common segment. `fp` must already be timed relative to the segment.
+
+        Its podcast is the source episode's, or `podcast_id` when there is none.
+        """
         if source_episode_id is not None:
-            podcast = self.episode(source_episode_id)["podcast_id"]
+            podcast_id = self.episode(source_episode_id)["podcast_id"]
+        now = time.time()
         cur = self.db.execute(
-            "INSERT INTO segments (source_episode_id, podcast_id, source_start, source_end, created_at) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (source_episode_id, podcast, source_start, source_end, time.time()),
-        )
-        seg_id = cur.lastrowid
-        self.db.executemany(
-            "INSERT INTO segment_hashes (segment_id, hash, t) VALUES (?, ?, ?)",
-            zip([seg_id] * len(fp.hashes), fp.hashes.tolist(), fp.times.tolist()),
+            "INSERT INTO segments (source_episode_id, podcast_id, source_start, source_end, hashes, times, "
+            "created_at, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (source_episode_id, podcast_id, source_start, source_end,
+             _pack(fp.hashes, "<u4"), _pack(fp.times, "<i4"), now, now),
         )
         self.db.commit()
         self._index = None
-        return seg_id
+        return cur.lastrowid
+
+    def segment_fingerprint(self, segment_id: int) -> Fingerprint:
+        """A block's own hashes, timed from its start."""
+        row = self.segment(segment_id)
+        return Fingerprint(np.frombuffer(row["hashes"], "<u4").astype(np.uint32),
+                           np.frombuffer(row["times"], "<i4").astype(np.int32),
+                           row["source_end"] - row["source_start"], self.config)
 
     def delete_segment(self, segment_id: int) -> None:
         self.db.execute("DELETE FROM segments WHERE id = ?", (segment_id,))
@@ -280,7 +317,11 @@ class Store:
         return self.db.execute("SELECT * FROM segments WHERE id = ?", (segment_id,)).fetchone()
 
     def segments(self) -> list[sqlite3.Row]:
-        return self.db.execute("SELECT * FROM segments ORDER BY id").fetchall()
+        """Every block, without its hashes."""
+        return self.db.execute(
+            "SELECT id, source_episode_id, podcast_id, source_start, source_end, label, type, type_manual, "
+            "created_at, last_seen FROM segments ORDER BY id"
+        ).fetchall()
 
     def segment_summary(self) -> list[sqlite3.Row]:
         return self.db.execute(
@@ -308,6 +349,10 @@ class Store:
             (segment_id,),
         ).fetchall()
 
+    def episodes_with_occurrences(self) -> list[int]:
+        """Episodes with known block matches, including ones whose fingerprints are gone."""
+        return [r[0] for r in self.db.execute("SELECT DISTINCT episode_id FROM occurrences ORDER BY episode_id")]
+
     def occurrences_for_episode(self, episode_id: int) -> list[SegmentMatch]:
         rows = self.db.execute(
             "SELECT segment_id, start, end, segment_start, hits FROM occurrences "
@@ -328,14 +373,14 @@ class Store:
     # --- matching -----------------------------------------------------------
 
     def _load_index(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Every block's hashes, block ids and times, kept in memory until blocks change."""
         if self._index is None:
-            rows = self.db.execute("SELECT hash, segment_id, t FROM segment_hashes").fetchall()
-            if rows:
-                arr = np.array(rows, dtype=np.int64)
-                self._index = (arr[:, 0].astype(np.uint32), arr[:, 1], arr[:, 2])
-            else:
-                empty = np.zeros(0, np.int64)
-                self._index = (empty.astype(np.uint32), empty, empty)
+            rows = self.db.execute("SELECT id, hashes, times FROM segments").fetchall()
+            hashes = [np.frombuffer(r["hashes"], "<u4") for r in rows]
+            times = [np.frombuffer(r["times"], "<i4") for r in rows]
+            ids = np.repeat(np.array([r["id"] for r in rows], dtype=np.int64), [len(h) for h in hashes])
+            self._index = (np.concatenate([np.zeros(0, "<u4"), *hashes]).astype(np.uint32), ids,
+                           np.concatenate([np.zeros(0, "<i4"), *times]).astype(np.int64))
         return self._index
 
     def visible_segments(self, podcast_id: int | None) -> np.ndarray:
@@ -348,10 +393,13 @@ class Store:
         return np.array([r[0] for r in rows], dtype=np.int64)
 
     def scan(self, fp: Fingerprint, params: MatchParams, podcast_id: int | None = None,
-             everything: bool = False) -> list[SegmentMatch]:
+             everything: bool = False, heard: bool = False) -> list[SegmentMatch]:
         """Find the stored blocks that appear in `fp`.
 
         Only blocks that apply to `podcast_id` are used, unless `everything`.
+        With `heard`, the blocks found count as heard now, which keeps them
+        from being pruned; pass it for audio being processed, not for
+        rescans of episodes already stored.
         """
         hashes, seg_ids, seg_times = self._load_index()
         if not everything:
@@ -379,7 +427,16 @@ class Store:
                     segment_start=frames_to_seconds(run.b_start),
                     hits=run.hits,
                 ))
+        if heard:
+            self.mark_heard({m.segment_id for m in found})
         return sorted(found, key=lambda m: m.start)
+
+    def mark_heard(self, segment_ids) -> None:
+        ids = sorted(segment_ids)
+        if ids:
+            self.db.execute(f"UPDATE segments SET last_seen = ? WHERE id IN ({', '.join('?' * len(ids))})",
+                            (time.time(), *ids))
+            self.db.commit()
 
     def uncovered(self, fp: Fingerprint, params: MatchParams) -> list[tuple[float, float]]:
         """Parts of `fp` (in seconds) that no stored block, of any podcast, already covers."""
@@ -393,3 +450,22 @@ class Store:
             gaps.append((cursor, fp.duration))
         return gaps
 
+    # --- reports and clean-up ----------------------------------------------
+
+    def save_report(self, episode_id: int, report: str) -> None:
+        self.db.execute("INSERT OR REPLACE INTO reports VALUES (?, ?, ?)", (episode_id, time.time(), report))
+        self.db.commit()
+
+    def saved_report(self, episode_id: int) -> str | None:
+        row = self.db.execute("SELECT report FROM reports WHERE episode_id = ?", (episode_id,)).fetchone()
+        return row["report"] if row else None
+
+    def delete_episode(self, episode_id: int) -> None:
+        """Forget an episode: its occurrences, report and comparisons go too."""
+        self.db.execute("DELETE FROM compared_pairs WHERE a_id = ? OR b_id = ?", (episode_id, episode_id))
+        self.db.execute("DELETE FROM episodes WHERE id = ?", (episode_id,))
+        self.db.commit()
+
+
+def _pack(values: np.ndarray, dtype: str) -> bytes:
+    return np.ascontiguousarray(values, dtype=dtype).tobytes()

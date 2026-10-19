@@ -15,8 +15,9 @@ from .feed import download, fetch_feed
 from .fingerprint import FingerprintConfig, fingerprint_file
 from .matcher import MatchParams
 from .outro import music_bed_outro
-from .pipeline import (Paths, episode_loudness, find_common_blocks, ingest_episodes, ingest_feed,
-                       ingest_file, load_fingerprint, neighbours)
+from .pipeline import (COMPARE_OTHER, COMPARE_SAME, OTHER_WINDOW_DAYS, Paths, episode_loudness,
+                       find_common_blocks, ingest_episodes, ingest_feed, ingest_file, load_fingerprint,
+                       neighbours, prune, refingerprint)
 from .report import build_sections
 from .store import TYPES, Store, StoreError
 
@@ -52,7 +53,8 @@ def cmd_analyze(args, store: Store, paths: Paths) -> None:
             ids.append(ingest_file(store, paths, Path(source), podcast))
         else:
             ids += ingest_feed(store, paths, source, args.episodes, keep_audio=not args.delete_audio)
-    added = find_common_blocks(store, ids, params, compare_with_history=not args.no_history)
+    added = find_common_blocks(store, ids, params, same=args.compare_same, other=args.compare_other,
+                               only_among_given=args.no_history)
     print(f"Added {added} new common block(s).")
     print_segments(store)
 
@@ -63,16 +65,20 @@ def cmd_report(args, store: Store, paths: Paths) -> None:
         feed = fetch_feed(args.feed)
         if not 0 <= args.index < len(feed.episodes):
             sys.exit(f"The feed has {len(feed.episodes)} episodes; --index must be below that.")
+        known = store.episode_by_guid(feed.episodes[args.index].guid)
+        if args.cached and known and show_saved(args, store, known["id"]):
+            return
         [ep_id] = ingest_episodes(store, paths, feed, [feed.episodes[args.index]])
         if args.neighbors:
-            around = ingest_episodes(store, paths, feed, neighbours(feed.episodes, args.index, args.neighbors))
-            find_common_blocks(store, [ep_id, *around], params, compare_with_history=False)
-        report_episode(args, store, ep_id, params)
+            ingest_episodes(store, paths, feed, neighbours(feed.episodes, args.index, args.neighbors))
     elif args.target and args.target.isdigit() and store.episode(int(args.target)):
         ep_id = int(args.target)
+        if args.cached and show_saved(args, store, ep_id):
+            return
+        if not store.episode(ep_id)["fingerprint_path"]:
+            refingerprint(store, paths, ep_id)
         if args.neighbors:
-            find_neighbour_repeats(args, store, paths, ep_id, params)
-        report_episode(args, store, ep_id, params)
+            fetch_neighbours(args, store, paths, ep_id)
     elif args.target:
         if args.neighbors:
             sys.exit("--neighbors needs a feed episode: use --feed URL --index N, or a stored episode id.")
@@ -83,24 +89,41 @@ def cmd_report(args, store: Store, paths: Paths) -> None:
             fp = fingerprint_file(path, store.config)
         podcast = podcast_arg(store, args.podcast)
         bed = outro_start(args, store, podcast, fp.loudness)
-        print_report(args, store, Path(args.target).name, fp.duration,
-                     store.scan(fp, params, podcast_id=podcast), outro_bed_start=bed)
+        matches = store.scan(fp, params, podcast_id=podcast, heard=True)
+        show(args, report_data(args, store, Path(args.target).name, fp.duration, matches, outro_bed_start=bed))
+        return
     else:
         sys.exit("Give an episode id, file or URL, or --feed URL [--index N].")
 
-
-def find_neighbour_repeats(args, store: Store, paths: Paths, ep_id: int, params: MatchParams) -> None:
-    """Fetch the episodes next to a stored one in its feed and compare them with it."""
+    find_common_blocks(store, [ep_id], params, same=args.compare_same, other=args.compare_other)
     ep = store.episode(ep_id)
-    pod = store.db.execute("SELECT feed_url FROM podcasts WHERE id = ?", (ep["podcast_id"],)).fetchone()
+    matches = store.scan(load_fingerprint(store, ep_id), params, podcast_id=ep["podcast_id"], heard=True)
+    pod = store.podcast(ep["podcast_id"])
+    wanted = args.outro_bed or (pod and pod["outro_bed"])
+    bed = outro_start(args, store, ep["podcast_id"], episode_loudness(store, ep_id) if wanted else None)
+    data = report_data(args, store, ep["title"], ep["duration"], matches, ep_id, outro_bed_start=bed)
+    store.save_report(ep_id, json.dumps(data))
+    show(args, data)
+
+
+def fetch_neighbours(args, store: Store, paths: Paths, ep_id: int) -> None:
+    """Fetch the episodes next to a stored one in its feed, so they can be compared with it."""
+    ep = store.episode(ep_id)
+    pod = store.podcast(ep["podcast_id"])
     if not pod or not pod["feed_url"]:
         sys.exit("--neighbors needs an episode that came from a feed.")
     feed = fetch_feed(pod["feed_url"])
     index = next((i for i, e in enumerate(feed.episodes) if e.guid == ep["guid"]), None)
     if index is None:
         sys.exit("That episode is no longer in its feed, so its neighbours are unknown.")
-    around = ingest_episodes(store, paths, feed, neighbours(feed.episodes, index, args.neighbors))
-    find_common_blocks(store, [ep_id, *around], params, compare_with_history=False)
+    ingest_episodes(store, paths, feed, neighbours(feed.episodes, index, args.neighbors))
+
+
+def show_saved(args, store: Store, ep_id: int) -> bool:
+    saved = store.saved_report(ep_id)
+    if saved:
+        show(args, json.loads(saved))
+    return saved is not None
 
 
 def outro_start(args, store: Store, podcast: int | None, loudness) -> float | None:
@@ -111,40 +134,36 @@ def outro_start(args, store: Store, podcast: int | None, loudness) -> float | No
     return music_bed_outro(loudness)
 
 
-def report_episode(args, store: Store, ep_id: int, params: MatchParams) -> None:
-    ep = store.episode(ep_id)
-    matches = store.scan(load_fingerprint(store, ep_id), params, podcast_id=ep["podcast_id"])
-    pod = store.podcast(ep["podcast_id"])
-    wanted = args.outro_bed or (pod and pod["outro_bed"])
-    bed = outro_start(args, store, ep["podcast_id"], episode_loudness(store, ep_id) if wanted else None)
-    print_report(args, store, ep["title"], ep["duration"], matches, ep_id, outro_bed_start=bed)
-
-
-def print_report(args, store: Store, title: str, duration: float, matches,
-                 ep_id: int | None = None, outro_bed_start: float | None = None) -> None:
+def report_data(args, store: Store, title: str, duration: float, matches,
+                ep_id: int | None = None, outro_bed_start: float | None = None) -> dict:
     sections = build_sections(matches, store.types(), duration, fill_gaps=args.fill_gaps,
                               outro_bed_start=outro_bed_start)
-    total = sum(s.length for s in sections)
+    return {"episode_id": ep_id, "title": title, "duration": round(duration, 2),
+            "repeated_sec": round(sum(s.length for s in sections), 2),
+            "sections": [s.to_dict() for s in sections]}
+
+
+def show(args, data: dict) -> None:
+    """Print a report, as JSON or as text."""
     if args.json:
-        print(json.dumps({"episode_id": ep_id, "title": title, "duration": round(duration, 2),
-                          "repeated_sec": round(total, 2),
-                          "sections": [s.to_dict() for s in sections]}, indent=2))
+        print(json.dumps(data, indent=2))
         return
-    print(f"{title} ({fmt_time(duration)})")
+    duration, sections = data["duration"], data["sections"]
+    print(f"{data['title']} ({fmt_time(duration)})")
     if not sections:
         print("No repeated sections found.")
         return
-    share = f" ({100 * total / duration:.1f}%)" if duration else ""
-    print(f"{len(sections)} repeated section(s), {fmt_time(total)} in all{share}:")
+    share = f" ({100 * data['repeated_sec'] / duration:.1f}%)" if duration else ""
+    print(f"{len(sections)} repeated section(s), {fmt_time(data['repeated_sec'])} in all{share}:")
     for s in sections:
-        unique = f", {s.unique_sec:.0f}s unique filled" if s.unique_sec else ""
-        blocks = " ".join(f"#{b}" for b in s.blocks[:8]) + (" ..." if len(s.blocks) > 8 else "")
-        print(f"  {fmt_time(s.start):>8} - {fmt_time(s.end):>8}  ({fmt_time(s.length):>5})  "
-              f"{', '.join(s.types)}{unique}  {blocks}")
+        unique = f", {s['unique_sec']:.0f}s unique filled" if s["unique_sec"] else ""
+        blocks = " ".join(f"#{b}" for b in s["blocks"][:8]) + (" ..." if len(s["blocks"]) > 8 else "")
+        print(f"  {fmt_time(s['start']):>8} - {fmt_time(s['end']):>8}  ({fmt_time(s['length']):>5})  "
+              f"{', '.join(s['types'])}{unique}  {blocks}")
         if args.detail:
-            for p in sorted(s.parts, key=lambda p: p.start):
-                block = f"#{p.block}" if p.block is not None else ("music bed" if p.type == "outro" else "")
-                print(f"      {fmt_time(p.start):>8} - {fmt_time(p.end):>8}  {p.type:<10} {block}")
+            for p in sorted(s["parts"], key=lambda p: p["start"]):
+                block = f"#{p['block']}" if p["block"] is not None else ("music bed" if p["type"] == "outro" else "")
+                print(f"      {fmt_time(p['start']):>8} - {fmt_time(p['end']):>8}  {p['type']:<10} {block}")
 
 
 def describe(row) -> str:
@@ -260,6 +279,13 @@ def cmd_export(args, store: Store, paths: Paths) -> None:
     print(out)
 
 
+def cmd_prune(args, store: Store, paths: Paths) -> None:
+    gone = prune(store, audio_days=args.audio_days, fingerprint_days=args.fingerprint_days,
+                 block_days=args.block_days, dry_run=args.dry_run)
+    verb = "Would remove" if args.dry_run else "Removed"
+    print(f"{verb}: " + (", ".join(f"{n} {what}" for what, n in gone.items() if n) or "nothing"))
+
+
 def open_store(args, paths: Paths) -> Store:
     """Open the store, checking any fingerprint flags against its setting."""
     flags = {k: v for k, v in (("high_band", args.high_band), ("split_bands", args.split_bands))
@@ -297,6 +323,14 @@ def main(argv: list[str] | None = None) -> None:
                        help="matching hashes per second needed to call audio shared "
                             "(default: %(default)s)")
 
+    def comparison_args(p):
+        p.add_argument("--compare-same", type=int, default=COMPARE_SAME, metavar="N",
+                       help="compare each episode with the N same-show episodes closest in publish "
+                            "date (default: %(default)s)")
+        p.add_argument("--compare-other", type=int, default=COMPARE_OTHER, metavar="N",
+                       help="...and with the N closest of each other show, published within "
+                            f"{OTHER_WINDOW_DAYS:.0f} days, for network ads (default: %(default)s)")
+
     p = sub.add_parser("analyze", help="fingerprint feeds or files and store their common blocks")
     p.add_argument("sources", nargs="+", help="RSS feed URLs and/or local audio files")
     p.add_argument("-n", "--episodes", type=int, default=5,
@@ -306,6 +340,7 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--no-history", action="store_true",
                    help="compare only these episodes, not ones analyzed earlier")
     matching_args(p)
+    comparison_args(p)
     p.set_defaults(func=cmd_analyze)
 
     p = sub.add_parser("report", help="list the repeated sections in one episode")
@@ -321,7 +356,10 @@ def main(argv: list[str] | None = None) -> None:
                    help="look for an outro read over a music bed, even if the podcast setting is off")
     p.add_argument("--detail", action="store_true", help="list the parts of each section")
     p.add_argument("--json", action="store_true", help="print JSON")
+    p.add_argument("--cached", action="store_true",
+                   help="print the saved report for a stored episode, if there is one, without redoing it")
     matching_args(p)
+    comparison_args(p)
     p.set_defaults(func=cmd_report)
 
     p = sub.add_parser("list", help="list stored common blocks")
@@ -361,6 +399,16 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("segment_id", type=int)
     p.add_argument("-o", "--output")
     p.set_defaults(func=cmd_export)
+
+    p = sub.add_parser("prune", help="clear out old audio, fingerprints and blocks")
+    p.add_argument("--audio-days", type=float, default=0.0,
+                   help="delete downloaded audio older than this; only export needs it (default: 0)")
+    p.add_argument("--fingerprint-days", type=float, default=30.0,
+                   help="delete fingerprints older than this (default: %(default)s)")
+    p.add_argument("--block-days", type=float, default=30.0,
+                   help="drop blocks not heard for this long, unless typed by hand (default: %(default)s)")
+    p.add_argument("--dry-run", action="store_true", help="only say what would go")
+    p.set_defaults(func=cmd_prune)
 
     p = sub.add_parser("delete", help="remove a block from the store")
     p.add_argument("segment_id", type=int)

@@ -63,8 +63,8 @@ def classify_bumpers(store: Store) -> dict[int, str]:
     lengths: dict[int, list[float]] = {}
     opening, closing = Counter(), Counter()
 
-    for ep in store.fingerprinted_episodes():
-        matches = store.occurrences_for_episode(ep["id"])
+    for ep_id in store.episodes_with_occurrences():
+        matches = store.occurrences_for_episode(ep_id)
         for m in matches:
             lengths.setdefault(m.segment_id, []).append(m.end - m.start)
         for group in _groups(matches):
