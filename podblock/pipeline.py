@@ -180,20 +180,21 @@ def _when(row) -> float:
 
 
 def comparison_set(store: Store, episode_id: int, same: int = COMPARE_SAME, other: int = COMPARE_OTHER,
-                   among: set[int] | None = None) -> list[int]:
+                   among: set[int] | None = None, skip: frozenset[int] | set[int] = frozenset()) -> list[int]:
     """The stored episodes to compare one episode with.
 
     From its own podcast, the `same` episodes closest to it in publish date:
     listeners hop around a back catalogue, and ads that ran at the time an
     episode was published sit in its neighbours, not in this week's episodes.
     From every other podcast, the `other` closest within OTHER_WINDOW_DAYS, to
-    catch network ads. `among` limits the choice to those episodes.
+    catch network ads. `among` limits the choice to those episodes; `skip` leaves
+    these out.
     """
     ep = store.episode(episode_id)
     when = _when(ep)
     by_podcast: dict[int | None, list] = {}
     for r in store.fingerprinted_episodes():
-        if r["id"] != episode_id and (among is None or r["id"] in among):
+        if r["id"] != episode_id and r["id"] not in skip and (among is None or r["id"] in among):
             by_podcast.setdefault(r["podcast_id"], []).append(r)
     picked = []
     for podcast, eps in by_podcast.items():
@@ -207,11 +208,12 @@ def comparison_set(store: Store, episode_id: int, same: int = COMPARE_SAME, othe
 
 def find_common_blocks(store: Store, episode_ids: list[int], params: MatchParams,
                        same: int = COMPARE_SAME, other: int = COMPARE_OTHER,
-                       only_among_given: bool = False) -> int:
+                       only_among_given: bool = False, skip: frozenset[int] | set[int] = frozenset()) -> int:
     """Compare each episode with its comparison set and store new common blocks.
 
     Returns how many blocks were added. With `only_among_given`, the given
-    episodes are only compared with each other.
+    episodes are only compared with each other; episodes in `skip` are never
+    compared with.
     """
     fps: dict[int, Fingerprint] = {}
 
@@ -223,7 +225,7 @@ def find_common_blocks(store: Store, episode_ids: list[int], params: MatchParams
     targets = set(episode_ids)
     pairs = set()
     for ep_id in episode_ids:
-        for other_id in comparison_set(store, ep_id, same, other, targets if only_among_given else None):
+        for other_id in comparison_set(store, ep_id, same, other, targets if only_among_given else None, skip):
             pairs.add(tuple(sorted((ep_id, other_id))))
     involved = targets | {e for pair in pairs for e in pair}
 

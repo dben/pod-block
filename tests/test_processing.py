@@ -1,3 +1,4 @@
+import json
 import shutil
 import subprocess
 from pathlib import Path
@@ -561,3 +562,58 @@ def test_time_cut_is_shown(env):
     processed(env)
     assert "min cut" in env.client.get("/").text
     assert "cut so far" in env.client.get(f"/podcasts/{env.pod}").text
+
+
+@pytest.fixture
+def rewind(env, tmp_path):
+    """Episode 5 becomes a rewind: the jingle, the first half of episode 2 played again, and a new bit."""
+    samples = np.concatenate([fake_audio(JINGLE, 99), fake_audio(FILLER, 2), fake_audio(FILLER, 500)])
+    pcm = (np.clip(samples, -1, 1) * 32767).astype("<i2").tobytes()
+    path = tmp_path / "rewind.mp3"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "s16le", "-ar", str(SR), "-ac", "1", "-i", "pipe:0",
+                    "-c:a", "libmp3lame", "-b:a", "64k", str(path)], input=pcm, check=True)
+    env.cdn.files = {**env.cdn.files, "https://cdn.example.com/5.mp3": path}
+    return env
+
+
+def blocks(env):
+    return env.db.execute("SELECT COUNT(*) FROM segments").fetchone()[0]
+
+
+def test_a_processing_filter_keeps_an_episode_out_of_finding_repeats(rewind):
+    env = rewind
+    env.client.post(f"/podcasts/{env.pod}/filters", data={"pattern": "^episode 5$", "processing": "true"})
+    jobs.enqueue(env.db, "process", [env.ids["ep-2"]], None)
+    background.run_queue(env.settings)
+    assert "https://cdn.example.com/5.mp3" not in env.cdn.fetched  # never taken along to compare with
+    assert episode(env, "ep-5")["state"] is None
+    assert episode(env, "ep-2")["cut_duration"] == pytest.approx(2 * FILLER, abs=3)  # only the jingle and the ad
+
+    known = blocks(env)
+    env.client.post(f"/podcasts/{env.pod}/episodes", data={"action": "download", "ids": env.ids["ep-5"]})
+    background.run_queue(env.settings)
+    ep = episode(env, "ep-5")
+    assert ep["state"] == "ready" and ep["cut_duration"] == pytest.approx(2 * FILLER, abs=3)  # the jingle is cut
+    assert blocks(env) == known  # and nothing was learned from it
+    assert "filter from processing matches this episode" in env.client.get(f"/episodes/{env.ids['ep-5']}").text
+
+
+def test_filtering_an_episode_forgets_what_it_taught(rewind):
+    env = rewind
+    jobs.enqueue(env.db, "process", [env.ids["ep-2"]], None)
+    background.run_queue(env.settings)
+    assert episode(env, "ep-5")["state"] == "ready"
+    assert episode(env, "ep-2")["cut_duration"] == pytest.approx(FILLER, abs=3)  # the rewind made its first half a repeat
+
+    env.client.post(f"/podcasts/{env.pod}/filters", data={"pattern": "^episode 5$", "processing": "true"})
+    job = env.db.execute("SELECT * FROM jobs WHERE kind = 'unlearn'").fetchone()
+    assert json.loads(job["payload"]) == {"episodes": [env.ids["ep-5"]]}
+    assert "Forget repeats found in filtered episodes" in env.client.get("/jobs").text
+    background.run_queue(env.settings)
+
+    assert episode(env, "ep-2")["cut_duration"] == pytest.approx(2 * FILLER, abs=3)  # its first half is back
+    assert episode(env, "ep-5")["cut_duration"] == pytest.approx(2 * FILLER, abs=3)  # still loses the jingle
+    assert env.db.execute("SELECT COUNT(*) FROM compared_pairs WHERE a_id = ? OR b_id = ?",
+                          (env.ids["ep-5"], env.ids["ep-5"])).fetchone()[0] == 0
+    for n in (1, 3, 4):
+        assert episode(env, f"ep-{n}")["cut_duration"] == pytest.approx(2 * FILLER, abs=3)

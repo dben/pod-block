@@ -462,3 +462,84 @@ def test_only_the_admin_removes_a_podcast_or_changes_its_feed_address(client, we
     add(client, web, item(1))  # adding it again brings it back for whoever adds it
     assert CARD in client.get("/", headers=HTML).text
     assert CARD not in bob.get("/", headers=HTML).text
+
+
+def bob_logged_in(client):
+    client.post("/users", data={"username": "bob", "password": "password1"})
+    bob = TestClient(client.app, follow_redirects=False)
+    bob.post("/login", data={"username": "bob", "password": "password1"})
+    return bob
+
+
+def titles(c, pod, view=""):
+    page = c.get(f"/podcasts/{pod}" + (f"?view={view}" if view else ""), headers=HTML).text
+    return [n for n in range(1, 10) if f">Episode {n}<" in page]
+
+
+def test_a_filter_hides_episodes_from_its_owner_only(client, web):
+    pod = add(client, web, *(item(n) for n in range(1, 5)))
+    bob = bob_logged_in(client)
+    res = client.post(f"/podcasts/{pod}/filters", data={"pattern": "EPISODE [23]$", "scope": "podcast"})
+    assert res.headers["location"] == f"/podcasts/{pod}?filters=1"
+    page = client.get(res.headers["location"], headers=HTML).text
+    assert "It hides 2 episodes of this podcast from you." in page and "EPISODE [23]$" in page
+
+    assert titles(client, pod) == [1, 4] and titles(client, pod, "filtered") == [2, 3]
+    assert 'Filtered <span class="count">2</span>' in page and "2 episodes</span>" in page
+    assert titles(bob, pod) == [1, 2, 3, 4]
+    assert "Filtered <span" not in bob.get(f"/podcasts/{pod}", headers=HTML).text
+
+    (f,) = connect(client.db_path).execute("SELECT id FROM episode_filters").fetchall()
+    assert bob.post(f"/filters/{f['id']}/remove").status_code == 403
+    client.post(f"/filters/{f['id']}/remove", data={"next": f"/podcasts/{pod}"})
+    assert titles(client, pod) == [1, 2, 3, 4]
+
+
+def test_filters_for_every_podcast_and_bad_patterns(client, web):
+    pod = add(client, web, item(1), item(2))
+    web.pages["https://example.org/b.rss"] = rss(item(3, guid="b-3"), title="B")
+    other = int(client.post("/podcasts", data={"url": "https://example.org/b.rss"}).headers["location"].rsplit("/", 1)[1])
+    client.post(f"/podcasts/{pod}/filters", data={"pattern": "episode [13]", "scope": "all"})
+    assert titles(client, pod) == [2] and titles(client, other) == []
+    assert "Episode 2" not in client.get(f"/podcasts/{other}", headers=HTML).text
+
+    for pattern, why in [("(oops", "valid regular expression"), (".*", "matches every title"), ("  ", "Type a pattern")]:
+        res = client.post(f"/podcasts/{pod}/filters", data={"pattern": pattern})
+        assert "filters=1" in res.headers["location"]
+        assert why in client.get(res.headers["location"], headers=HTML).text
+    db = connect(client.db_path)
+    assert db.execute("SELECT COUNT(*) FROM episode_filters").fetchone()[0] == 1
+    db.close()
+
+
+def test_a_processing_filter_hides_episodes_from_everyone_and_skips_them(client, web):
+    pod = add(client, web, *(item(n) for n in range(1, 4)))
+    bob = bob_logged_in(client)
+    bob.post(f"/podcasts/{pod}/subscribe", data={"on": "true"})
+    bob.post(f"/podcasts/{pod}/filters", data={"pattern": "episode [24]", "processing": "true"})
+    bob.post(f"/podcasts/{pod}/filters", data={"pattern": "episode 1"})
+    assert titles(client, pod) == [1, 3] and titles(bob, pod) == [3]
+    assert titles(client, pod, "filtered") == [2]
+    assert "Filtered from processing" in client.get(f"/podcasts/{pod}", headers=HTML).text
+
+    db = connect(client.db_path)
+    marked = lambda: [r["guid"] for r in db.execute("SELECT guid FROM episodes WHERE skip_processing = 1 ORDER BY id")]
+    assert marked() == ["ep-2"]
+    assert db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0] == 0  # nothing was learned from it
+
+    # New episodes that match are marked as they arrive, and don't download on their own.
+    db.execute("UPDATE podcasts SET auto_download = 1")
+    db.commit()
+    web.pages[URL] = rss(*(item(n) for n in range(1, 6)))
+    assert feeds.refresh(db, pod).queued == 1
+    assert marked() == ["ep-2", "ep-4"]
+    assert [r[0] for r in db.execute("SELECT e.guid FROM jobs j JOIN episodes e ON e.id = j.episode_id")] == ["ep-5"]
+
+    bob_id = db.execute("SELECT id FROM users WHERE username = 'bob'").fetchone()[0]
+    client.post(f"/users/{bob_id}/remove")  # his own filter goes; the one for everyone stays
+    (f,) = db.execute("SELECT id, user_id FROM episode_filters").fetchall()
+    assert f["user_id"] is None and "added by a removed user" in client.get(f"/podcasts/{pod}", headers=HTML).text
+    assert client.post(f"/filters/{f['id']}/remove").status_code == 303  # the admin may remove anyone's
+    assert marked() == []
+    assert titles(client, pod) == [1, 2, 3, 4, 5]
+    db.close()

@@ -66,7 +66,7 @@ def companions(db: sqlite3.Connection, ep: sqlite3.Row, count: int) -> list[sqli
     if count <= 0 or ep["pub_ts"] is None:
         return []
     usable = """podcast_id = ? AND id != ? AND fingerprint_path IS NULL AND audio_url IS NOT NULL
-                AND in_feed = 1 AND COALESCE(state, '') NOT IN ('queued', 'running')"""
+                AND in_feed = 1 AND skip_processing = 0 AND COALESCE(state, '') NOT IN ('queued', 'running')"""
     after = db.execute(f"SELECT * FROM episodes WHERE {usable} AND pub_ts > ? ORDER BY pub_ts LIMIT ?",
                        (ep["podcast_id"], ep["id"], ep["pub_ts"], count)).fetchall()
     before = db.execute(f"SELECT * FROM episodes WHERE {usable} AND pub_ts <= ? ORDER BY pub_ts DESC LIMIT ?",
@@ -172,9 +172,10 @@ def run(ctx: Context, settings: Settings) -> None:
     try:
         _fetch(ctx, settings, store, paths, episode_id)
         ep = _episode(ctx.db, episode_id)
-        have = ctx.db.execute("SELECT COUNT(*) FROM episodes WHERE podcast_id = ? AND fingerprint_path IS NOT NULL",
-                              (ep["podcast_id"],)).fetchone()[0]
-        extra = companions(ctx.db, ep, COMPARE_WITH - have)
+        learn = not ep["skip_processing"]  # a filter keeps it out: cut it with known repeats, learn nothing from it
+        have = ctx.db.execute("SELECT COUNT(*) FROM episodes WHERE podcast_id = ? AND fingerprint_path IS NOT NULL "
+                              "AND skip_processing = 0", (ep["podcast_id"],)).fetchone()[0]
+        extra = companions(ctx.db, ep, COMPARE_WITH - have) if learn else []
         for c in extra:
             ctx.db.execute("UPDATE episodes SET state = 'queued', state_note = ? WHERE id = ?",
                            (f"Coming along with “{ep['title']}”", c["id"]))
@@ -189,7 +190,12 @@ def run(ctx: Context, settings: Settings) -> None:
                            (other,))
         ctx.db.commit()
         with _detecting:
-            added = find_common_blocks(store, group, params)
+            if learn:
+                skip = {r["id"] for r in ctx.db.execute("SELECT id FROM episodes WHERE skip_processing = 1")}
+                added = find_common_blocks(store, group, params, skip=skip)
+            else:
+                rescan(store, episode_id, params, heard=True)
+                added = 0
             gaps = _fill_gaps(ctx.db, ep["podcast_id"])
             reports = {ep_id: episode_report(store, ep_id, params, fill_gaps=gaps) for ep_id in group}
         for ep_id in group:
@@ -212,6 +218,49 @@ def run(ctx: Context, settings: Settings) -> None:
             settle_episode(ctx.db, other)
         settle_episode(ctx.db, episode_id, failed)
         raise
+    finally:
+        store.close()
+
+
+# ---- the `unlearn` job: forget what filtered episodes taught ------------------
+
+def run_unlearn(ctx: Context, settings: Settings) -> None:
+    """Forget the repeats learned from episodes a processing filter now keeps out.
+
+    A block automatically found goes when, leaving those episodes out, it plays
+    in fewer than two episodes: it was only ever a repeat because a compilation
+    replayed it. Blocks typed by hand stay. Ready episodes that played a
+    forgotten block are cut again, and the filtered episodes lose their record
+    of comparisons, so they are compared afresh if the filter goes.
+    """
+    wanted = json.loads(ctx.job["payload"] or "{}").get("episodes", [])
+    store = Store(settings.db_path)
+    touched: set[int] = set()
+    try:
+        ctx.step("Forgetting repeats found in filtered episodes")
+        with _detecting:
+            skip = {r["id"] for r in ctx.db.execute("SELECT id FROM episodes WHERE skip_processing = 1")}
+            eps = [e for e in wanted if e in skip]  # a filter taken away since then leaves the rest be
+            if not eps:
+                return
+            marks = ", ".join("?" * len(eps))
+            blocks = [r["id"] for r in ctx.db.execute(
+                f"""SELECT DISTINCT s.id FROM segments s LEFT JOIN occurrences o ON o.segment_id = s.id
+                    WHERE s.type_manual = 0 AND (o.episode_id IN ({marks}) OR s.source_episode_id IN ({marks}))""",
+                (*eps, *eps))]
+            for block in blocks:
+                plays = {r[0] for r in ctx.db.execute(
+                    "SELECT DISTINCT episode_id FROM occurrences WHERE segment_id = ?", (block,))}
+                if len(plays - skip) < 2:
+                    touched |= plays
+                    store.delete_segment(block)
+            ctx.db.execute(f"DELETE FROM compared_pairs WHERE a_id IN ({marks}) OR b_id IN ({marks})", (*eps, *eps))
+            ctx.db.commit()
+        ready = [r["id"] for r in ctx.db.execute(
+            f"SELECT id FROM episodes WHERE state = 'ready' AND id IN ({', '.join('?' * len(touched))})",
+            tuple(touched))] if touched else []
+        enqueue(ctx.db, "process", ready, ctx.job["requested_by"], skip_ready=False,
+                payload=json.dumps({"recut": True}), note="Waiting to be cut again: a filter changed what repeats")
     finally:
         store.close()
 

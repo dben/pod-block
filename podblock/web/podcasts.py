@@ -9,13 +9,14 @@ import segno
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 
-from . import feeds, jobs, library, publish
+from . import feeds, filters, jobs, library, publish
 from .episodes import wake_worker
 from .deps import admin_user, current_user, get_db
 from .templating import flash, page
 
 PAGE_SIZE = 50
-VIEWS = {"active": (False, False), "archived": (True, False), "downloaded": (False, True)}  # (archived, downloaded)
+VIEWS = {"active": (False, False), "archived": (True, False), "downloaded": (False, True),  # (archived, downloaded)
+         "filtered": (False, False)}
 RETENTION_DAYS = (0, 3650)
 REFRESH_MINUTES = (15, 7 * 24 * 60)
 FILL_GAPS = (0, 120)
@@ -93,7 +94,8 @@ def show_podcast(request: Request, podcast_id: int, view: str = "active", q: str
     view = view if view in VIEWS else "active"
     archived, downloaded = VIEWS[view]
     rows, total = library.episodes(db, user["id"], podcast_id, archived, q, limit=PAGE_SIZE,
-                                   offset=(page_no - 1) * PAGE_SIZE, downloaded=downloaded)
+                                   offset=(page_no - 1) * PAGE_SIZE, downloaded=downloaded,
+                                   filtered=view == "filtered")
     more = page_no * PAGE_SIZE < total
     query = {k: v for k, v in (("view", view if view != "active" else ""), ("q", q)) if v}
     context = dict(
@@ -108,6 +110,7 @@ def show_podcast(request: Request, podcast_id: int, view: str = "active", q: str
                          "AND cut_duration IS NOT NULL", (podcast_id,)).fetchone()[0]
     return page(request, "podcast.html", title=pod["name"], nav="podcasts", user=user, cut_sec=cut_sec,
                 subscribed=library.subscribed(db, user["id"], podcast_id),
+                filters=filters.for_podcast(db, user["id"], podcast_id),
                 counts=library.counts(db, user["id"], podcast_id), private_url=private,
                 private_count=len(publish.published(db, podcast_id)),
                 private_qr=segno.make(private, error="m").svg_inline(scale=4, border=2, dark="#0d0f13", light="#ffffff"),
@@ -130,6 +133,43 @@ def podcast_settings(request: Request, podcast_id: int, retention_days: int = Fo
         note = " Process episodes again to cut them with the new gap." if fill_gaps != pod["fill_gaps"] else ""
         flash(request, "Saved." + note)
     return RedirectResponse(f"/podcasts/{podcast_id}", status_code=303)
+
+
+@router.post("/podcasts/{podcast_id}/filters")
+def add_filter(request: Request, podcast_id: int, pattern: str = Form(""), scope: str = Form("podcast"),
+               processing: bool = Form(False), user=Depends(current_user),
+               db: sqlite3.Connection = Depends(get_db)) -> Response:
+    """Hide the episodes whose titles match a pattern; with `processing`, for everyone, and keep them out
+    of finding repeats."""
+    _podcast_or_404(db, podcast_id)
+    everywhere = scope == "all"
+    try:
+        filters.add(db, user["id"], None if everywhere else podcast_id, pattern, processing)
+    except filters.FilterError as e:
+        flash(request, str(e), "error")
+        return RedirectResponse(f"/podcasts/{podcast_id}?{urlencode({'filters': 1, 'pattern': pattern})}",
+                                status_code=303)
+    if processing:
+        wake_worker(request)  # an unlearn job may be waiting
+    here = db.execute("SELECT COUNT(*) FROM episodes WHERE podcast_id = ? AND title REGEXP ?",
+                      (podcast_id, pattern.strip())).fetchone()[0]
+    who = "everyone" if processing else "you"
+    flash(request, f"Filter added. It hides {here:,} {'episode' if here == 1 else 'episodes'} of this podcast "
+                   f"from {who}{', and the ones it matches in other podcasts' if everywhere else ''}.")
+    return RedirectResponse(f"/podcasts/{podcast_id}?filters=1", status_code=303)
+
+
+@router.post("/filters/{filter_id}/remove")
+def remove_filter(request: Request, filter_id: int, next: str = Form("/"), user=Depends(current_user),
+                  db: sqlite3.Connection = Depends(get_db)) -> Response:
+    row = filters.get(db, filter_id)
+    if row is None:
+        raise HTTPException(404, "No such filter")
+    if not filters.may_remove(user, row):
+        raise HTTPException(403, "Only its owner or the admin can remove that filter.")
+    filters.remove(db, filter_id)
+    flash(request, "Filter removed.")
+    return RedirectResponse(next if next.startswith("/podcasts/") else "/", status_code=303)
 
 
 @router.post("/podcasts/{podcast_id}/feed-token")

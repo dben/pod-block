@@ -151,12 +151,14 @@ def set_password(db: sqlite3.Connection, user_id: int, password: str) -> None:
 
 
 def remove_user(db: sqlite3.Connection, user_id: int) -> None:
-    """Delete a user with their archived, kept and picked podcasts. Jobs and edits they made stay."""
+    """Delete a user with their archived, kept and picked podcasts, and their filters. Jobs and edits they made
+    stay, and so do their filters from processing, since those apply to everyone."""
     row = user(db, user_id)
     if row is None:
         raise AccountError("There is no such user.")
     if row["username"] == ADMIN:
         raise AccountError("The admin can't be removed.")
+    db.execute("DELETE FROM episode_filters WHERE user_id = ? AND processing = 0", (user_id,))
     db.execute("DELETE FROM users WHERE id = ?", (user_id,))
     db.commit()
 

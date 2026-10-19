@@ -18,6 +18,7 @@ what is done, and what comes later. Update it as work lands.
 | Milestone 5: retention | done: clean-up after N days, keep, settings, cleaned-up episodes shown and archived in one go |
 | Milestone 7: deploy | done: CI builds and publishes the image; Kubernetes example in `deployment/` |
 | Users | done: password logins, a users page for the admin, each user's own podcast list |
+| Filters | done: regex filters on titles per user; filters from processing for compilations and rewinds |
 
 Last updated: 2026-10-19.
 
@@ -286,6 +287,34 @@ Ticked items are built. Each has an id so commits and issues can point at it.
   cleaned-up episodes" on the home page covers only your podcasts.
 - [ ] **A3** Public feed and audio routes need no login.
 
+### Filters
+
+- [x] **E1** A Filters panel on the show page. A filter is a regular
+  expression matched anywhere in an episode's title, ignoring case, for this
+  podcast or for all of them. It hides matching episodes from your lists
+  (and from the counts on the home page); a Filtered tab lists them. Bad
+  patterns, and ones that match every title, are refused. The panel says
+  how many of the podcast's episodes each filter matches.
+- [x] **E2** "Filter from processing" on a filter hides its episodes from
+  everyone and keeps them out of finding repeats, for compilation, "best of"
+  and rewind episodes, which replay whole earlier episodes and would
+  otherwise make them look like one long repeat. Such episodes
+  (`episodes.skip_processing`, brought up to date on every feed refresh and
+  filter change) never download on their own, are never taken along as
+  comparison episodes, and are never compared with. Downloading one by hand
+  still works: it is cut using repeats found elsewhere, and nothing is
+  learned from it.
+- [x] **E3** When an episode the detector already learned from is filtered
+  from processing, an `unlearn` job forgets what it taught: every block not
+  typed by hand that, leaving filtered episodes out, plays in fewer than two
+  episodes is deleted, and the ready episodes that played one are cut again.
+  Its comparison records go too, so taking the filter away lets it be
+  compared afresh.
+- [x] **E4** Your filters are yours; anyone sees everyone's filters from
+  processing, with who added them. Only the owner or the admin removes a
+  filter. Removing a user deletes their own filters but keeps their filters
+  from processing.
+
 ### Private feed and streaming
 
 - [x] **S1** Each podcast gets a random token (128 bits, URL-safe). Its feed
@@ -416,6 +445,15 @@ user_podcasts(user_id, podcast_id, added_at)                 -- the podcasts on 
 
 The admin is given every podcast followed at the time.
 
+Built in migration 11:
+
+```
+episode_filters(id, user_id, podcast_id, pattern, processing, created_at)  -- podcast_id NULL: every podcast
+episodes  + skip_processing                                  -- a filter from processing matches it
+```
+
+Connections get a `REGEXP` function (`db.connect`), so filters run in SQL.
+
 Built in migration 7: `podcasts.retention_days` (default 7),
 `episodes.ready_at` (the clock) and `episodes.expired_at`; episodes gain the
 state `expired`.
@@ -459,6 +497,9 @@ only looks at fingerprinted ones, so they don't affect it.
 | `GET /users`, `POST /users` | admin | list users; add one (`username`, `password`) | built |
 | `POST /users/{id}/password`, `POST /users/{id}/remove` | admin | new password; remove | built |
 | `POST /podcasts/{id}/remove`, `POST /podcasts/{id}/feed-token` | admin | (above) only the admin may | built |
+| `GET /podcasts/{id}?view=filtered` | yes | the episodes your filters hide | built |
+| `POST /podcasts/{id}/filters` | yes | add a filter: `pattern`, `scope` (podcast or all), `processing` | built |
+| `POST /filters/{id}/remove` | owner or admin | remove a filter | built |
 
 ## Milestones
 
@@ -511,6 +552,11 @@ None right now.
   private feed as `podcast:transcript` (SRT or WebVTT). The text could also
   help name ad blocks and find repeats that differ in sound but not words.
 - OPML import and export.
+- When one episode of a job's group repeats from end to end (an unfiltered
+  rewind, say), the whole job fails, the other episodes with it. It could
+  fail that one episode and carry on with the rest.
+- Filters on show notes as well as titles, and a page listing all of your
+  filters across podcasts.
 - One combined private feed across podcasts.
 - Postgres, and the worker as its own Deployment, so the web side can run
   more than one replica.
@@ -537,4 +583,5 @@ None right now.
   episodes on their own, a per-podcast gap setting, re-cutting when new
   repeats turn up, following moved feeds, and time cut per podcast. Then
   users: password logins, the admin's Users page, the Account page, and each
-  user's own list of podcasts.
+  user's own list of podcasts. Then filters on episode titles, per user, and
+  filters from processing for compilations and rewinds.
