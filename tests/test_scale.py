@@ -6,7 +6,7 @@ import numpy as np
 
 from podblock.fingerprint import Fingerprint, FingerprintConfig
 from podblock.pipeline import comparison_set, prune, split_segments
-from podblock.store import INTRO, SegmentMatch, Store
+from podblock.store import BUMPER_IN, INTRO, SegmentMatch, Store
 
 
 def tones(seed, n=300, length=20.0):
@@ -42,12 +42,17 @@ def test_split_cuts_from_the_blocks_own_hashes(tmp_path):
     store.replace_occurrences(a, [SegmentMatch(block, 0, 40, 0, 99)])
     store.replace_occurrences(b, [SegmentMatch(block, 500, 520, 0, 99)])  # only the first half
 
-    touched = split_segments(store)
+    assert split_segments(store) == 1
 
-    assert touched == {a, b}
-    pieces = [store.segment_fingerprint(r["id"]) for r in store.segments()]
+    first, second = (r["id"] for r in store.segments())
+    pieces = [store.segment_fingerprint(i) for i in (first, second)]
     assert [round(p.duration) for p in pieces] == [20, 20]
     assert sum(len(p.hashes) for p in pieces) == len(whole.hashes)
+    # Where the old block played is carried over to the pieces, no rescan needed.
+    as_tuples = lambda ep: [(m.segment_id, round(m.start), round(m.end), round(m.segment_start))
+                            for m in store.occurrences_for_episode(ep)]
+    assert as_tuples(a) == [(first, 0, 20, 0), (second, 20, 40, 0)]
+    assert as_tuples(b) == [(first, 500, 520, 0)]
 
 
 def test_prune_clears_old_files_and_unheard_blocks(tmp_path):
@@ -70,6 +75,20 @@ def test_prune_clears_old_files_and_unheard_blocks(tmp_path):
     assert (gone["audio files"], gone["fingerprints"], gone["blocks"]) == (1, 1, 1)
     assert not audio.exists() and not fp.exists() and own.exists()
     assert {r["id"] for r in store.segments()} == {kept, typed}
+
+
+def test_prune_keeps_bumpers_longer(tmp_path):
+    store = Store(tmp_path / "db.sqlite")
+    bumper, ad = store.add_segment(tones(5), None, 0, 5), store.add_segment(tones(6), None, 0, 60)
+    store.set_auto_types({bumper: BUMPER_IN})
+    store.db.execute("UPDATE segments SET last_seen = ?", (time.time() - 90 * 86400,))
+    store.db.commit()
+
+    prune(store)
+
+    assert {r["id"] for r in store.segments()} == {bumper}
+    prune(store, bumper_days=60)
+    assert store.segments() == []
 
 
 def test_reports_are_saved_per_episode(tmp_path):

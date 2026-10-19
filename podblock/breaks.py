@@ -18,6 +18,8 @@ SHORT_BLOCK_SEC = 10.0  # bumpers usually match for less than this; ads for long
 MAX_BUMPER_SEC = 20.0  # stored blocks longer than this are never bumpers
 MIN_PLAIN_BREAK_SEC = 60.0  # a group of known blocks this long is a break even without bumpers
 NEW_ADS_GAP_SEC = 90.0  # a half-found break joins known blocks this close: new ads in between
+CONFIRM_EDGES = 6  # a bumper seen at a break edge this often...
+CONFIRM_EPISODES = 3  # ...in this many episodes keeps its tag from then on
 JOIN_GAP_SEC = 8.0  # blocks this close together belong to one group
 MAX_BREAK_SEC = 600.0  # a bumper-in and bumper-out further apart do not pair up
 MIN_EDGE_SHARE = 0.5  # share of a block's occurrences that must sit at a group edge
@@ -54,14 +56,23 @@ def _groups(matches: list[SegmentMatch], gap: float = JOIN_GAP_SEC) -> list[list
     return groups
 
 
-def classify_bumpers(store: Store) -> dict[int, str]:
+@dataclass
+class BumperTags:
+    kinds: dict[int, str]  # block id -> bumper type
+    confirmed: set[int]  # blocks with enough evidence to keep their tag for good
+
+
+def classify_bumpers(store: Store) -> BumperTags:
     """Tag blocks whose matches are short and usually open or close a group of longer ones.
 
     Lengths here are match lengths, not block lengths: a long stored block can
-    be music the show only ever plays in snippets.
+    be music the show only ever plays in snippets. A tag is confirmed once the
+    block has sat at a group edge CONFIRM_EDGES times in CONFIRM_EPISODES
+    episodes; bumpers rarely change, so confirmed tags are kept from then on.
     """
     lengths: dict[int, list[float]] = {}
     opening, closing = Counter(), Counter()
+    edge_episodes: dict[int, set[int]] = {}
 
     for ep_id in store.episodes_with_occurrences():
         matches = store.occurrences_for_episode(ep_id)
@@ -73,11 +84,13 @@ def classify_bumpers(store: Store) -> dict[int, str]:
                 continue
             for m in group[:long_at[0]]:
                 opening[m.segment_id] += 1
+                edge_episodes.setdefault(m.segment_id, set()).add(ep_id)
             for m in group[long_at[-1] + 1:]:
                 closing[m.segment_id] += 1
+                edge_episodes.setdefault(m.segment_id, set()).add(ep_id)
 
     block_length = {r["id"]: r["duration"] for r in store.segment_summary()}
-    kinds = {}
+    tags = BumperTags({}, set())
     for seg_id, seen in lengths.items():
         if block_length[seg_id] > MAX_BUMPER_SEC or sorted(seen)[len(seen) // 2] >= SHORT_BLOCK_SEC:
             continue
@@ -85,12 +98,14 @@ def classify_bumpers(store: Store) -> dict[int, str]:
         if at_edge < 2 or at_edge < MIN_EDGE_SHARE * len(seen):
             continue
         if opening[seg_id] >= 0.8 * at_edge:
-            kinds[seg_id] = BUMPER_IN
+            tags.kinds[seg_id] = BUMPER_IN
         elif closing[seg_id] >= 0.8 * at_edge:
-            kinds[seg_id] = BUMPER_OUT
+            tags.kinds[seg_id] = BUMPER_OUT
         else:
-            kinds[seg_id] = BUMPER
-    return kinds
+            tags.kinds[seg_id] = BUMPER
+        if at_edge >= CONFIRM_EDGES and len(edge_episodes[seg_id]) >= CONFIRM_EPISODES:
+            tags.confirmed.add(seg_id)
+    return tags
 
 
 def find_breaks(matches: list[SegmentMatch], kinds: dict[int, str],

@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS {name} (
     label TEXT,
     type TEXT NOT NULL DEFAULT 'repeated',
     type_manual INTEGER NOT NULL DEFAULT 0,  -- set by hand; never retagged automatically
+    confirmed INTEGER NOT NULL DEFAULT 0,  -- automatic bumper tag with enough evidence to keep
     hashes BLOB NOT NULL,  -- uint32 per hash, little-endian
     times BLOB NOT NULL,  -- int32 frame of each hash from the block start
     created_at REAL,
@@ -119,6 +120,9 @@ class Store:
         if "segment_hashes" in tables:
             self._upgrade_from_2()
         self.db.executescript(SCHEMA)
+        columns = {r["name"] for r in self.db.execute("PRAGMA table_info(segments)")}
+        if "confirmed" not in columns:  # stores made before bumpers were confirmed
+            self.db.execute("ALTER TABLE segments ADD COLUMN confirmed INTEGER NOT NULL DEFAULT 0")
         self.config = self._settle_config(config)
         self._index: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
 
@@ -294,7 +298,7 @@ class Store:
     def set_type(self, segment_id: int, block_type: str | None) -> None:
         """Set a block's type by hand, or with None hand it back to automatic tagging."""
         if block_type is None:
-            self.db.execute("UPDATE segments SET type = ?, type_manual = 0 WHERE id = ?",
+            self.db.execute("UPDATE segments SET type = ?, type_manual = 0, confirmed = 0 WHERE id = ?",
                             (REPEATED, segment_id))
         elif block_type in TYPES:
             self.db.execute("UPDATE segments SET type = ?, type_manual = 1 WHERE id = ?",
@@ -303,11 +307,17 @@ class Store:
             raise ValueError(f"unknown type {block_type!r}; pick one of {', '.join(TYPES)}")
         self.db.commit()
 
-    def set_auto_types(self, types: dict[int, str]) -> None:
-        """Retag every block not typed by hand: the given type, else `repeated`."""
-        self.db.execute("UPDATE segments SET type = ? WHERE type_manual = 0", (REPEATED,))
-        self.db.executemany("UPDATE segments SET type = ? WHERE id = ? AND type_manual = 0",
+    def set_auto_types(self, types: dict[int, str], confirm: set[int] = frozenset()) -> None:
+        """Retag every block not typed by hand or confirmed: the given type, else `repeated`.
+
+        Blocks in `confirm` keep the type they get here from then on.
+        """
+        free = "type_manual = 0 AND confirmed = 0"
+        self.db.execute(f"UPDATE segments SET type = ? WHERE {free}", (REPEATED,))
+        self.db.executemany(f"UPDATE segments SET type = ? WHERE id = ? AND {free}",
                             [(t, seg_id) for seg_id, t in types.items()])
+        self.db.executemany("UPDATE segments SET confirmed = 1 WHERE id = ? AND type_manual = 0",
+                            [(seg_id,) for seg_id in confirm])
         self.db.commit()
 
     def types(self) -> dict[int, str]:
@@ -320,13 +330,13 @@ class Store:
         """Every block, without its hashes."""
         return self.db.execute(
             "SELECT id, source_episode_id, podcast_id, source_start, source_end, label, type, type_manual, "
-            "created_at, last_seen FROM segments ORDER BY id"
+            "confirmed, created_at, last_seen FROM segments ORDER BY id"
         ).fetchall()
 
     def segment_summary(self) -> list[sqlite3.Row]:
         return self.db.execute(
             """
-            SELECT s.id, s.label, s.type, s.type_manual, s.podcast_id, s.source_start, s.source_end,
+            SELECT s.id, s.label, s.type, s.type_manual, s.confirmed, s.podcast_id, s.source_start, s.source_end,
                    s.source_end - s.source_start AS duration,
                    e.title AS source_title, p.name AS podcast,
                    COUNT(o.id) AS occurrences,
@@ -360,6 +370,15 @@ class Store:
             (episode_id,),
         ).fetchall()
         return [SegmentMatch(*r) for r in rows]
+
+    def add_occurrences(self, rows: list[tuple[int, SegmentMatch]]) -> None:
+        """Add (episode id, match) pairs."""
+        self.db.executemany(
+            "INSERT INTO occurrences (segment_id, episode_id, start, end, segment_start, hits) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            [(m.segment_id, ep, m.start, m.end, m.segment_start, m.hits) for ep, m in rows],
+        )
+        self.db.commit()
 
     def replace_occurrences(self, episode_id: int, matches: list[SegmentMatch]) -> None:
         self.db.execute("DELETE FROM occurrences WHERE episode_id = ?", (episode_id,))
