@@ -23,7 +23,11 @@ against it.
    along with where it came from. Before a run is stored it is checked against
    the blocks already known, and only the parts not yet covered are added, so
    an ad found in five episodes is stored once.
-5. **Scan.** Any audio file can be checked against the stored blocks. Every
+5. **Split.** A block first found as one long run, such as a five-minute ad
+   break, often turns up elsewhere only in parts (one ad from that break).
+   The points where those partial matches start and stop are cut points, so
+   the break gets split into single-ad blocks.
+6. **Scan.** Any audio file can be checked against the stored blocks. Every
    episode in the store is rescanned after new blocks are added, so the
    `occurrences` table always says where each block appears.
 

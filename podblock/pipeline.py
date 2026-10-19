@@ -52,8 +52,11 @@ def ingest_feed(store: Store, paths: Paths, feed_url: str, count: int,
             log.info("fingerprinting %s", ep.title)
             fp = fingerprint_file(audio_path)
             fp.save(fp_path)
-            store.upsert_episode(ep.guid, fingerprint_path=str(fp_path), duration=fp.duration)
             log.info("  %.0f min, %d hashes", fp.duration / 60, len(fp.hashes))
+            store.upsert_episode(ep.guid, fingerprint_path=str(fp_path), duration=fp.duration)
+        elif not store.episode(ep_id)["fingerprint_path"]:
+            fp = Fingerprint.load(fp_path)
+            store.upsert_episode(ep.guid, fingerprint_path=str(fp_path), duration=fp.duration)
         if keep_audio and audio_path.exists():
             store.upsert_episode(ep.guid, audio_path=str(audio_path))
         elif not keep_audio:
@@ -117,9 +120,63 @@ def find_common_blocks(store: Store, episode_ids: list[int], params: MatchParams
             added += 1
 
     # New segments may also appear in older episodes, so rescan all of them.
-    for ep_id in (pool if added else episode_ids):
+    rescan = pool if added else episode_ids
+    for ep_id in rescan:
         store.replace_occurrences(ep_id, store.scan(load(ep_id), params))
+    if split_segments(store, params, load):
+        for ep_id in [r["id"] for r in store.fingerprinted_episodes()]:
+            store.replace_occurrences(ep_id, store.scan(load(ep_id), params))
     return added
+
+
+def split_segments(store: Store, params: MatchParams, load) -> int:
+    """Cut blocks at points where their occurrences start or stop.
+
+    A block first found as one long run (say a 5 minute ad break) often turns up
+    elsewhere only in parts (one ad from that break). Those part boundaries mark
+    where the separate pieces of audio begin and end. Returns how many blocks
+    were split.
+    """
+    split = 0
+    for seg in store.segments():
+        if seg["source_episode_id"] is None:
+            continue
+        length = seg["source_end"] - seg["source_start"]
+        edges = []
+        for o in store.occurrences_for_segment(seg["id"]):
+            edges += [o["segment_start"], o["segment_start"] + o["end"] - o["start"]]
+        cuts = _cut_points(edges, length, params.min_length_sec)
+        if not cuts:
+            continue
+        source = load(seg["source_episode_id"])
+        bounds = [0.0, *cuts, length]
+        for lo, hi in zip(bounds, bounds[1:]):
+            start, end = seg["source_start"] + lo, seg["source_start"] + hi
+            new_id = store.add_segment(source.slice(start, end), seg["source_episode_id"], start, end)
+            if seg["label"]:
+                store.set_label(new_id, seg["label"])
+        store.delete_segment(seg["id"])
+        log.info("split block %d into %d", seg["id"], len(bounds) - 1)
+        split += 1
+    return split
+
+
+def _cut_points(edges: list[float], length: float, min_length: float,
+                tolerance: float = 3.0) -> list[float]:
+    """Merge nearby edges and keep those that leave pieces of at least `min_length`."""
+    inner = sorted(e for e in edges if min_length <= e <= length - min_length)
+    groups: list[list[float]] = []
+    for e in inner:
+        if groups and e - groups[-1][-1] <= tolerance:
+            groups[-1].append(e)
+        else:
+            groups.append([e])
+    cuts: list[float] = []
+    for g in groups:
+        c = sum(g) / len(g)
+        if c - (cuts[-1] if cuts else 0.0) >= min_length and length - c >= min_length:
+            cuts.append(c)
+    return cuts
 
 
 def scan_audio(store: Store, audio_path: Path, params: MatchParams) -> tuple[Fingerprint, list[SegmentMatch]]:

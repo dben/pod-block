@@ -1,4 +1,4 @@
-"""Command-line interface: `podblock analyze | scan | list | show | label | export | delete`."""
+"""Find audio blocks that repeat across podcast episodes."""
 
 from __future__ import annotations
 
@@ -73,7 +73,7 @@ def print_segments(store: Store) -> None:
     if not rows:
         print("No common blocks stored yet.")
         return
-    print(f"{'id':>4} {'length':>7} {'episodes':>8} {'hits':>5}  source")
+    print(f"{'id':>4} {'length':>7} {'episodes':>8} {'times':>5}  source")
     for r in rows:
         label = f"  [{r['label']}]" if r["label"] else ""
         print(f"{r['id']:>4} {fmt_time(r['duration']):>7} {r['episodes']:>8} {r['occurrences']:>5}  "

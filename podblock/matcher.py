@@ -87,8 +87,10 @@ def _runs_in_bins(active: np.ndarray, max_gap: int) -> list[tuple[int, int]]:
 def find_runs(t_a: np.ndarray, t_b: np.ndarray, params: MatchParams) -> list[Run]:
     """Given matched anchor times, find shared stretches of audio.
 
-    Runs that cover the same part of A (or of B) as a stronger run are dropped,
-    which removes echoes such as a looped music bed matching itself one bar off.
+    Runs that cover the same part of A as a stronger run are dropped, which
+    removes echoes such as a looped music bed matching itself one bar off.
+    Overlap in B is allowed: one stretch of B may turn up several times in A
+    (the same ad played twice).
     """
     if len(t_a) == 0:
         return []
@@ -145,9 +147,7 @@ def _drop_overlapping(runs: list[Run], max_shared: float = 0.5) -> list[Run]:
     for r in sorted(runs, key=lambda r: -r.hits):
         length = r.a_end - r.a_start
         clash = any(
-            _overlap(r.a_start, r.a_end, k.a_start, k.a_end) > max_shared * length
-            or _overlap(r.b_start, r.b_end, k.b_start, k.b_end) > max_shared * length
-            for k in kept
+            _overlap(r.a_start, r.a_end, k.a_start, k.a_end) > max_shared * length for k in kept
         )
         if not clash:
             kept.append(r)
