@@ -530,3 +530,33 @@ def test_daily_prune_spares_fingerprints_in_use(env):
     assert retention.prune_store(env.db, env.settings) is not None
     assert fp.exists()
     assert retention.prune_store(env.db, env.settings) is None  # once a day
+
+
+
+# ---- more per-podcast settings ------------------------------------------------------
+
+def test_a_wider_gap_joins_the_jingle_and_the_ad(env):
+    env.client.post(f"/podcasts/{env.pod}/settings",
+                    data={"retention_days": 7, "refresh_minutes": 60, "fill_gaps": 35})
+    assert env.db.execute("SELECT fill_gaps FROM podcasts").fetchone()[0] == 35
+    processed(env)
+    first = report_of(env, "ep-3")["sections"][0]
+    assert first["start"] < 0.5 and first["end"] == pytest.approx(JINGLE + FILLER + AD, abs=2)
+    total = JINGLE + AD + 2 * FILLER
+    assert episode(env, "ep-3")["cut_duration"] == pytest.approx(total - (JINGLE + FILLER + AD), abs=3)
+
+
+def test_new_repeats_recut_the_shows_other_ready_episodes(env, monkeypatch):
+    processed(env)
+    jobs.enqueue(env.db, "process", [env.ids["ep-1"]], None)
+    monkeypatch.setattr(processing, "find_common_blocks", lambda *a, **k: 1)  # as if it found one new block
+    background.run_queue(env.settings)
+    recut = [r["episode_id"] for r in env.db.execute(
+        "SELECT episode_id FROM jobs WHERE kind = 'process' AND state = 'done' ORDER BY id")][2:]
+    assert sorted(recut) == sorted(env.ids[g] for g in ("ep-2", "ep-3", "ep-4", "ep-5"))
+
+
+def test_time_cut_is_shown(env):
+    processed(env)
+    assert "min cut" in env.client.get("/").text
+    assert "cut so far" in env.client.get(f"/podcasts/{env.pod}").text

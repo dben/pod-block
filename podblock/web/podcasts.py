@@ -18,6 +18,7 @@ PAGE_SIZE = 50
 VIEWS = {"active": (False, False), "archived": (True, False), "downloaded": (False, True)}  # (archived, downloaded)
 RETENTION_DAYS = (0, 3650)
 REFRESH_MINUTES = (15, 7 * 24 * 60)
+FILL_GAPS = (0, 120)
 
 router = APIRouter()
 
@@ -82,7 +83,9 @@ def show_podcast(request: Request, podcast_id: int, view: str = "active", q: str
     if partial:
         return page(request, "_episodes.html", **context)
     private = publish.feed_url(request, publish.ensure_token(db, podcast_id))
-    return page(request, "podcast.html", title=pod["name"], nav="podcasts", user=user,
+    cut_sec = db.execute("SELECT COALESCE(SUM(duration - cut_duration), 0) FROM episodes WHERE podcast_id = ? "
+                         "AND cut_duration IS NOT NULL", (podcast_id,)).fetchone()[0]
+    return page(request, "podcast.html", title=pod["name"], nav="podcasts", user=user, cut_sec=cut_sec,
                 counts=library.counts(db, user["id"], podcast_id), private_url=private,
                 private_count=len(publish.published(db, podcast_id)),
                 private_qr=segno.make(private, error="m").svg_inline(scale=4, border=2, dark="#0d0f13", light="#ffffff"),
@@ -91,17 +94,19 @@ def show_podcast(request: Request, podcast_id: int, view: str = "active", q: str
 
 @router.post("/podcasts/{podcast_id}/settings")
 def podcast_settings(request: Request, podcast_id: int, retention_days: int = Form(...),
-                     refresh_minutes: int = Form(...), user=Depends(current_user),
-                     db: sqlite3.Connection = Depends(get_db)) -> Response:
-    _podcast_or_404(db, podcast_id)
+                     refresh_minutes: int = Form(...), fill_gaps: float = Form(4.0), auto_download: bool = Form(False),
+                     user=Depends(current_user), db: sqlite3.Connection = Depends(get_db)) -> Response:
+    pod = _podcast_or_404(db, podcast_id)
     if not (RETENTION_DAYS[0] <= retention_days <= RETENTION_DAYS[1]
-            and REFRESH_MINUTES[0] <= refresh_minutes <= REFRESH_MINUTES[1]):
+            and REFRESH_MINUTES[0] <= refresh_minutes <= REFRESH_MINUTES[1]
+            and FILL_GAPS[0] <= fill_gaps <= FILL_GAPS[1]):
         flash(request, "Those settings are out of range.", "error")
     else:
-        db.execute("UPDATE podcasts SET retention_days = ?, refresh_minutes = ? WHERE id = ?",
-                   (retention_days, refresh_minutes, podcast_id))
+        db.execute("UPDATE podcasts SET retention_days = ?, refresh_minutes = ?, fill_gaps = ?, auto_download = ? "
+                   "WHERE id = ?", (retention_days, refresh_minutes, fill_gaps, int(auto_download), podcast_id))
         db.commit()
-        flash(request, "Saved.")
+        note = " Process episodes again to cut them with the new gap." if fill_gaps != pod["fill_gaps"] else ""
+        flash(request, "Saved." + note)
     return RedirectResponse(f"/podcasts/{podcast_id}", status_code=303)
 
 

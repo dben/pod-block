@@ -101,6 +101,7 @@ class Feed:
     categories: list[str] = field(default_factory=list)
     explicit: bool | None = None
     xml: str | None = None  # the <channel> without its items
+    new_url: str | None = None  # itunes:new-feed-url: the feed has moved there
 
 
 def _keep_prefixes(xml: bytes) -> None:
@@ -176,6 +177,7 @@ def parse_feed(xml: bytes, url: str = "") -> Feed:
         categories=categories,
         explicit=_explicit(channel.findtext(f"{ITUNES}explicit")),
         xml=ET.tostring(bare, encoding="unicode"),
+        new_url=_text(channel, f"{ITUNES}new-feed-url"),
     )
 
 
@@ -184,6 +186,7 @@ class Fetched:
     xml: bytes | None  # None when the server says nothing changed
     etag: str | None
     last_modified: str | None
+    moved_to: str | None = None  # where every redirect on the way was permanent (301, 308)
 
 
 def get_feed(url: str, etag: str | None = None, last_modified: str | None = None,
@@ -196,15 +199,16 @@ def get_feed(url: str, etag: str | None = None, last_modified: str | None = None
     if last_modified:
         headers["If-Modified-Since"] = last_modified
     with requests.get(url, headers=headers, stream=True, timeout=timeout) as resp:
+        moved = resp.url if resp.history and all(r.status_code in (301, 308) for r in resp.history) else None
         if resp.status_code == 304:
-            return Fetched(None, etag, last_modified)
+            return Fetched(None, etag, last_modified, moved)
         resp.raise_for_status()
         body = bytearray()
         for chunk in resp.iter_content(chunk_size=1 << 16):
             body += chunk
             if len(body) > max_bytes:
                 raise FeedError(f"feed is over {max_bytes >> 20} MB")
-        return Fetched(bytes(body), resp.headers.get("ETag"), resp.headers.get("Last-Modified"))
+        return Fetched(bytes(body), resp.headers.get("ETag"), resp.headers.get("Last-Modified"), moved)
 
 
 def fetch_feed(url: str, timeout: float = 60) -> Feed:

@@ -135,6 +135,11 @@ MIGRATIONS = [
     ALTER TABLE episodes ADD COLUMN expired_at REAL;  -- when retention deleted its audio (state 'expired')
     UPDATE episodes SET ready_at = processed_at WHERE state = 'ready';
     """,
+    # 8: more per-podcast settings
+    """
+    ALTER TABLE podcasts ADD COLUMN auto_download INTEGER NOT NULL DEFAULT 0;  -- download new episodes as they appear
+    ALTER TABLE podcasts ADD COLUMN fill_gaps REAL NOT NULL DEFAULT 4;  -- seconds of new audio between cuts cut too
+    """,
 ]
 
 

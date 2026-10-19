@@ -158,6 +158,15 @@ Ticked items are built. Each has an id so commits and issues can point at it.
   - [x] Download in the bar and in each row's menu ("Download and cut";
     "Process again" once ready or failed).
   - [x] Keep in the bar and in each row's menu (milestone 5).
+- [x] **F9** Download new episodes on their own, set per podcast (off by
+  default). Only episodes that appear after the feed was added, and at most
+  5 a refresh, so a feed that re-issues its back catalogue can't queue
+  hundreds.
+- [x] **F10** Follow feeds that move: a permanent redirect (301 or 308) or
+  `itunes:new-feed-url` updates the stored address, unless another podcast
+  has it already.
+- [x] **F11** How much has been cut, per podcast, on its card and in its
+  header.
 - [x] **F8** Remove a podcast, after a confirmation saying what happens:
   episodes never downloaded are deleted; downloaded ones, and the blocks
   learned from the show, stay (blocks may be ads other shows share). The
@@ -195,6 +204,9 @@ Ticked items are built. Each has an id so commits and issues can point at it.
   themselves), a player and a download for the cut file, how much was cut,
   the list of cut sections with a button to play the original from a few
   seconds before each, and the show notes.
+- [x] **P9** When a download finds new blocks, the show's other ready
+  episodes are queued to be cut again; those whose cut wouldn't change are
+  done in moments. A re-cut never sets off more re-cuts.
 - [ ] **P8** Run each job in a child process, so a crash or a memory spike
   in fingerprinting can't take the web side down, and so cancelling can stop
   fingerprinting too (today it stops only between steps).
@@ -310,8 +322,10 @@ Ticked items are built. Each has an id so commits and issues can point at it.
   A note above the list counts them, with "Archive them all"; the home page
   shows each podcast's ready and cleaned-up counts and an "Archive N
   cleaned-up episodes" button across all podcasts. Both are per user.
-- [x] **R6** A Settings panel on the show page: days before clean-up, and how
-  often to check the feed (15 minutes to a week).
+- [x] **R6** A Settings panel on the show page: days before clean-up, how
+  often to check the feed (15 minutes to a week), how much new audio between
+  two cuts is cut with them (0 to 120 seconds, default 4; catches a new ad
+  between two known ones), and whether new episodes download on their own.
 
 ### Look and feel
 
@@ -367,6 +381,8 @@ edits(id, episode_id, start, end, created_by, created_at)    -- sections cut by 
 
 Built in migration 6: `podcasts.public_token` (unique), made for every
 podcast that had none.
+
+Built in migration 8: `podcasts.auto_download` and `podcasts.fill_gaps`.
 
 Built in migration 7: `podcasts.retention_days` (default 7),
 `episodes.ready_at` (the clock) and `episodes.expired_at`; episodes gain the
@@ -437,18 +453,14 @@ None right now.
 
 - Username and password logins and user management (the `users` table is
   ready for it), then per-user private feeds.
-- Download new episodes on their own, per podcast.
 - Just-in-time streaming of episodes not yet downloaded: a quick pass and a
   stream that starts before the podcast app gives up.
 - Shift chapter and transcript timestamps to match the cut audio, and add
   chapters marking where cuts were made.
 - A per-podcast choice of which section types to cut.
-- Join sections that sit only a few seconds apart: a per-podcast setting
-  (and perhaps a timeline action) for how much new audio between two cut
-  sections goes with them, so an unknown ad between two known ones is cut
-  too. In the test show, a new ad played between two known ones at about
-  23:00 to 24:00 and was left in. Today a fixed 4 seconds is joined
-  (`processing.FILL_GAPS`).
+- Join two particular sections on the timeline (the per-podcast gap setting
+  joins every pair that close). In the test show, a new ad played between two
+  known ones at about 23:00 to 24:00 and was left in.
 - Find bumpers that end up inside ad blocks. The test show seems to have
   stings around its breaks, but they got stored as the edges of longer ad
   blocks rather than as short blocks of their own, so they never became
@@ -469,14 +481,9 @@ None right now.
 - Push or webhook notice when an episode is ready.
 - A "this was a repeat" button in the player that sends the spot back as a
   manual section.
-- Stats: time cut per episode and per podcast.
 - Cache and shrink artwork on our side. Pages now load each show's and
   episode's artwork straight from the feed's host, lazily, and some feeds
   use 3000 px images.
-- Follow feeds that move: a 301 redirect or `itunes:new-feed-url`.
-- Cut ready episodes again when a later download finds new blocks in them
-  (the detector already rescans those episodes; only their cut files go
-  stale). For now, "Process again" does it by hand.
 - A real job for feed refreshes, once the job queue exists, so they show on
   the jobs page.
 - A Helm chart, if the kustomize example isn't enough.
@@ -487,4 +494,7 @@ None right now.
   built. Real feed URLs and show names taken out of the repo and its
   history. Milestone 2 built. Milestone 3 built. Timeline editor (milestone
   6) built ahead of 4 and 5; sections under 15 seconds are no longer cut.
-  Milestone 4 built. Milestone 5 built.
+  Milestone 4 built. Milestone 5 built. Milestone 7 built: CI publishes the
+  image; Kubernetes example. Then from the future list: downloading new
+  episodes on their own, a per-podcast gap setting, re-cutting when new
+  repeats turn up, following moved feeds, and time cut per podcast.

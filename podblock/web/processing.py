@@ -30,7 +30,7 @@ from .jobs import Cancelled, Context, enqueue, settle_episode
 log = logging.getLogger(__name__)
 
 COMPARE_WITH = 4  # fingerprinted episodes a show should have before its repeats are looked for
-FILL_GAPS = 4.0  # seconds of new audio between two repeats that is cut with them, so no scraps are left
+FILL_GAPS = 4.0  # default seconds of new audio between two repeats cut with them (podcasts.fill_gaps)
 AUDIO_SUFFIXES = {".mp3", ".m4a", ".mp4", ".aac", ".ogg", ".opus", ".oga", ".wav", ".flac"}
 MIME_SUFFIXES = {"audio/mpeg": ".mp3", "audio/mp3": ".mp3", "audio/mp4": ".m4a", "audio/x-m4a": ".m4a",
                  "audio/aac": ".aac", "audio/ogg": ".ogg", "audio/opus": ".opus"}
@@ -102,6 +102,11 @@ def _fetch(ctx: Context, settings: Settings, store: Store, paths: Paths, episode
         fp_path = paths.fingerprint(ep["guid"], store.config)
         fp.save(fp_path)
         store.upsert_episode(ep["guid"], fingerprint_path=str(fp_path), duration=fp.duration)
+
+
+def _fill_gaps(db: sqlite3.Connection, podcast_id: int | None) -> float:
+    row = db.execute("SELECT fill_gaps FROM podcasts WHERE id = ?", (podcast_id,)).fetchone()
+    return row["fill_gaps"] if row is not None else FILL_GAPS
 
 
 def cuts(db: sqlite3.Connection, episode_id: int, report: dict) -> list[tuple[float, float]]:
@@ -184,8 +189,9 @@ def run(ctx: Context, settings: Settings) -> None:
                            (other,))
         ctx.db.commit()
         with _detecting:
-            find_common_blocks(store, group, params)
-            reports = {ep_id: episode_report(store, ep_id, params, fill_gaps=FILL_GAPS) for ep_id in group}
+            added = find_common_blocks(store, group, params)
+            gaps = _fill_gaps(ctx.db, ep["podcast_id"])
+            reports = {ep_id: episode_report(store, ep_id, params, fill_gaps=gaps) for ep_id in group}
         for ep_id in group:
             _render(ctx, settings, ep_id, reports[ep_id])
         for ep_id in group:
@@ -193,6 +199,13 @@ def run(ctx: Context, settings: Settings) -> None:
             ensure_peaks(ctx.db, settings, ep_id)
             ctx.db.execute("UPDATE episodes SET state = 'ready', state_note = NULL WHERE id = ?", (ep_id,))
             ctx.db.commit()
+        recut = json.loads(ctx.job["payload"] or "{}").get("recut")
+        if added and not recut:  # new repeats may play in the show's other ready episodes; cut those again
+            others = [r["id"] for r in ctx.db.execute(  # (a re-cut never sets off more re-cuts)
+                f"SELECT id FROM episodes WHERE podcast_id = ? AND state = 'ready' AND id NOT IN "
+                f"({', '.join('?' * len(group))})", (ep["podcast_id"], *group))]
+            enqueue(ctx.db, "process", others, ctx.job["requested_by"], skip_ready=False,
+                    payload=json.dumps({"recut": True}), note="Waiting to be cut again: new repeats were found")
     except BaseException as e:
         failed = None if isinstance(e, Cancelled) else str(e)
         for other in group[1:]:  # companions were never asked for; they go back to rest quietly
@@ -288,7 +301,7 @@ def run_edit(ctx: Context, settings: Settings) -> None:
                 ctx.db.execute("DELETE FROM edits WHERE id = ? AND episode_id = ?", (edit_id, episode_id))
             ctx.db.commit()
             rescan(store, episode_id, params, heard=True)
-            report = episode_report(store, episode_id, params, fill_gaps=FILL_GAPS)
+            report = episode_report(store, episode_id, params, fill_gaps=_fill_gaps(ctx.db, ep["podcast_id"]))
         _render(ctx, settings, episode_id, report)
         others = touched - {episode_id}
         if any(a["as_block"] for a in changes["add"]):  # a new block may well play in the show's other episodes

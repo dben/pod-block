@@ -14,7 +14,7 @@ import sqlite3
 import threading
 import time
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from html.parser import HTMLParser
 
 import requests
@@ -26,6 +26,7 @@ from .db import new_token
 log = logging.getLogger(__name__)
 
 SUMMARY_CHARS = 400
+AUTO_DOWNLOAD_MAX = 5  # a refresh queues at most this many new episodes, should a feed re-issue its back catalogue
 _refreshing = threading.Lock()  # one refresh at a time, so two can't insert the same episode
 
 
@@ -41,10 +42,13 @@ class Refreshed:
     removed: int = 0  # deleted: left the feed, never downloaded
     gone: int = 0  # left the feed but kept, since they were downloaded
     unchanged: bool = False  # the server said nothing changed since the last refresh
+    new_ids: list[int] = field(default_factory=list)  # episodes added
+    queued: int = 0  # new episodes queued to download, for podcasts that download them on their own
+    moved_to: str | None = None  # the feed's new address, when it moved
 
     def describe(self) -> str:
         if self.unchanged or not (self.added or self.removed or self.gone):
-            return "No new episodes."
+            return "No new episodes." + (" The feed has moved; following it." if self.moved_to else "")
         parts = []
         if self.added:
             parts.append(f"{self.added} new {'episode' if self.added == 1 else 'episodes'}")
@@ -52,7 +56,9 @@ class Refreshed:
             parts.append(f"{self.removed} no longer in the feed removed")
         if self.gone:
             parts.append(f"{self.gone} downloaded {'one' if self.gone == 1 else 'ones'} left the feed and kept")
-        return ", ".join(parts).capitalize() + "."
+        if self.queued:
+            parts.append(f"{self.queued} queued to download")
+        return ", ".join(parts).capitalize() + "." + (" The feed has moved; following it." if self.moved_to else "")
 
 
 class _Text(HTMLParser):
@@ -152,7 +158,25 @@ def refresh(db: sqlite3.Connection, podcast_id: int, conditional: bool = True) -
         db.commit()
         raise
     with _refreshing:
-        return _apply(db, podcast_id, feed, fetched.etag, fetched.last_modified)
+        result = _apply(db, podcast_id, feed, fetched.etag, fetched.last_modified)
+    result.moved_to = _follow_move(db, pod, fetched.moved_to or feed.new_url)
+    if pod["auto_download"] and result.new_ids:
+        result.queued = len(jobs.enqueue(db, "process", result.new_ids[:AUTO_DOWNLOAD_MAX], None))
+    return result
+
+
+def _follow_move(db: sqlite3.Connection, pod: sqlite3.Row, new_url: str | None) -> str | None:
+    """Point a podcast at its feed's new address, unless that is another podcast's already."""
+    if not new_url or new_url == pod["feed_url"] or not re.match(r"https?://[^\s/]+", new_url, re.I):
+        return None
+    if db.execute("SELECT 1 FROM podcasts WHERE feed_url = ?", (new_url,)).fetchone():
+        log.warning("podcast %d's feed moved to %s, which another podcast has", pod["id"], new_url)
+        return None
+    db.execute("UPDATE podcasts SET feed_url = ?, feed_etag = NULL, feed_last_modified = NULL WHERE id = ?",
+               (new_url, pod["id"]))
+    db.commit()
+    log.info("podcast %d's feed moved to %s", pod["id"], new_url)
+    return new_url
 
 
 def _episode_key(db: sqlite3.Connection, podcast_id: int, feed_url: str, guid: str) -> tuple[str, int | None]:
@@ -201,6 +225,7 @@ def _apply(db: sqlite3.Connection, podcast_id: int, feed: Feed, etag: str | None
                              [key, now, *fields.values()])
             ep_id = cur.lastrowid
             result.added += 1
+            result.new_ids.append(ep_id)
         else:
             db.execute(f"UPDATE episodes SET {', '.join(f'{k} = ?' for k in fields)} WHERE id = ?",
                        [*fields.values(), ep_id])

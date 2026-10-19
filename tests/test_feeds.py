@@ -35,7 +35,7 @@ def item(n, day=None, guid=None, extra=""):
     </item>"""
 
 
-def rss(*items, title="Example Show"):
+def rss(*items, title="Example Show", extra_channel=""):
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd"
      xmlns:podcast="https://podcastindex.org/namespace/1.0" xmlns:content="http://purl.org/rss/1.0/modules/content/">
@@ -48,6 +48,7 @@ def rss(*items, title="Example Show"):
     <itunes:image href="https://example.com/art.jpg"/>
     <itunes:category text="Comedy"><itunes:category text="Improv"/></itunes:category>
     <itunes:explicit>yes</itunes:explicit>
+    {extra_channel}
     {"".join(items)}
   </channel>
 </rss>""".encode()
@@ -59,6 +60,7 @@ class FakeWeb:
     def __init__(self, monkeypatch):
         self.pages: dict[str, bytes] = {}
         self.requests: list[tuple] = []
+        self.moves: dict[str, str] = {}  # url -> where a permanent redirect ends up
         monkeypatch.setattr(feeds, "get_feed", self.get)
 
     def get(self, url, etag=None, last_modified=None):
@@ -67,7 +69,7 @@ class FakeWeb:
             raise feeds.RefreshError("the server answered 404")
         body = self.pages[url]
         tag = f'"{hash(body)}"'
-        return Fetched(None if etag == tag else body, tag, None)
+        return Fetched(None if etag == tag else body, tag, None, self.moves.get(url))
 
 
 @pytest.fixture
@@ -364,3 +366,41 @@ def test_feed_links_that_are_not_web_links_are_dropped(client, web):
     pod = add(client, web, item(1, extra="<itunes:image href=\"javascript:alert(1)\"/>"))
     page = client.get(f"/podcasts/{pod}").text
     assert "javascript:" not in page
+
+
+def test_feeds_that_move_are_followed(db, web):
+    web.pages[URL] = rss(item(1))
+    pod = feeds.add_podcast(db, URL).podcast_id
+    new = "https://example.org/moved.rss"
+    web.moves[URL] = new  # a permanent redirect
+    assert feeds.refresh(db, pod, conditional=False).moved_to == new
+    assert db.execute("SELECT feed_url FROM podcasts").fetchone()[0] == new
+
+    newer = "https://example.net/again.rss"
+    web.pages[new] = rss(item(1), extra_channel=f"<itunes:new-feed-url>{newer}</itunes:new-feed-url>")
+    feeds.refresh(db, pod, conditional=False)
+    assert db.execute("SELECT feed_url FROM podcasts").fetchone()[0] == newer
+
+    other = "https://example.com/other.rss"
+    web.pages[other] = rss(item(9, guid="o-9"), title="Other")
+    feeds.add_podcast(db, other)
+    web.pages[newer] = rss(item(1), extra_channel=f"<itunes:new-feed-url>{other}</itunes:new-feed-url>")
+    assert feeds.refresh(db, pod, conditional=False).moved_to is None  # that address is another podcast's
+    assert db.execute("SELECT feed_url FROM podcasts WHERE id = ?", (pod,)).fetchone()[0] == newer
+
+
+def test_new_episodes_download_on_their_own_when_asked(db, web):
+    web.pages[URL] = rss(*(item(n) for n in range(1, 4)))
+    pod = feeds.add_podcast(db, URL).podcast_id
+    assert db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0] == 0  # adding a feed downloads nothing
+    web.pages[URL] = rss(*(item(n) for n in range(1, 5)))
+    assert feeds.refresh(db, pod).queued == 0  # off by default
+
+    db.execute("UPDATE podcasts SET auto_download = 1")
+    db.commit()
+    web.pages[URL] = rss(*(item(n) for n in range(1, 13)))
+    result = feeds.refresh(db, pod)
+    assert result.added == 8 and result.queued == feeds.AUTO_DOWNLOAD_MAX
+    queued = [r[0] for r in db.execute("SELECT e.guid FROM jobs j JOIN episodes e ON e.id = j.episode_id")]
+    assert queued == [f"ep-{n}" for n in range(12, 7, -1)]  # the newest
+    assert "5 queued to download" in result.describe()

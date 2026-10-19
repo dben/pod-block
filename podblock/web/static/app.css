@@ -720,3 +720,4 @@ select.input { appearance: auto; }
   .tabs { overflow-x: auto; max-width: 100%; }
   .tabs a { white-space: nowrap; padding: 0 10px; gap: 6px; font-size: 0.86rem; }
 }
+.settings-check { flex: 1 1 100%; }

@@ -16,7 +16,8 @@ def podcasts(db: sqlite3.Connection, user_id: int) -> list[sqlite3.Row]:
         """
         SELECT p.*, COUNT(e.id) AS episode_count, MAX(e.pub_ts) AS latest_ts,
                COALESCE(SUM(e.state = 'ready'), 0) AS ready_count,
-               COALESCE(SUM(e.state = 'expired' AND COALESCE(ue.archived, 0) = 0), 0) AS expired_count
+               COALESCE(SUM(e.state = 'expired' AND COALESCE(ue.archived, 0) = 0), 0) AS expired_count,
+               COALESCE(SUM(CASE WHEN e.cut_duration IS NOT NULL THEN e.duration - e.cut_duration END), 0) AS cut_sec
         FROM podcasts p LEFT JOIN episodes e ON e.podcast_id = p.id
         LEFT JOIN user_episodes ue ON ue.episode_id = e.id AND ue.user_id = ?
         WHERE p.followed = 1

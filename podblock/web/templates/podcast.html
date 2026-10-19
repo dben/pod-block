@@ -18,6 +18,8 @@
         <span class="badge">{{ (counts.active + counts.archived)|plural('episode') }}</span>
         {% for c in (podcast.categories|fromjson)[:3] %}<span class="badge">{{ c }}</span>{% endfor %}
         {% if podcast.explicit %}<span class="badge" title="Explicit">E</span>{% endif %}
+        {% if cut_sec >= 60 %}<span class="badge badge-ok" title="Cut from the episodes downloaded so far">{{ cut_sec|duration }} cut so far</span>{% endif %}
+        {% if podcast.auto_download %}<span class="badge badge-busy" title="New episodes download on their own">Auto-download</span>{% endif %}
       </p>
       {% if about %}
       <div class="show-about" x-data="{ open: false }" :class="open && 'open'">
@@ -91,6 +93,18 @@
         <option value="{{ podcast.refresh_minutes }}" selected>{{ podcast.refresh_minutes }} minutes</option>
         {% endif %}
       </select>
+    </label>
+    <label class="field">
+      <span>Also cut new audio between cuts up to</span>
+      <span class="input-with-unit">
+        <input class="input" type="number" name="fill_gaps" min="0" max="120" step="1" value="{{ podcast.fill_gaps|round|int }}" required>
+        <span class="muted">seconds apart</span>
+      </span>
+      <small class="hint">Catches a new ad that plays between two known ones. Too high and a short bit of the show between two ads goes too.</small>
+    </label>
+    <label class="tl-check settings-check">
+      <input type="checkbox" name="auto_download" value="true" {% if podcast.auto_download %}checked{% endif %}>
+      Download new episodes as they appear
     </label>
     <button class="btn btn-primary btn-sm" type="submit">Save</button>
   </form>

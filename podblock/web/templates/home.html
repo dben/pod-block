@@ -46,6 +46,7 @@
           {% if p.latest_ts %}<span class="badge">Latest {{ p.latest_ts|day }}</span>{% endif %}
           {% if p.ready_count %}<span class="badge badge-ok">{{ p.ready_count }} ready</span>{% endif %}
           {% if p.expired_count %}<span class="badge badge-gone">{{ p.expired_count }} cleaned up</span>{% endif %}
+          {% if p.cut_sec >= 60 %}<span class="badge" title="Cut from the episodes downloaded so far">{{ p.cut_sec|duration }} cut</span>{% endif %}
           {% if p.last_error %}<span class="badge badge-error" title="{{ p.last_error }}">Refresh failed</span>{% endif %}
         </p>
       </div>
