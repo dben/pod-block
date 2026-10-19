@@ -218,3 +218,17 @@ def test_removing_a_user(tmp_path):
     assert "admin can&#39;t be removed" in c.get("/users", headers=HTML).text
     assert [r["username"] for r in db.execute("SELECT username FROM users")] == ["admin"]
     db.close()
+
+
+def test_the_shared_feed_becomes_the_admins_on_upgrade(tmp_path):
+    s = settings(tmp_path, api_key="test-key")
+    create_app(s)
+    db = connect(s.db_path)
+    db.execute("INSERT INTO podcasts (name, public_token) VALUES ('Show A', 'old-shared-token')")
+    db.execute("DROP TABLE user_feeds")
+    db.execute("UPDATE settings SET value = ? WHERE key = 'app_schema'", (str(len(MIGRATIONS) - 1),))  # before per-user feeds
+    db.commit()
+    create_app(s)
+    assert [tuple(r) for r in db.execute("SELECT user_id, token FROM user_feeds")] == \
+        [(accounts.admin_id(db), "old-shared-token")]
+    db.close()

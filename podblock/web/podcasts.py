@@ -105,14 +105,15 @@ def show_podcast(request: Request, podcast_id: int, view: str = "active", q: str
     )
     if partial:
         return page(request, "_episodes.html", **context)
-    private = publish.feed_url(request, publish.ensure_token(db, podcast_id))
+    publish.ensure_token(db, podcast_id)  # for the audio links
+    private = publish.feed_url(request, publish.feed_token(db, user["id"], podcast_id))
     cut_sec = db.execute("SELECT COALESCE(SUM(duration - cut_duration), 0) FROM episodes WHERE podcast_id = ? "
                          "AND cut_duration IS NOT NULL", (podcast_id,)).fetchone()[0]
     return page(request, "podcast.html", title=pod["name"], nav="podcasts", user=user, cut_sec=cut_sec,
                 subscribed=library.subscribed(db, user["id"], podcast_id),
                 filters=filters.for_podcast(db, user["id"], podcast_id),
                 counts=library.counts(db, user["id"], podcast_id), private_url=private,
-                private_count=len(publish.published(db, podcast_id)),
+                private_count=len(publish.published(db, podcast_id, user["id"])),
                 private_qr=segno.make(private, error="m").svg_inline(scale=4, border=2, dark="#0d0f13", light="#ffffff"),
                 **context)
 
@@ -173,11 +174,12 @@ def remove_filter(request: Request, filter_id: int, next: str = Form("/"), user=
 
 
 @router.post("/podcasts/{podcast_id}/feed-token")
-def new_feed_address(request: Request, podcast_id: int, user=Depends(admin_user),
+def new_feed_address(request: Request, podcast_id: int, user=Depends(current_user),
                      db: sqlite3.Connection = Depends(get_db)) -> Response:
+    """Give your own private feed of a podcast a new address. Everyone else's stays."""
     _podcast_or_404(db, podcast_id)
-    publish.new_feed_token(db, podcast_id)
-    flash(request, "The private feed has a new address. The old one no longer works.")
+    publish.new_feed_token(db, user["id"], podcast_id)
+    flash(request, "Your private feed has a new address. The old one no longer works.")
     return RedirectResponse(f"/podcasts/{podcast_id}?feed=1", status_code=303)
 
 

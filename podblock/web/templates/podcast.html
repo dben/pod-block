@@ -177,7 +177,8 @@
   <div class="feed-panel-body">
     <h2>Private feed</h2>
     <p class="muted">Add this address to any podcast app to get {{ private_count|plural('episode') }} with the
-      repeats cut out. It lists only episodes you've downloaded, and new ones appear when they're ready.</p>
+      repeats cut out. It's your own: it lists the episodes anyone has downloaded, except the ones you've
+      archived or filtered, and new ones appear when they're ready.</p>
     <div class="copy-row">
       <input class="input mono" type="text" readonly value="{{ private_url }}" id="private-url" aria-label="Private feed address"
              @focus="$el.select()">
@@ -185,12 +186,10 @@
     </div>
     <p class="hint">No login is needed to use it, so anyone with the address can listen. It isn't listed
       anywhere and asks podcast directories not to list it.</p>
-    {% if user.is_admin %}
     <form method="post" action="/podcasts/{{ podcast.id }}/feed-token"
-          data-confirm="Make a new address? Apps using the old one will stop getting episodes until you add the new one.">
+          data-confirm="Make a new address for your feed? Apps using the old one will stop getting episodes until you add the new one. Other people's feeds don't change.">
       <button class="btn btn-ghost btn-sm" type="submit">Make a new address</button>
     </form>
-    {% endif %}
   </div>
   <div class="qr" aria-label="QR code of the address">{{ private_qr|safe }}</div>
 </section>

@@ -74,7 +74,8 @@ passwords, and each user picks which podcasts show on their home page. You
 can add feeds, browse, search and archive their episodes, and download
 episodes: a background job finds their repeats and makes a copy with them
 cut out, to play or download from the episode's page, check and change on a
-timeline, and get in any podcast app through a private feed per podcast.
+timeline, and get in any podcast app through your own private feed of each
+podcast.
 
 ```sh
 pip install -e '.[web]'

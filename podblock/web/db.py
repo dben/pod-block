@@ -174,6 +174,20 @@ MIGRATIONS = [
     CREATE INDEX episode_filters_user ON episode_filters(user_id);
     ALTER TABLE episodes ADD COLUMN skip_processing INTEGER NOT NULL DEFAULT 0;  -- a processing filter matches it
     """,
+    # 12: a private feed per user and podcast. Audio links keep the podcast's own token (podcasts.public_token);
+    # the feed each podcast had becomes the admin's, so apps already using it carry on.
+    """
+    CREATE TABLE user_feeds (
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        podcast_id INTEGER NOT NULL REFERENCES podcasts(id) ON DELETE CASCADE,
+        token TEXT UNIQUE NOT NULL,  -- the feed's address: /p/<token>/feed.xml
+        created_at REAL NOT NULL,
+        PRIMARY KEY (user_id, podcast_id)
+    );
+    INSERT INTO user_feeds (user_id, podcast_id, token, created_at)
+    SELECT u.id, p.id, p.public_token, strftime('%s', 'now') + 0.0 FROM users u, podcasts p
+    WHERE u.is_admin = 1 AND p.public_token IS NOT NULL;
+    """,
 ]
 
 

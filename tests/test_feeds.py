@@ -442,7 +442,7 @@ def test_adding_a_feed_someone_else_added_subscribes_you(client, web):
     assert CARD in bob.get("/", headers=HTML).text
 
 
-def test_only_the_admin_removes_a_podcast_or_changes_its_feed_address(client, web):
+def test_only_the_admin_removes_a_podcast(client, web):
     pod = add(client, web, item(1))
     client.post("/users", data={"username": "bob", "password": "password1"})
     bob = TestClient(client.app, follow_redirects=False)
@@ -450,11 +450,10 @@ def test_only_the_admin_removes_a_podcast_or_changes_its_feed_address(client, we
     bob.post(f"/podcasts/{pod}/subscribe", data={"on": "true"})
 
     show = bob.get(f"/podcasts/{pod}", headers=HTML).text
-    assert "Remove podcast" not in show and "Make a new address" not in show
+    assert "Remove podcast" not in show and "Make a new address" in show
     private = re.search(r'value="(http[^"]+/p/[^"]+/feed\.xml)"', show).group(1)
     assert bob.get(private).status_code == 200  # every user gets the private feed of any podcast
     assert bob.post(f"/podcasts/{pod}/remove").status_code == 403
-    assert bob.post(f"/podcasts/{pod}/feed-token").status_code == 403
     assert "Remove podcast" in client.get(f"/podcasts/{pod}", headers=HTML).text
 
     client.post(f"/podcasts/{pod}/remove")

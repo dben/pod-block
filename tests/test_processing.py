@@ -13,7 +13,7 @@ from fastapi.testclient import TestClient
 from test_feeds import FakeWeb, rss
 
 from podblock.cut import probe
-from podblock.web import accounts, background, feeds, jobs, library, processing
+from podblock.web import accounts, background, feeds, jobs, library, processing, publish
 from podblock.web.app import create_app
 from podblock.web.config import Settings
 from podblock.web.db import connect
@@ -335,9 +335,14 @@ def test_intro_marks_only_the_block_that_ends_the_section(env):
 
 # ---- the private feed --------------------------------------------------------------
 
-def feed_of(env):
-    token = env.db.execute("SELECT public_token FROM podcasts WHERE id = ?", (env.pod,)).fetchone()[0]
-    return token, TestClient(env.client.app)  # no login
+def feed_of(env, user=None):
+    """The token of a user's feed (the admin's by default), and a client with no login."""
+    token = publish.feed_token(env.db, user or accounts.admin_id(env.db), env.pod)
+    return token, TestClient(env.client.app)
+
+
+def audio_token(env):
+    return env.db.execute("SELECT public_token FROM podcasts WHERE id = ?", (env.pod,)).fetchone()[0]
 
 
 def test_private_feed_lists_ready_episodes_with_cut_audio(env):
@@ -366,7 +371,7 @@ def test_private_feed_lists_ready_episodes_with_cut_audio(env):
     assert [e.title for e in feed.episodes] == ["Episode 5", "Episode 4", "Episode 3", "Episode 2"]
     newest = feed.episodes[0]
     ep5 = episode(env, "ep-5")
-    assert newest.guid == "ep-5" and newest.audio_url.startswith(f"http://testserver/p/{token}/")
+    assert newest.guid == "ep-5" and newest.audio_url.startswith(f"http://testserver/p/{audio_token(env)}/")
     assert newest.audio_length == ep5["cut_bytes"] and newest.audio_type == "audio/mpeg"
     assert newest.duration == pytest.approx(ep5["cut_duration"], abs=1)
     assert ET.fromstring(newest.xml).findtext("description") == "Notes for episode 5."
@@ -382,17 +387,58 @@ def test_private_feed_lists_ready_episodes_with_cut_audio(env):
 def test_private_feed_is_hidden_behind_its_token(env):
     processed(env)
     token, anon = feed_of(env)
-    for path in ("/p/nope/feed.xml", f"/p/{token}/0000000000000000.mp3", f"/p/{token[:-1]}/feed.xml"):
+    for path in ("/p/nope/feed.xml", f"/p/{audio_token(env)}/0000000000000000.mp3", f"/p/{token[:-1]}/feed.xml",
+                 f"/p/{token}/{audio_url(env, anon, token).rsplit('/', 1)[1]}"):  # audio isn't under the feed's token
         res = anon.get(path)
         assert res.status_code == 404 and res.text == "Not found", path
 
+    audio = audio_url(env, anon, token)
     env.client.post(f"/podcasts/{env.pod}/feed-token")
     assert anon.get(f"/p/{token}/feed.xml").status_code == 404
     new, _ = feed_of(env)
     assert new != token and anon.get(f"/p/{new}/feed.xml").status_code == 200
+    assert audio_url(env, anon, new) == audio and anon.head(audio).status_code == 200  # audio links stay
 
     env.client.post(f"/podcasts/{env.pod}/remove")
     assert anon.get(f"/p/{new}/feed.xml").status_code == 404
+
+
+def audio_url(env, anon, token):
+    """The newest episode's audio link in a feed, as a path."""
+    from podblock.feed import parse_feed
+    return parse_feed(anon.get(f"/p/{token}/feed.xml").content, "x").episodes[0].audio_url.replace("http://testserver", "")
+
+
+def test_each_user_has_their_own_feed(env):
+    processed(env)
+    env.client.post("/users", data={"username": "bob", "password": "password1"})
+    bob = TestClient(env.client.app, follow_redirects=False)
+    bob.post("/login", data={"username": "bob", "password": "password1"})
+    bob_id = env.db.execute("SELECT id FROM users WHERE username = 'bob'").fetchone()[0]
+    mine, anon = feed_of(env)
+    his, _ = feed_of(env, bob_id)
+    assert mine != his and f"/p/{his}/feed.xml" in bob.get(f"/podcasts/{env.pod}").text
+
+    def guids(token):
+        from podblock.feed import parse_feed
+        return [e.guid for e in parse_feed(anon.get(f"/p/{token}/feed.xml").content, "x").episodes]
+
+    assert guids(mine) == guids(his) == ["ep-5", "ep-4", "ep-3", "ep-2"]
+    bob.post(f"/podcasts/{env.pod}/episodes", data={"action": "archive", "ids": env.ids["ep-4"]})
+    bob.post(f"/podcasts/{env.pod}/filters", data={"pattern": "episode 3"})
+    assert guids(his) == ["ep-5", "ep-2"] and guids(mine) == ["ep-5", "ep-4", "ep-3", "ep-2"]
+    assert "2 episodes with the" in bob.get(f"/podcasts/{env.pod}").text
+    assert audio_url(env, anon, mine) == audio_url(env, anon, his)  # the same audio links
+
+    env.client.post(f"/podcasts/{env.pod}/filters", data={"pattern": "episode 5", "processing": "true"})
+    assert guids(his) == ["ep-2"] and guids(mine) == ["ep-4", "ep-3", "ep-2"]
+    assert anon.head(f"/p/{audio_token(env)}/{processing.media_key('ep-5')}.mp3").status_code == 200
+
+    bob.post(f"/podcasts/{env.pod}/feed-token")  # a new address for bob leaves the admin's alone
+    assert anon.get(f"/p/{his}/feed.xml").status_code == 404 and anon.get(f"/p/{mine}/feed.xml").status_code == 200
+    his, _ = feed_of(env, bob_id)
+    env.client.post(f"/users/{bob_id}/remove")
+    assert anon.get(f"/p/{his}/feed.xml").status_code == 404
 
 
 def test_show_page_offers_the_private_feed(env):
