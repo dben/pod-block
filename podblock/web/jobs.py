@@ -142,7 +142,11 @@ class Context:
         """Start a step, on the job and on the episode it is working on."""
         self.check()
         self._step, self._episode, self._last = text, episode_id, time.monotonic()
-        self.db.execute("UPDATE jobs SET step = ?, progress = NULL WHERE id = ?", (text, self.job["id"]))
+        on_job = text
+        if episode_id is not None and episode_id != self.job["episode_id"]:
+            row = self.db.execute("SELECT title FROM episodes WHERE id = ?", (episode_id,)).fetchone()
+            on_job = f"{text} “{row['title']}”" if row and row["title"] else text
+        self.db.execute("UPDATE jobs SET step = ?, progress = NULL WHERE id = ?", (on_job, self.job["id"]))
         if episode_id is not None:
             self.db.execute("UPDATE episodes SET state = 'running', state_note = ? WHERE id = ?", (text, episode_id))
         self.db.commit()

@@ -180,6 +180,9 @@ Ticked items are built. Each has an id so commits and issues can point at it.
   too.
 - [x] **P6** Every section the report lists is cut. Blocks marked `ignored`
   never show up in a report, so they stay.
+  Up to 4 seconds of new audio between two repeats is cut with them
+  (`processing.FILL_GAPS`), so a cut never leaves a scrap of sound between two
+  others.
 - [x] **P7** An episode page: status (queued and running ones update
   themselves), a player and a download for the cut file, how much was cut,
   the list of cut sections with a button to play the original from a few
@@ -362,6 +365,8 @@ None right now.
 - Shift chapter and transcript timestamps to match the cut audio, and add
   chapters marking where cuts were made.
 - A per-podcast choice of which section types to cut.
+- A per-podcast setting for how much new audio between repeats is cut with
+  them (4 seconds today).
 - OPML import and export.
 - One combined private feed across podcasts.
 - Postgres, and the worker as its own Deployment, so the web side can run

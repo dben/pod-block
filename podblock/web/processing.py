@@ -29,6 +29,7 @@ from .jobs import Cancelled, Context, settle_episode
 log = logging.getLogger(__name__)
 
 COMPARE_WITH = 4  # fingerprinted episodes a show should have before its repeats are looked for
+FILL_GAPS = 4.0  # seconds of new audio between two repeats that is cut with them, so no scraps are left
 AUDIO_SUFFIXES = {".mp3", ".m4a", ".mp4", ".aac", ".ogg", ".opus", ".oga", ".wav", ".flac"}
 MIME_SUFFIXES = {"audio/mpeg": ".mp3", "audio/mp3": ".mp3", "audio/mp4": ".m4a", "audio/x-m4a": ".m4a",
                  "audio/aac": ".aac", "audio/ogg": ".ogg", "audio/opus": ".opus"}
@@ -149,7 +150,7 @@ def run(ctx: Context, settings: Settings) -> None:
         ctx.db.commit()
         with _detecting:
             find_common_blocks(store, group, params)
-            reports = {ep_id: episode_report(store, ep_id, params) for ep_id in group}
+            reports = {ep_id: episode_report(store, ep_id, params, fill_gaps=FILL_GAPS) for ep_id in group}
         for ep_id in group:
             _render(ctx, settings, ep_id, reports[ep_id])
     except BaseException as e:

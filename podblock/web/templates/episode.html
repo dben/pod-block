@@ -83,7 +83,7 @@
           <span class="section-types">
             {% for t in s.types %}<span class="type type-{{ t }}">{{ t|replace('-', ' ') }}</span>{% endfor %}
           </span>
-          <span class="section-len muted">{{ s.length|duration }}</span>
+          <span class="section-len muted mono">{{ s.length|clock }}</span>
           {% if e.original_path %}
           <button class="icon-btn" type="button" data-seek="{{ [s.start - 3, 0]|max }}" aria-label="Play from {{ s.start|clock }}">
             <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.5v13l10-6.5z"/></svg>

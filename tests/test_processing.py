@@ -210,3 +210,14 @@ def test_episode_page_before_and_while_processing(env):
     row = env.client.get(f"/episodes/{env.ids['ep-1']}/row").text
     assert "<li" in row
     assert 'hx-trigger="every 3s"' in row
+
+
+def test_steps_on_companions_name_them(env):
+    jobs.enqueue(env.db, "process", [env.ids["ep-1"]], None)
+    job = jobs.claim(env.db)
+    ctx = jobs.Context(env.db, job)
+    ctx.step("Downloading", env.ids["ep-1"])
+    assert env.db.execute("SELECT step FROM jobs").fetchone()[0] == "Downloading"
+    ctx.step("Downloading", env.ids["ep-2"])
+    assert env.db.execute("SELECT step FROM jobs").fetchone()[0] == "Downloading “Episode 2”"
+    assert episode(env, "ep-2")["state_note"] == "Downloading"
