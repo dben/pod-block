@@ -9,10 +9,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .breaks import SHORT_BLOCK_SEC, classify_bumpers
-from .feed import download, fetch_feed
-from .fingerprint import Fingerprint, fingerprint_file, frames_to_seconds
+from .feed import Episode, Feed, download, fetch_feed
+from .fingerprint import Fingerprint, FingerprintConfig, fingerprint_file, frames_to_seconds
 from .matcher import MatchParams, common_runs
-from .store import SegmentMatch, Store
+from .store import Store
 
 log = logging.getLogger(__name__)
 
@@ -31,29 +31,29 @@ class Paths:
         suffix = Path(url.split("?", 1)[0]).suffix or ".mp3"
         return self.root / "audio" / f"{_key(guid)}{suffix}"
 
-    def fingerprint(self, guid: str) -> Path:
-        return self.root / "fingerprints" / f"{_key(guid)}.npz"
+    def fingerprint(self, guid: str, config: FingerprintConfig) -> Path:
+        return self.root / "fingerprints" / f"{_key(guid)}.{config.name}.npz"
 
 
 def _key(guid: str) -> str:
     return hashlib.sha1(guid.encode()).hexdigest()[:16]
 
 
-def ingest_feed(store: Store, paths: Paths, feed_url: str, count: int,
-                keep_audio: bool = True) -> list[int]:
-    """Download and fingerprint the newest `count` episodes. Returns episode ids."""
-    episodes = fetch_feed(feed_url)[:count]
+def ingest_episodes(store: Store, paths: Paths, feed: Feed, episodes: list[Episode],
+                    keep_audio: bool = True) -> list[int]:
+    """Download and fingerprint feed episodes, skipping ones already done. Returns ids."""
+    podcast = store.podcast_id(feed.title, feed.url)
     ids = []
     for ep in episodes:
-        fp_path = paths.fingerprint(ep.guid)
+        fp_path = paths.fingerprint(ep.guid, store.config)
         audio_path = paths.audio(ep.guid, ep.audio_url)
-        ep_id = store.upsert_episode(ep.guid, feed_url=feed_url, title=ep.title,
+        ep_id = store.upsert_episode(ep.guid, podcast_id=podcast, title=ep.title,
                                      pub_date=ep.pub_date, audio_url=ep.audio_url)
         if not fp_path.exists():
             log.info("downloading %s", ep.title)
             download(ep.audio_url, audio_path)
             log.info("fingerprinting %s", ep.title)
-            fp = fingerprint_file(audio_path)
+            fp = fingerprint_file(audio_path, store.config)
             fp.save(fp_path)
             log.info("  %.0f min, %d hashes", fp.duration / 60, len(fp.hashes))
             store.upsert_episode(ep.guid, fingerprint_path=str(fp_path), duration=fp.duration)
@@ -69,15 +69,44 @@ def ingest_feed(store: Store, paths: Paths, feed_url: str, count: int,
     return ids
 
 
-def ingest_file(store: Store, paths: Paths, audio_path: Path) -> int:
+def ingest_feed(store: Store, paths: Paths, feed_url: str, count: int,
+                keep_audio: bool = True) -> list[int]:
+    """Download and fingerprint the newest `count` episodes. Returns episode ids."""
+    feed = fetch_feed(feed_url)
+    return ingest_episodes(store, paths, feed, feed.episodes[:count], keep_audio)
+
+
+def neighbours(episodes: list, index: int, count: int) -> list:
+    """Up to `count` episodes nearest to `episodes[index]`, alternating newer and older."""
+    picked = []
+    for step in range(1, len(episodes)):
+        for i in (index - step, index + step):
+            if 0 <= i < len(episodes) and len(picked) < count:
+                picked.append(episodes[i])
+    return picked
+
+
+def ingest_file(store: Store, paths: Paths, audio_path: Path, podcast_id: int | None = None) -> int:
     """Fingerprint a local file and register it as an episode."""
     audio_path = audio_path.resolve()
     guid = f"file:{audio_path}"
-    fp_path = paths.fingerprint(guid)
-    fp = fingerprint_file(audio_path)
+    fp_path = paths.fingerprint(guid, store.config)
+    fp = fingerprint_file(audio_path, store.config)
     fp.save(fp_path)
+    fields = {"podcast_id": podcast_id} if podcast_id is not None else {}
     return store.upsert_episode(guid, title=audio_path.name, audio_path=str(audio_path),
-                                fingerprint_path=str(fp_path), duration=fp.duration)
+                                fingerprint_path=str(fp_path), duration=fp.duration, **fields)
+
+
+def load_fingerprint(store: Store, episode_id: int) -> Fingerprint:
+    return Fingerprint.load(Path(store.episode(episode_id)["fingerprint_path"]))
+
+
+def rescan(store: Store, episode_id: int, params: MatchParams, fp: Fingerprint | None = None) -> None:
+    """Refresh where stored blocks occur in one episode."""
+    fp = fp or load_fingerprint(store, episode_id)
+    store.replace_occurrences(
+        episode_id, store.scan(fp, params, podcast_id=store.episode(episode_id)["podcast_id"]))
 
 
 def find_common_blocks(store: Store, episode_ids: list[int], params: MatchParams,
@@ -91,7 +120,7 @@ def find_common_blocks(store: Store, episode_ids: list[int], params: MatchParams
 
     def load(ep_id: int) -> Fingerprint:
         if ep_id not in fps:
-            fps[ep_id] = Fingerprint.load(Path(store.episode(ep_id)["fingerprint_path"]))
+            fps[ep_id] = load_fingerprint(store, ep_id)
         return fps[ep_id]
 
     pool = list(episode_ids)
@@ -123,15 +152,14 @@ def find_common_blocks(store: Store, episode_ids: list[int], params: MatchParams
             added += 1
 
     # New segments may also appear in older episodes, so rescan all of them.
-    rescan = pool if added else episode_ids
-    for ep_id in rescan:
-        store.replace_occurrences(ep_id, store.scan(load(ep_id), params))
+    for ep_id in (pool if added else episode_ids):
+        rescan(store, ep_id, params, load(ep_id))
     if split_segments(store, params, load):
         for ep_id in [r["id"] for r in store.fingerprinted_episodes()]:
-            store.replace_occurrences(ep_id, store.scan(load(ep_id), params))
+            rescan(store, ep_id, params, load(ep_id))
     drop_nested_blocks(store)
     prune_short_blocks(store)
-    store.set_kinds(classify_bumpers(store))
+    store.set_auto_types(classify_bumpers(store))
     return added
 
 
@@ -141,13 +169,17 @@ def drop_nested_blocks(store: Store, share: float = 0.8) -> int:
     Short runs found in one pair of episodes can be slivers of a longer block
     found in another pair; they add nothing but clutter.
     """
-    lengths = {r["id"]: r["duration"] for r in store.segment_summary()}
+    summary = store.segment_summary()
+    lengths = {r["id"]: r["duration"] for r in summary}
+    by_hand = {r["id"] for r in summary if r["type_manual"]}
     by_episode: dict[int, list] = {}
     for ep in store.fingerprinted_episodes():
         by_episode[ep["id"]] = store.occurrences_for_episode(ep["id"])
 
     dropped = 0
     for seg_id, length in sorted(lengths.items(), key=lambda kv: kv[1]):
+        if seg_id in by_hand:
+            continue
         inside = total = 0
         for matches in by_episode.values():
             for m in matches:
@@ -171,7 +203,8 @@ def drop_nested_blocks(store: Store, share: float = 0.8) -> int:
 def prune_short_blocks(store: Store, min_occurrences: int = SHORT_MIN_OCCURRENCES) -> int:
     """Drop short blocks seen too rarely to trust; a pair of 2 s clips can match by chance."""
     weak = [r["id"] for r in store.segment_summary()
-            if r["duration"] < SHORT_BLOCK_SEC and r["occurrences"] < min_occurrences]
+            if r["duration"] < SHORT_BLOCK_SEC and r["occurrences"] < min_occurrences
+            and not r["type_manual"]]
     for seg_id in weak:
         store.delete_segment(seg_id)
     return len(weak)
@@ -203,6 +236,8 @@ def split_segments(store: Store, params: MatchParams, load) -> int:
             new_id = store.add_segment(source.slice(start, end), seg["source_episode_id"], start, end)
             if seg["label"]:
                 store.set_label(new_id, seg["label"])
+            if seg["type_manual"]:
+                store.set_type(new_id, seg["type"])
         store.delete_segment(seg["id"])
         log.info("split block %d into %d", seg["id"], len(bounds) - 1)
         split += 1
@@ -246,6 +281,3 @@ def _cut_points(edges: list[float], length: float, min_length: float,
     return cuts
 
 
-def scan_audio(store: Store, audio_path: Path, params: MatchParams) -> tuple[Fingerprint, list[SegmentMatch]]:
-    fp = fingerprint_file(audio_path)
-    return fp, store.scan(fp, params)

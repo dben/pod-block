@@ -4,10 +4,21 @@ import subprocess
 import numpy as np
 import pytest
 
-from podblock.fingerprint import SAMPLE_RATE, decode_audio, fingerprint_samples, frames_to_seconds
+from podblock.fingerprint import FingerprintConfig, decode_audio, fingerprint_samples, frames_to_seconds
 from podblock.matcher import MatchParams, common_runs
 from podblock.pipeline import _cut_points
 from podblock.store import Store
+
+
+CONFIG = FingerprintConfig()
+SAMPLE_RATE = CONFIG.sample_rate
+ALL_CONFIGS = [FingerprintConfig(high_band=h, split_bands=s) for h in (False, True) for s in (False, True)]
+
+
+def fingerprint(samples, config=CONFIG):
+    if config.sample_rate != SAMPLE_RATE:
+        samples = samples[:: SAMPLE_RATE // config.sample_rate]  # fine for test signals under 4 kHz
+    return fingerprint_samples(samples, config)
 
 
 def fake_audio(seconds: float, seed: int) -> np.ndarray:
@@ -32,10 +43,11 @@ def episode(parts):
     return np.concatenate(parts)
 
 
-def test_finds_shared_block_at_different_positions(jingle):
+@pytest.mark.parametrize("config", ALL_CONFIGS, ids=lambda c: c.name)
+def test_finds_shared_block_at_different_positions(jingle, config):
     a = episode([fake_audio(60, 1), jingle, fake_audio(50, 2)])
     b = episode([fake_audio(15, 3), jingle, fake_audio(90, 4)])
-    fa, fb = fingerprint_samples(a), fingerprint_samples(b)
+    fa, fb = fingerprint(a, config), fingerprint(b, config)
 
     runs = common_runs(fa.hashes, fa.times, fb.hashes, fb.times, MatchParams())
 
@@ -47,13 +59,13 @@ def test_finds_shared_block_at_different_positions(jingle):
 
 
 def test_unrelated_audio_has_no_shared_blocks():
-    fa, fb = fingerprint_samples(fake_audio(120, 5)), fingerprint_samples(fake_audio(120, 6))
+    fa, fb = fingerprint(fake_audio(120, 5)), fingerprint(fake_audio(120, 6))
     assert common_runs(fa.hashes, fa.times, fb.hashes, fb.times, MatchParams()) == []
 
 
 def test_store_recognises_block_in_new_audio(tmp_path, jingle):
     a = episode([fake_audio(30, 7), jingle, fake_audio(30, 8)])
-    fa = fingerprint_samples(a)
+    fa = fingerprint(a)
     store = Store(tmp_path / "db.sqlite")
     seg_id = store.add_segment(fa.slice(30, 70), None, 30, 70)
 
@@ -61,7 +73,7 @@ def test_store_recognises_block_in_new_audio(tmp_path, jingle):
     rng = np.random.default_rng(0)
     half = jingle[: 20 * SAMPLE_RATE] + rng.normal(0, 0.03, 20 * SAMPLE_RATE).astype(np.float32)
     c = episode([fake_audio(100, 9), half, fake_audio(20, 10)])
-    matches = store.scan(fingerprint_samples(c), MatchParams())
+    matches = store.scan(fingerprint(c), MatchParams())
 
     assert [m.segment_id for m in matches] == [seg_id]
     assert matches[0].start == pytest.approx(100, abs=2)
@@ -70,7 +82,7 @@ def test_store_recognises_block_in_new_audio(tmp_path, jingle):
 
 
 def test_uncovered_returns_only_new_audio(tmp_path, jingle):
-    fa = fingerprint_samples(episode([jingle, fake_audio(30, 11)]))
+    fa = fingerprint(episode([jingle, fake_audio(30, 11)]))
     store = Store(tmp_path / "db.sqlite")
     store.add_segment(fa.slice(0, 40), None, 0, 40)
 
@@ -88,11 +100,11 @@ def test_survives_mp3_encoding(tmp_path, jingle):
         mp3 = tmp_path / f"{name}.mp3"
         subprocess.run(["ffmpeg", "-v", "error", "-f", "s16le", "-ar", str(SAMPLE_RATE), "-ac", "1",
                         "-i", str(wav), "-ar", "44100", "-b:a", bitrate, str(mp3)], check=True)
-        return decode_audio(mp3)
+        return decode_audio(mp3, SAMPLE_RATE)
 
     a = to_mp3(episode([fake_audio(20, 12), jingle, fake_audio(20, 13)]), "a", "128k")
     b = to_mp3(episode([fake_audio(45, 14), jingle, fake_audio(10, 15)]), "b", "48k")
-    fa, fb = fingerprint_samples(a), fingerprint_samples(b)
+    fa, fb = fingerprint(a), fingerprint(b)
 
     runs = common_runs(fa.hashes, fa.times, fb.hashes, fb.times, MatchParams())
 
@@ -101,12 +113,12 @@ def test_survives_mp3_encoding(tmp_path, jingle):
 
 
 def test_scan_finds_every_repeat_of_a_block(tmp_path, jingle):
-    fa = fingerprint_samples(episode([jingle, fake_audio(10, 16)]))
+    fa = fingerprint(episode([jingle, fake_audio(10, 16)]))
     store = Store(tmp_path / "db.sqlite")
     seg_id = store.add_segment(fa.slice(0, 40), None, 0, 40)
 
     c = episode([fake_audio(30, 17), jingle, fake_audio(60, 18), jingle])
-    matches = store.scan(fingerprint_samples(c), MatchParams())
+    matches = store.scan(fingerprint(c), MatchParams())
 
     assert [m.segment_id for m in matches] == [seg_id, seg_id]
     assert [round(m.start) for m in matches] == pytest.approx([30, 130], abs=2)

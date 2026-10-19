@@ -1,4 +1,10 @@
-"""SQLite store for episodes, common audio segments and their fingerprints."""
+"""SQLite store for podcasts, episodes, common audio blocks and their fingerprints.
+
+One store holds every feed, so blocks shared across podcasts (network promos,
+ads) are found too. Each block has a type. `repeated` blocks, and the bumpers
+tagged automatically, are checked against every episode; `intro`, `outro`
+and `show` blocks only against episodes of the podcast they came from.
+"""
 
 from __future__ import annotations
 
@@ -9,14 +15,30 @@ from pathlib import Path
 
 import numpy as np
 
-from .fingerprint import Fingerprint, frames_to_seconds
+from .fingerprint import Fingerprint, FingerprintConfig, frames_to_seconds
 from .matcher import MatchParams, find_runs, match_hashes
 
+SCHEMA_VERSION = "2"
+
+REPEATED, INTRO, OUTRO, SHOW = "repeated", "intro", "outro", "show"
+BUMPER_IN, BUMPER_OUT, BUMPER = "bumper-in", "bumper-out", "bumper"
+TYPES = (REPEATED, INTRO, OUTRO, SHOW, BUMPER_IN, BUMPER_OUT, BUMPER)
+PODCAST_ONLY = {INTRO, OUTRO, SHOW}  # only checked against their own podcast
+
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS podcasts (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    feed_url TEXT UNIQUE
+);
 CREATE TABLE IF NOT EXISTS episodes (
     id INTEGER PRIMARY KEY,
     guid TEXT UNIQUE NOT NULL,
-    feed_url TEXT,
+    podcast_id INTEGER REFERENCES podcasts(id),
     title TEXT,
     pub_date TEXT,
     audio_url TEXT,
@@ -33,10 +55,12 @@ CREATE TABLE IF NOT EXISTS compared_pairs (
 CREATE TABLE IF NOT EXISTS segments (
     id INTEGER PRIMARY KEY,
     source_episode_id INTEGER REFERENCES episodes(id),
+    podcast_id INTEGER REFERENCES podcasts(id),  -- podcast it was found in
     source_start REAL NOT NULL,
     source_end REAL NOT NULL,
     label TEXT,
-    kind TEXT,
+    type TEXT NOT NULL DEFAULT 'repeated',
+    type_manual INTEGER NOT NULL DEFAULT 0,  -- set by hand; never retagged automatically
     created_at REAL
 );
 CREATE TABLE IF NOT EXISTS segment_hashes (
@@ -69,20 +93,83 @@ class SegmentMatch:
     hits: int
 
 
+class StoreError(Exception):
+    pass
+
+
 class Store:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, config: FingerprintConfig | None = None):
+        """Open or create a store.
+
+        A store keeps one fingerprint setting for life. `config` picks it for a
+        new store; for an existing one it must match (or be None).
+        """
         path.parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(path)
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA foreign_keys = ON")
+        tables = {r[0] for r in self.db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if "episodes" in tables and "settings" not in tables:
+            raise StoreError(f"{path} was made by an older pod-block; start a new --data-dir")
         self.db.executescript(SCHEMA)
-        columns = {r["name"] for r in self.db.execute("PRAGMA table_info(segments)")}
-        if "kind" not in columns:  # databases made before bumper detection
-            self.db.execute("ALTER TABLE segments ADD COLUMN kind TEXT")
+        self.config = self._settle_config(config)
         self._index: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
+
+    def _settle_config(self, wanted: FingerprintConfig | None) -> FingerprintConfig:
+        rows = dict(self.db.execute("SELECT key, value FROM settings").fetchall())
+        if not rows:
+            config = wanted or FingerprintConfig()
+            self.db.executemany("INSERT INTO settings VALUES (?, ?)",
+                                [("schema", SCHEMA_VERSION), ("fingerprint", config.to_json())])
+            self.db.commit()
+            return config
+        if rows.get("schema") != SCHEMA_VERSION:
+            raise StoreError("this store was made by another pod-block version; start a new --data-dir")
+        stored = FingerprintConfig.from_json(rows["fingerprint"])
+        if wanted is not None and wanted != stored:
+            raise StoreError(f"this store uses '{stored.name}' fingerprints, not '{wanted.name}'; "
+                             "fingerprints from different settings never match, so use a new --data-dir")
+        return stored
 
     def close(self) -> None:
         self.db.close()
+
+    # --- podcasts -----------------------------------------------------------
+
+    def podcast_id(self, name: str | None = None, feed_url: str | None = None) -> int:
+        """Find or create a podcast by feed URL, or by name when there is no feed."""
+        if feed_url:
+            row = self.db.execute("SELECT id FROM podcasts WHERE feed_url = ?", (feed_url,)).fetchone()
+        else:
+            row = self.db.execute("SELECT id FROM podcasts WHERE name = ? AND feed_url IS NULL",
+                                  (name,)).fetchone()
+        if row:
+            if name and feed_url:
+                self.db.execute("UPDATE podcasts SET name = ? WHERE id = ?", (name, row["id"]))
+                self.db.commit()
+            return row["id"]
+        cur = self.db.execute("INSERT INTO podcasts (name, feed_url) VALUES (?, ?)",
+                              (name or feed_url, feed_url))
+        self.db.commit()
+        return cur.lastrowid
+
+    def find_podcast(self, key: str) -> int | None:
+        """A podcast id from its id, feed URL or name."""
+        row = self.db.execute(
+            "SELECT id FROM podcasts WHERE CAST(id AS TEXT) = ? OR feed_url = ? OR name = ?",
+            (key, key, key),
+        ).fetchone()
+        return row["id"] if row else None
+
+    def podcasts(self) -> list[sqlite3.Row]:
+        return self.db.execute(
+            """
+            SELECT p.*, COUNT(DISTINCT e.id) AS episodes,
+                   (SELECT COUNT(*) FROM segments s WHERE s.podcast_id = p.id) AS blocks
+            FROM podcasts p LEFT JOIN episodes e ON e.podcast_id = p.id
+            GROUP BY p.id ORDER BY p.id
+            """
+        ).fetchall()
 
     # --- episodes -----------------------------------------------------------
 
@@ -106,6 +193,9 @@ class Store:
     def episode(self, episode_id: int) -> sqlite3.Row:
         return self.db.execute("SELECT * FROM episodes WHERE id = ?", (episode_id,)).fetchone()
 
+    def episode_by_guid(self, guid: str) -> sqlite3.Row | None:
+        return self.db.execute("SELECT * FROM episodes WHERE guid = ?", (guid,)).fetchone()
+
     def fingerprinted_episodes(self) -> list[sqlite3.Row]:
         return self.db.execute(
             "SELECT * FROM episodes WHERE fingerprint_path IS NOT NULL ORDER BY pub_date"
@@ -127,10 +217,13 @@ class Store:
     def add_segment(self, fp: Fingerprint, source_episode_id: int | None,
                     source_start: float, source_end: float) -> int:
         """Store a common segment. `fp` must already be timed relative to the segment."""
+        podcast = None
+        if source_episode_id is not None:
+            podcast = self.episode(source_episode_id)["podcast_id"]
         cur = self.db.execute(
-            "INSERT INTO segments (source_episode_id, source_start, source_end, created_at) "
-            "VALUES (?, ?, ?, ?)",
-            (source_episode_id, source_start, source_end, time.time()),
+            "INSERT INTO segments (source_episode_id, podcast_id, source_start, source_end, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (source_episode_id, podcast, source_start, source_end, time.time()),
         )
         seg_id = cur.lastrowid
         self.db.executemany(
@@ -150,12 +243,27 @@ class Store:
         self.db.execute("UPDATE segments SET label = ? WHERE id = ?", (label, segment_id))
         self.db.commit()
 
-    def set_kinds(self, kinds: dict[int, str]) -> None:
-        """Replace every block's kind; blocks missing from `kinds` get none."""
-        self.db.execute("UPDATE segments SET kind = NULL")
-        self.db.executemany("UPDATE segments SET kind = ? WHERE id = ?",
-                            [(k, seg_id) for seg_id, k in kinds.items()])
+    def set_type(self, segment_id: int, block_type: str | None) -> None:
+        """Set a block's type by hand, or with None hand it back to automatic tagging."""
+        if block_type is None:
+            self.db.execute("UPDATE segments SET type = ?, type_manual = 0 WHERE id = ?",
+                            (REPEATED, segment_id))
+        elif block_type in TYPES:
+            self.db.execute("UPDATE segments SET type = ?, type_manual = 1 WHERE id = ?",
+                            (block_type, segment_id))
+        else:
+            raise ValueError(f"unknown type {block_type!r}; pick one of {', '.join(TYPES)}")
         self.db.commit()
+
+    def set_auto_types(self, types: dict[int, str]) -> None:
+        """Retag every block not typed by hand: the given type, else `repeated`."""
+        self.db.execute("UPDATE segments SET type = ? WHERE type_manual = 0", (REPEATED,))
+        self.db.executemany("UPDATE segments SET type = ? WHERE id = ? AND type_manual = 0",
+                            [(t, seg_id) for seg_id, t in types.items()])
+        self.db.commit()
+
+    def types(self) -> dict[int, str]:
+        return dict(self.db.execute("SELECT id, type FROM segments").fetchall())
 
     def segment(self, segment_id: int) -> sqlite3.Row:
         return self.db.execute("SELECT * FROM segments WHERE id = ?", (segment_id,)).fetchone()
@@ -166,13 +274,14 @@ class Store:
     def segment_summary(self) -> list[sqlite3.Row]:
         return self.db.execute(
             """
-            SELECT s.id, s.label, s.kind, s.source_start, s.source_end,
+            SELECT s.id, s.label, s.type, s.type_manual, s.podcast_id, s.source_start, s.source_end,
                    s.source_end - s.source_start AS duration,
-                   e.title AS source_title,
+                   e.title AS source_title, p.name AS podcast,
                    COUNT(o.id) AS occurrences,
                    COUNT(DISTINCT o.episode_id) AS episodes
             FROM segments s
             LEFT JOIN episodes e ON e.id = s.source_episode_id
+            LEFT JOIN podcasts p ON p.id = s.podcast_id
             LEFT JOIN occurrences o ON o.segment_id = s.id
             GROUP BY s.id
             ORDER BY episodes DESC, duration DESC
@@ -218,9 +327,25 @@ class Store:
                 self._index = (empty.astype(np.uint32), empty, empty)
         return self._index
 
-    def scan(self, fp: Fingerprint, params: MatchParams) -> list[SegmentMatch]:
-        """Find every stored segment that appears in `fp`."""
+    def visible_segments(self, podcast_id: int | None) -> np.ndarray:
+        """Ids of the blocks that apply to an episode of `podcast_id`."""
+        scoped = ", ".join("?" * len(PODCAST_ONLY))
+        rows = self.db.execute(
+            f"SELECT id FROM segments WHERE type NOT IN ({scoped}) OR podcast_id IS ?",
+            (*PODCAST_ONLY, podcast_id),
+        ).fetchall()
+        return np.array([r[0] for r in rows], dtype=np.int64)
+
+    def scan(self, fp: Fingerprint, params: MatchParams, podcast_id: int | None = None,
+             everything: bool = False) -> list[SegmentMatch]:
+        """Find the stored blocks that appear in `fp`.
+
+        Only blocks that apply to `podcast_id` are used, unless `everything`.
+        """
         hashes, seg_ids, seg_times = self._load_index()
+        if not everything:
+            keep = np.isin(seg_ids, self.visible_segments(podcast_id))
+            hashes, seg_ids, seg_times = hashes[keep], seg_ids[keep], seg_times[keep]
         iq, iref = match_hashes(fp.hashes, hashes, params.max_hash_occurrences)
         if len(iq) == 0:
             return []
@@ -246,8 +371,8 @@ class Store:
         return sorted(found, key=lambda m: m.start)
 
     def uncovered(self, fp: Fingerprint, params: MatchParams) -> list[tuple[float, float]]:
-        """Parts of `fp` (in seconds) that no stored segment already covers."""
-        covered = sorted((m.start, m.end) for m in self.scan(fp, params))
+        """Parts of `fp` (in seconds) that no stored block, of any podcast, already covers."""
+        covered = sorted((m.start, m.end) for m in self.scan(fp, params, everything=True))
         gaps, cursor = [], 0.0
         for start, end in covered:
             if start > cursor:

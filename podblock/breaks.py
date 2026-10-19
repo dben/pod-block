@@ -12,7 +12,7 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import dataclass, field
 
-from .store import SegmentMatch, Store
+from .store import BUMPER, BUMPER_IN, BUMPER_OUT, SegmentMatch, Store
 
 SHORT_BLOCK_SEC = 10.0  # bumpers usually match for less than this; ads for longer
 MAX_BUMPER_SEC = 20.0  # stored blocks longer than this are never bumpers
@@ -21,7 +21,6 @@ JOIN_GAP_SEC = 8.0  # blocks this close together belong to one group
 MAX_BREAK_SEC = 600.0  # a bumper-in and bumper-out further apart do not pair up
 MIN_EDGE_SHARE = 0.5  # share of a block's occurrences that must sit at a group edge
 
-BUMPER_IN, BUMPER_OUT, BUMPER = "bumper-in", "bumper-out", "bumper"
 OPENS = {BUMPER_IN, BUMPER}
 CLOSES = {BUMPER_OUT, BUMPER}
 
@@ -93,9 +92,9 @@ def classify_bumpers(store: Store) -> dict[int, str]:
     return kinds
 
 
-def find_breaks(matches: list[SegmentMatch], kinds: dict[int, str | None],
+def find_breaks(matches: list[SegmentMatch], kinds: dict[int, str],
                 max_break: float = MAX_BREAK_SEC) -> list[AdBreak]:
-    """Ad breaks in one piece of audio, from its block matches and the bumper tags."""
+    """Ad breaks in one piece of audio, from its block matches and the blocks' types."""
     matches = sorted(matches, key=lambda m: m.start)
     breaks: list[AdBreak] = []
     open_break: AdBreak | None = None
