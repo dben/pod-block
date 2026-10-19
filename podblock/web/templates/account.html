@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Account</h1>
+    <p class="muted">Logged in as <strong>{{ user.username }}</strong>{% if user.is_admin %} (admin){% endif %}</p>
+  </div>
+  <form method="post" action="/logout">
+    <button class="btn btn-ghost btn-sm" type="submit">Log out</button>
+  </form>
+</div>
+
+<section class="card form-card">
+  <h2>Password</h2>
+  {% if user.is_admin %}
+  <p class="muted">The admin logs in with the API key. To make a new one, run <code>podblock api-key</code>
+    on the server; that logs everyone out.</p>
+  {% else %}
+  {% if error %}<p class="alert alert-error" role="alert">{{ error }}</p>{% endif %}
+  <form class="stack-form" method="post" action="/account/password">
+    <input type="text" name="username" value="{{ user.username }}" autocomplete="username" hidden>
+    <label class="field">
+      <span>Current password</span>
+      <input class="input" type="password" name="current" required autocomplete="current-password">
+    </label>
+    <label class="field">
+      <span>New password</span>
+      <input class="input" type="password" name="new" required minlength="8" autocomplete="new-password">
+    </label>
+    <label class="field">
+      <span>New password again</span>
+      <input class="input" type="password" name="repeat" required minlength="8" autocomplete="new-password">
+    </label>
+    <p class="hint">At least 8 characters. Changing it logs you out on your other devices.</p>
+    <button class="btn btn-primary" type="submit">Change password</button>
+  </form>
+  {% endif %}
+</section>
+{% endblock %}

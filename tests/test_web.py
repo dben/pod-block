@@ -121,3 +121,100 @@ def test_backup_copies_the_database(tmp_path):
     copy.close()
     with pytest.raises(SystemExit):
         main(["--data-dir", str(data), "backup", str(tmp_path / "copy.sqlite")])
+
+
+def as_user(c, username, password):
+    other = TestClient(c.app, follow_redirects=False)
+    other.post("/login", data={"username": username, "password": password, "next": "/"})
+    return other
+
+
+def test_admin_logs_in_with_the_key_as_password(tmp_path):
+    c = client(tmp_path, api_key="test-key")
+    assert c.post("/login", data={"username": "Admin ", "password": "test-key"}).status_code == 303
+    assert "/users" in c.get("/", headers=HTML).text
+    assert c.post("/login", data={"username": "admin", "password": "nope"}).status_code == 401
+
+
+def test_admin_adds_users_who_log_in_with_a_password(tmp_path):
+    c = client(tmp_path, api_key="test-key")
+    log_in(c)
+    assert c.post("/users", data={"username": "Alice", "password": "password1"}).status_code == 303
+    page = c.get("/users", headers=HTML).text
+    assert "alice" in page and "Added alice." in page
+
+    for name, password, why in [("alice", "password2", "already a user called alice"),
+                                ("admin", "password2", "the admin"),
+                                ("bob smith", "password2", "User names are"),
+                                ("bob", "short", "at least 8")]:
+        bad = c.post("/users", data={"username": name, "password": password})
+        assert bad.status_code == 422 and why in bad.text
+
+    alice = as_user(c, "alice", "password1")
+    home = alice.get("/", headers=HTML)
+    assert home.status_code == 200 and "alice" in home.text and 'href="/users"' not in home.text
+    assert alice.get("/users").status_code == 403
+    assert alice.post("/users", data={"username": "eve", "password": "password1"}).status_code == 403
+
+    assert as_user(c, "alice", "wrong-one").get("/", headers=HTML).status_code == 303
+    assert c.post("/login", data={"username": "nobody", "password": "password1"}).status_code == 401
+    db = connect(settings(tmp_path).db_path)
+    row = db.execute("SELECT password_hash, last_login_at FROM users WHERE username = 'alice'").fetchone()
+    db.close()
+    assert row["password_hash"].startswith("scrypt$") and "password1" not in row["password_hash"]
+    assert row["last_login_at"]
+
+
+def test_resetting_a_password_logs_the_user_out(tmp_path):
+    c = client(tmp_path, api_key="test-key")
+    log_in(c)
+    c.post("/users", data={"username": "alice", "password": "password1"})
+    alice = as_user(c, "alice", "password1")
+    uid = accounts.log_in(connect(settings(tmp_path).db_path), "alice", "password1")["id"]
+
+    assert c.post(f"/users/{uid}/password", data={"password": "password2"}).status_code == 303
+    assert alice.get("/", headers=HTML).status_code == 303
+    assert as_user(c, "alice", "password1").get("/", headers=HTML).status_code == 303
+    assert as_user(c, "alice", "password2").get("/", headers=HTML).status_code == 200
+
+    c.post(f"/users/{uid}/password", data={"password": "short"})
+    assert "at least 8" in c.get("/users", headers=HTML).text
+
+
+def test_changing_your_own_password(tmp_path):
+    c = client(tmp_path, api_key="test-key")
+    log_in(c)
+    c.post("/users", data={"username": "alice", "password": "password1"})
+    here, elsewhere = as_user(c, "alice", "password1"), as_user(c, "alice", "password1")
+
+    def change(current, new, repeat=None):
+        return here.post("/account/password", data={"current": current, "new": new, "repeat": repeat or new})
+
+    assert "your current password" in change("wrong-one", "password2").text
+    assert "passwords don&#39;t match" in change("password1", "password2", "password3").text
+    assert "at least 8" in change("password1", "short").text
+    assert change("password1", "password2").status_code == 303
+
+    assert here.get("/account", headers=HTML).status_code == 200  # this session carries on
+    assert elsewhere.get("/", headers=HTML).status_code == 303  # the others end
+    assert as_user(c, "alice", "password2").get("/", headers=HTML).status_code == 200
+
+    admin = c.post("/account/password", data={"current": "test-key", "new": "password2", "repeat": "password2"})
+    assert admin.status_code == 422 and "podblock api-key" in admin.text
+
+
+def test_removing_a_user(tmp_path):
+    c = client(tmp_path, api_key="test-key")
+    log_in(c)
+    c.post("/users", data={"username": "alice", "password": "password1"})
+    alice = as_user(c, "alice", "password1")
+    db = connect(settings(tmp_path).db_path)
+    uid = db.execute("SELECT id FROM users WHERE username = 'alice'").fetchone()["id"]
+    admin = accounts.admin_id(db)
+
+    assert c.post(f"/users/{uid}/remove").status_code == 303
+    assert alice.get("/", headers=HTML).status_code == 303
+    assert c.post(f"/users/{admin}/remove").status_code == 303
+    assert "admin can&#39;t be removed" in c.get("/users", headers=HTML).text
+    assert [r["username"] for r in db.execute("SELECT username FROM users")] == ["admin"]
+    db.close()

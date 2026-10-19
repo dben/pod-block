@@ -3,7 +3,7 @@
 <div class="page-head">
   <div>
     <h1>Podcasts</h1>
-    <p class="muted">{{ podcasts|length|plural('feed') }}</p>
+    <p class="muted">{{ mine_count|plural('feed') }} on your home page</p>
   </div>
   {% if expired_total %}
   <form method="post" action="/episodes/archive-expired"
@@ -28,11 +28,16 @@
   {% if error %}<p class="alert alert-error add-feed-error" role="alert">{{ error }}</p>{% endif %}
 </form>
 
+<nav class="tabs home-tabs" aria-label="Which podcasts">
+  <a href="/" {% if view == 'mine' %}aria-current="page"{% endif %}>My podcasts <span class="count">{{ mine_count }}</span></a>
+  <a href="/?view=all" {% if view == 'all' %}aria-current="page"{% endif %}>All podcasts <span class="count">{{ all_count }}</span></a>
+</nav>
+
 {% if podcasts %}
 <ul class="grid podcast-grid">
   {% for p in podcasts %}
-  <li>
-    <a class="card podcast-card" href="/podcasts/{{ p.id }}">
+  <li class="card podcast-item">
+    <a class="podcast-card" href="/podcasts/{{ p.id }}">
       {% if p.image_url|web_url %}
       <img class="cover" src="{{ p.image_url }}" alt="" loading="lazy" referrerpolicy="no-referrer">
       {% else %}
@@ -51,9 +56,26 @@
         </p>
       </div>
     </a>
+    {% if view == 'all' %}
+    <form class="podcast-pick" method="post" action="/podcasts/{{ p.id }}/subscribe">
+      <span class="muted">{{ 'On your home page' if p.subscribed else 'Not on your home page' }}</span>
+      <input type="hidden" name="on" value="{{ 'false' if p.subscribed else 'true' }}">
+      <input type="hidden" name="next" value="/?view=all">
+      <button class="btn btn-sm {{ 'btn-ghost' if p.subscribed else 'btn-primary' }}" type="submit">
+        {{ 'Unsubscribe' if p.subscribed else 'Subscribe' }}</button>
+    </form>
+    {% endif %}
   </li>
   {% endfor %}
 </ul>
+{% elif all_count %}
+<div class="card empty">
+  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a6 6 0 0 0-6 6v3a6 6 0 0 0 12 0V9a6 6 0 0 0-6-6Zm0 15v3m-4 0h8"/></svg>
+  <h2>Pick your podcasts</h2>
+  <p class="muted">There {{ 'is' if all_count == 1 else 'are' }} {{ all_count|plural('podcast') }} here already.
+    Subscribe to the ones you want and they show up on this page.</p>
+  <a class="btn btn-primary" href="/?view=all">See all podcasts</a>
+</div>
 {% else %}
 <div class="card empty">
   <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a6 6 0 0 0-6 6v3a6 6 0 0 0 12 0V9a6 6 0 0 0-6-6Zm0 15v3m-4 0h8"/></svg>

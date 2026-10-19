@@ -11,7 +11,7 @@ from fastapi.responses import JSONResponse, RedirectResponse, Response
 
 from . import feeds, jobs, library, publish
 from .episodes import wake_worker
-from .deps import current_user, get_db
+from .deps import admin_user, current_user, get_db
 from .templating import flash, page
 
 PAGE_SIZE = 50
@@ -34,15 +34,35 @@ def _podcast_or_404(db: sqlite3.Connection, podcast_id: int) -> sqlite3.Row:
     return pod
 
 
-def _home(request: Request, user, db: sqlite3.Connection, status_code: int = 200, **context) -> Response:
-    podcasts = library.podcasts(db, user["id"])
+def _home(request: Request, user, db: sqlite3.Connection, view: str = "mine", status_code: int = 200,
+          **context) -> Response:
+    view = view if view in {"mine", "all"} else "mine"
+    shown = library.podcasts(db, user["id"], mine=view == "mine")
+    everything = db.execute("SELECT COUNT(*) FROM podcasts WHERE followed = 1").fetchone()[0]
+    mine = len(shown) if view == "mine" else sum(p["subscribed"] for p in shown)
+    expired_total = sum(p["expired_count"] for p in shown if p["subscribed"])
     return page(request, "home.html", status_code=status_code, title="Podcasts", nav="podcasts", user=user,
-                podcasts=podcasts, expired_total=sum(p["expired_count"] for p in podcasts), **context)
+                podcasts=shown, view=view, mine_count=mine, all_count=everything, expired_total=expired_total,
+                **context)
 
 
 @router.get("/")
-def home(request: Request, user=Depends(current_user), db: sqlite3.Connection = Depends(get_db)) -> Response:
-    return _home(request, user, db)
+def home(request: Request, view: str = "mine", user=Depends(current_user),
+         db: sqlite3.Connection = Depends(get_db)) -> Response:
+    return _home(request, user, db, view)
+
+
+@router.post("/podcasts/{podcast_id}/subscribe")
+def subscribe(request: Request, podcast_id: int, on: bool = Form(...), next: str = Form(""),
+              user=Depends(current_user), db: sqlite3.Connection = Depends(get_db)) -> Response:
+    """Put a podcast on your home page, or take it off. Nobody else's list changes."""
+    pod = _podcast_or_404(db, podcast_id)
+    library.subscribe(db, user["id"], podcast_id, on)
+    if _wants_json(request):
+        return JSONResponse({"subscribed": on})
+    flash(request, f"{pod['name']} is {'on' if on else 'off'} your home page.")
+    back = next if next in {"/", "/?view=all"} or next.startswith(f"/podcasts/{podcast_id}") else "/"
+    return RedirectResponse(back, status_code=303)
 
 
 @router.post("/episodes/archive-expired")
@@ -60,6 +80,7 @@ def add_podcast(request: Request, url: str = Form(""), user=Depends(current_user
         result = feeds.add_podcast(db, url)
     except feeds.RefreshError as e:
         return _home(request, user, db, status_code=422, url=url, error=f"Couldn't add that feed: {e}.")
+    library.subscribe(db, user["id"], result.podcast_id)
     flash(request, f"Added, with {result.added:,} episodes." if result.added else "Added.")
     return RedirectResponse(f"/podcasts/{result.podcast_id}", status_code=303)
 
@@ -86,6 +107,7 @@ def show_podcast(request: Request, podcast_id: int, view: str = "active", q: str
     cut_sec = db.execute("SELECT COALESCE(SUM(duration - cut_duration), 0) FROM episodes WHERE podcast_id = ? "
                          "AND cut_duration IS NOT NULL", (podcast_id,)).fetchone()[0]
     return page(request, "podcast.html", title=pod["name"], nav="podcasts", user=user, cut_sec=cut_sec,
+                subscribed=library.subscribed(db, user["id"], podcast_id),
                 counts=library.counts(db, user["id"], podcast_id), private_url=private,
                 private_count=len(publish.published(db, podcast_id)),
                 private_qr=segno.make(private, error="m").svg_inline(scale=4, border=2, dark="#0d0f13", light="#ffffff"),
@@ -111,7 +133,7 @@ def podcast_settings(request: Request, podcast_id: int, retention_days: int = Fo
 
 
 @router.post("/podcasts/{podcast_id}/feed-token")
-def new_feed_address(request: Request, podcast_id: int, user=Depends(current_user),
+def new_feed_address(request: Request, podcast_id: int, user=Depends(admin_user),
                      db: sqlite3.Connection = Depends(get_db)) -> Response:
     _podcast_or_404(db, podcast_id)
     publish.new_feed_token(db, podcast_id)
@@ -174,7 +196,7 @@ def change_episodes(request: Request, podcast_id: int, action: str = Form(...), 
 
 
 @router.post("/podcasts/{podcast_id}/remove")
-def remove_podcast(request: Request, podcast_id: int, user=Depends(current_user),
+def remove_podcast(request: Request, podcast_id: int, user=Depends(admin_user),
                    db: sqlite3.Connection = Depends(get_db)) -> Response:
     pod = _podcast_or_404(db, podcast_id)
     stayed = feeds.remove_podcast(db, podcast_id)

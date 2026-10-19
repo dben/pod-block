@@ -263,7 +263,8 @@ def _downloaded(row: sqlite3.Row, known: set[int]) -> bool:
 
 
 def remove_podcast(db: sqlite3.Connection, podcast_id: int) -> int:
-    """Stop following a podcast. Episodes never downloaded go; returns how many stayed.
+    """Stop following a podcast, and take it off every user's home page. Episodes never downloaded go;
+    returns how many stayed.
 
     The podcast row stays, hidden, with its downloaded episodes and the blocks
     learned from it: those blocks may be ads shared with other shows.
@@ -283,6 +284,7 @@ def remove_podcast(db: sqlite3.Connection, podcast_id: int) -> int:
             db.execute("DELETE FROM episodes WHERE id = ?", (r["id"],))
     db.execute("UPDATE podcasts SET followed = 0, feed_etag = NULL, feed_last_modified = NULL WHERE id = ?",
                (podcast_id,))
+    db.execute("DELETE FROM user_podcasts WHERE podcast_id = ?", (podcast_id,))
     db.commit()
     return stayed
 

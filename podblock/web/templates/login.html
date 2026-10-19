@@ -2,7 +2,8 @@
 {% block body_class %}auth{% endblock %}
 {% block shell %}
 <main class="auth-wrap">
-  <form class="card auth-card" method="post" action="/login">
+  <form class="card auth-card" method="post" action="/login"
+        x-data='{ name: {{ (username or "")|tojson }}, get admin() { return this.name.trim().toLowerCase() === "admin" } }'>
     <div class="auth-brand">
       <img src="{{ static('icon.svg') }}" alt="" width="48" height="48">
       <h1>pod-block</h1>
@@ -12,15 +13,21 @@
     {% if error %}<p class="alert alert-error" role="alert">{{ error }}</p>{% endif %}
 
     <label class="field">
-      <span>API key</span>
-      <input class="input mono" type="password" name="key" required autofocus
+      <span>User name</span>
+      <input class="input" type="text" name="username" value="{{ username or '' }}" required autofocus x-model="name"
+             autocomplete="username" autocapitalize="off" autocorrect="off" spellcheck="false">
+    </label>
+    <label class="field">
+      <span x-text="admin ? 'API key' : 'Password'">Password</span>
+      <input class="input" :class="admin && 'mono'" type="password" name="password" required
              autocomplete="current-password" autocapitalize="off" spellcheck="false">
     </label>
     <input type="hidden" name="next" value="{{ next }}">
     <button class="btn btn-primary btn-block" type="submit">Log in</button>
 
-    <p class="hint">The server prints the key to its log on first start.
-      Lost it? Run <code>podblock api-key</code> for a new one.</p>
+    <p class="hint">Forgot your password? Ask the admin to set a new one.</p>
+    <p class="hint">The admin logs in as <code>admin</code> with the API key, which the server prints
+      to its log on first start. Lost it? Run <code>podblock api-key</code> for a new one.</p>
   </form>
 </main>
 {% endblock %}

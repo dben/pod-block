@@ -30,6 +30,14 @@
       </div>
       {% endif %}
       <div class="show-actions">
+        <form method="post" action="/podcasts/{{ podcast.id }}/subscribe">
+          <input type="hidden" name="on" value="{{ 'false' if subscribed else 'true' }}">
+          <input type="hidden" name="next" value="/podcasts/{{ podcast.id }}">
+          <button class="btn btn-sm {{ 'btn-ghost' if subscribed else 'btn-primary' }}" type="submit"
+                  title="{{ 'On your home page. Click to unsubscribe.' if subscribed else 'Add it to your home page' }}">
+            {% if subscribed %}<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 5 5 9-10"/></svg>Subscribed{% else %}Subscribe{% endif %}
+          </button>
+        </form>
         {% if podcast.feed_url %}
         <form method="post" action="/podcasts/{{ podcast.id }}/refresh" x-data="{ busy: false }" @submit="busy = true">
           <button class="btn btn-ghost btn-sm" type="submit" :disabled="busy">
@@ -52,6 +60,7 @@
           Website
         </a>
         {% endif %}
+        {% if user.is_admin %}
         <details class="menu">
           <summary class="btn btn-ghost btn-sm icon-only" aria-label="More actions">
             <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg>
@@ -63,6 +72,7 @@
             </form>
           </div>
         </details>
+        {% endif %}
       </div>
       <p class="hint">
         {% if podcast.feed_url %}Checked {{ podcast.last_refreshed_at|ago }}{% else %}No feed; added from files{% endif %}
@@ -122,10 +132,12 @@
     </div>
     <p class="hint">No login is needed to use it, so anyone with the address can listen. It isn't listed
       anywhere and asks podcast directories not to list it.</p>
+    {% if user.is_admin %}
     <form method="post" action="/podcasts/{{ podcast.id }}/feed-token"
           data-confirm="Make a new address? Apps using the old one will stop getting episodes until you add the new one.">
       <button class="btn btn-ghost btn-sm" type="submit">Make a new address</button>
     </form>
+    {% endif %}
   </div>
   <div class="qr" aria-label="QR code of the address">{{ private_qr|safe }}</div>
 </section>

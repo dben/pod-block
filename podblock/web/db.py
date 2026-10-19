@@ -140,6 +140,22 @@ MIGRATIONS = [
     ALTER TABLE podcasts ADD COLUMN auto_download INTEGER NOT NULL DEFAULT 0;  -- download new episodes as they appear
     ALTER TABLE podcasts ADD COLUMN fill_gaps REAL NOT NULL DEFAULT 4;  -- seconds of new audio between cuts cut too
     """,
+    # 9: password logins, and the podcasts each user picked for their home page
+    """
+    ALTER TABLE users ADD COLUMN session_version INTEGER NOT NULL DEFAULT 0;  -- goes up on a password change, ending other sessions
+    ALTER TABLE users ADD COLUMN last_login_at REAL;
+    CREATE TABLE user_podcasts (
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        podcast_id INTEGER NOT NULL REFERENCES podcasts(id) ON DELETE CASCADE,
+        added_at REAL NOT NULL,
+        PRIMARY KEY (user_id, podcast_id)
+    );
+    """,
+    # 10: the admin, who saw every podcast until now, keeps seeing them all
+    """
+    INSERT OR IGNORE INTO user_podcasts (user_id, podcast_id, added_at)
+    SELECT u.id, p.id, strftime('%s', 'now') + 0.0 FROM users u, podcasts p WHERE u.is_admin = 1 AND p.followed = 1;
+    """,
 ]
 
 

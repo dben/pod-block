@@ -1,8 +1,9 @@
-"""Reading podcasts and episodes for pages, and each user's archived and kept flags."""
+"""Reading podcasts and episodes for pages, each user's archived and kept flags, and the podcasts they picked."""
 
 from __future__ import annotations
 
 import sqlite3
+import time
 
 ARCHIVED = "COALESCE(ue.archived, 0)"
 KEPT_ANY = "EXISTS (SELECT 1 FROM user_episodes k WHERE k.episode_id = e.id AND k.kept = 1)"
@@ -11,19 +12,36 @@ USER_JOIN = "LEFT JOIN user_episodes ue ON ue.episode_id = e.id AND ue.user_id =
 MAX_IDS = 5000  # per bulk action
 
 
-def podcasts(db: sqlite3.Connection, user_id: int) -> list[sqlite3.Row]:
+def podcasts(db: sqlite3.Connection, user_id: int, mine: bool = True) -> list[sqlite3.Row]:
+    """The podcasts a user picked for their home page, or every followed one; `subscribed` says which are theirs."""
     return db.execute(
-        """
-        SELECT p.*, COUNT(e.id) AS episode_count, MAX(e.pub_ts) AS latest_ts,
+        f"""
+        SELECT p.*, up.user_id IS NOT NULL AS subscribed, COUNT(e.id) AS episode_count, MAX(e.pub_ts) AS latest_ts,
                COALESCE(SUM(e.state = 'ready'), 0) AS ready_count,
                COALESCE(SUM(e.state = 'expired' AND COALESCE(ue.archived, 0) = 0), 0) AS expired_count,
                COALESCE(SUM(CASE WHEN e.cut_duration IS NOT NULL THEN e.duration - e.cut_duration END), 0) AS cut_sec
-        FROM podcasts p LEFT JOIN episodes e ON e.podcast_id = p.id
+        FROM podcasts p {'' if mine else 'LEFT '}JOIN user_podcasts up ON up.podcast_id = p.id AND up.user_id = ?
+        LEFT JOIN episodes e ON e.podcast_id = p.id
         LEFT JOIN user_episodes ue ON ue.episode_id = e.id AND ue.user_id = ?
         WHERE p.followed = 1
         GROUP BY p.id ORDER BY p.name COLLATE NOCASE
-        """, (user_id,)
+        """, (user_id, user_id)
     ).fetchall()
+
+
+def subscribed(db: sqlite3.Connection, user_id: int, podcast_id: int) -> bool:
+    return db.execute("SELECT 1 FROM user_podcasts WHERE user_id = ? AND podcast_id = ?",
+                      (user_id, podcast_id)).fetchone() is not None
+
+
+def subscribe(db: sqlite3.Connection, user_id: int, podcast_id: int, on: bool = True) -> None:
+    """Put a podcast on a user's home page, or take it off."""
+    if on:
+        db.execute("INSERT OR IGNORE INTO user_podcasts (user_id, podcast_id, added_at) VALUES (?, ?, ?)",
+                   (user_id, podcast_id, time.time()))
+    else:
+        db.execute("DELETE FROM user_podcasts WHERE user_id = ? AND podcast_id = ?", (user_id, podcast_id))
+    db.commit()
 
 
 def podcast(db: sqlite3.Connection, podcast_id: int) -> sqlite3.Row | None:
@@ -96,12 +114,14 @@ def set_kept(db: sqlite3.Connection, user_id: int, podcast_id: int | None, ids: 
 
 
 def archive_expired(db: sqlite3.Connection, user_id: int, podcast_id: int | None = None) -> list[int]:
-    """Archive every cleaned-up episode this user still has in their list, of one podcast or all of them."""
-    scope = "AND e.podcast_id = ?" if podcast_id is not None else ""
+    """Archive every cleaned-up episode this user still has in their list, of one podcast or all of theirs."""
+    if podcast_id is not None:
+        scope, args = "AND e.podcast_id = ?", [podcast_id]
+    else:
+        scope, args = "AND p.id IN (SELECT podcast_id FROM user_podcasts WHERE user_id = ?)", [user_id]
     ids = [r["id"] for r in db.execute(
         f"""SELECT e.id FROM episodes e {USER_JOIN} JOIN podcasts p ON p.id = e.podcast_id AND p.followed = 1
-            WHERE e.state = 'expired' AND {ARCHIVED} = 0 {scope}""",
-        (user_id, *([podcast_id] if podcast_id is not None else [])))]
+            WHERE e.state = 'expired' AND {ARCHIVED} = 0 {scope}""", (user_id, *args))]
     changed = []
     for start in range(0, len(ids), MAX_IDS):
         changed += set_archived(db, user_id, None, ids[start:start + MAX_IDS], True)

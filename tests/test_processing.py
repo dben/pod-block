@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 from test_feeds import FakeWeb, rss
 
 from podblock.cut import probe
-from podblock.web import background, feeds, jobs, processing
+from podblock.web import accounts, background, feeds, jobs, library, processing
 from podblock.web.app import create_app
 from podblock.web.config import Settings
 from podblock.web.db import connect
@@ -91,6 +91,7 @@ def env(tmp_path, monkeypatch, audio_files):
     client.post("/login", data={"key": "k"})
     db = connect(settings.db_path)
     pod = feeds.add_podcast(db, URL).podcast_id
+    library.subscribe(db, accounts.admin_id(db), pod)
     ids = {r["guid"]: r["id"] for r in db.execute("SELECT id, guid FROM episodes")}
     yield type("Env", (), dict(settings=settings, client=client, db=db, pod=pod, ids=ids, cdn=cdn, web=web))
     db.close()

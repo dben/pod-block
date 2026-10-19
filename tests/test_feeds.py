@@ -404,3 +404,58 @@ def test_new_episodes_download_on_their_own_when_asked(db, web):
     queued = [r[0] for r in db.execute("SELECT e.guid FROM jobs j JOIN episodes e ON e.id = j.episode_id")]
     assert queued == [f"ep-{n}" for n in range(12, 7, -1)]  # the newest
     assert "5 queued to download" in result.describe()
+
+
+CARD = 'class="podcast-name">Example Show<'  # its card on the home page
+
+
+def test_each_user_picks_the_podcasts_on_their_home_page(client, web):
+    pod = add(client, web, item(1), item(2))
+    assert CARD in client.get("/", headers=HTML).text  # adding it put it on the admin's page
+    client.post("/users", data={"username": "bob", "password": "password1"})
+    bob = TestClient(client.app, follow_redirects=False)
+    bob.post("/login", data={"username": "bob", "password": "password1"})
+
+    home = bob.get("/", headers=HTML).text
+    assert CARD not in home and "Pick your podcasts" in home
+    every = bob.get("/?view=all", headers=HTML).text
+    assert CARD in every and ">\n        Subscribe</button>" in every
+
+    res = bob.post(f"/podcasts/{pod}/subscribe", data={"on": "true", "next": "/?view=all"})
+    assert res.headers["location"] == "/?view=all"
+    assert CARD in bob.get("/", headers=HTML).text
+    assert "Unsubscribe" in bob.get("/?view=all", headers=HTML).text
+
+    client.post(f"/podcasts/{pod}/subscribe", data={"on": "false"})
+    assert CARD not in client.get("/", headers=HTML).text
+    assert CARD in bob.get("/", headers=HTML).text  # the admin's choice leaves bob's alone
+    assert "Subscribe" in client.get(f"/podcasts/{pod}", headers=HTML).text
+
+
+def test_adding_a_feed_someone_else_added_subscribes_you(client, web):
+    pod = add(client, web, item(1))
+    client.post("/users", data={"username": "bob", "password": "password1"})
+    bob = TestClient(client.app, follow_redirects=False)
+    bob.post("/login", data={"username": "bob", "password": "password1"})
+    assert bob.post("/podcasts", data={"url": URL}).headers["location"] == f"/podcasts/{pod}"
+    assert CARD in bob.get("/", headers=HTML).text
+
+
+def test_only_the_admin_removes_a_podcast_or_changes_its_feed_address(client, web):
+    pod = add(client, web, item(1))
+    client.post("/users", data={"username": "bob", "password": "password1"})
+    bob = TestClient(client.app, follow_redirects=False)
+    bob.post("/login", data={"username": "bob", "password": "password1"})
+    bob.post(f"/podcasts/{pod}/subscribe", data={"on": "true"})
+
+    show = bob.get(f"/podcasts/{pod}", headers=HTML).text
+    assert "Remove podcast" not in show and "Make a new address" not in show
+    assert bob.post(f"/podcasts/{pod}/remove").status_code == 403
+    assert bob.post(f"/podcasts/{pod}/feed-token").status_code == 403
+    assert "Remove podcast" in client.get(f"/podcasts/{pod}", headers=HTML).text
+
+    client.post(f"/podcasts/{pod}/remove")
+    assert "No podcasts yet" in bob.get("/", headers=HTML).text
+    add(client, web, item(1))  # adding it again brings it back for whoever adds it
+    assert CARD in client.get("/", headers=HTML).text
+    assert CARD not in bob.get("/", headers=HTML).text
