@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS segments (
     source_start REAL NOT NULL,
     source_end REAL NOT NULL,
     label TEXT,
+    kind TEXT,
     created_at REAL
 );
 CREATE TABLE IF NOT EXISTS segment_hashes (
@@ -75,6 +76,9 @@ class Store:
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA foreign_keys = ON")
         self.db.executescript(SCHEMA)
+        columns = {r["name"] for r in self.db.execute("PRAGMA table_info(segments)")}
+        if "kind" not in columns:  # databases made before bumper detection
+            self.db.execute("ALTER TABLE segments ADD COLUMN kind TEXT")
         self._index: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
 
     def close(self) -> None:
@@ -146,6 +150,13 @@ class Store:
         self.db.execute("UPDATE segments SET label = ? WHERE id = ?", (label, segment_id))
         self.db.commit()
 
+    def set_kinds(self, kinds: dict[int, str]) -> None:
+        """Replace every block's kind; blocks missing from `kinds` get none."""
+        self.db.execute("UPDATE segments SET kind = NULL")
+        self.db.executemany("UPDATE segments SET kind = ? WHERE id = ?",
+                            [(k, seg_id) for seg_id, k in kinds.items()])
+        self.db.commit()
+
     def segment(self, segment_id: int) -> sqlite3.Row:
         return self.db.execute("SELECT * FROM segments WHERE id = ?", (segment_id,)).fetchone()
 
@@ -155,7 +166,7 @@ class Store:
     def segment_summary(self) -> list[sqlite3.Row]:
         return self.db.execute(
             """
-            SELECT s.id, s.label, s.source_start, s.source_end,
+            SELECT s.id, s.label, s.kind, s.source_start, s.source_end,
                    s.source_end - s.source_start AS duration,
                    e.title AS source_title,
                    COUNT(o.id) AS occurrences,

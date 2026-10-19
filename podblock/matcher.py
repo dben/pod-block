@@ -16,7 +16,7 @@ from .fingerprint import FRAME_SEC, seconds_to_frames
 
 @dataclass
 class MatchParams:
-    min_length_sec: float = 10.0  # shortest shared block worth reporting
+    min_length_sec: float = 1.5  # shortest shared audio worth reporting
     bin_sec: float = 1.0  # time resolution of the hit histogram
     min_hits_per_bin: int = 3  # hash hits a bin needs to count as shared
     max_gap_sec: float = 3.0  # quiet gaps a run may bridge (pauses, crossfades)
@@ -73,17 +73,6 @@ def match_hashes(
     return rep_a, order_b[starts + within]
 
 
-def _runs_in_bins(active: np.ndarray, max_gap: int) -> list[tuple[int, int]]:
-    """Group active bin indices into [first, last] runs, bridging small gaps."""
-    idx = np.nonzero(active)[0]
-    if len(idx) == 0:
-        return []
-    breaks = np.nonzero(np.diff(idx) > max_gap + 1)[0]
-    firsts = np.concatenate(([idx[0]], idx[breaks + 1]))
-    lasts = np.concatenate((idx[breaks], [idx[-1]]))
-    return list(zip(firsts.tolist(), lasts.tolist()))
-
-
 def find_runs(t_a: np.ndarray, t_b: np.ndarray, params: MatchParams) -> list[Run]:
     """Given matched anchor times, find shared stretches of audio.
 
@@ -97,45 +86,64 @@ def find_runs(t_a: np.ndarray, t_b: np.ndarray, params: MatchParams) -> list[Run
     t_a = t_a.astype(np.int64)
     dt = t_b.astype(np.int64) - t_a
     bin_frames = max(1, seconds_to_frames(params.bin_sec))
-    min_bins = int(np.ceil(params.min_length_sec / params.bin_sec))
-    min_hits_total = params.min_hits_per_bin * min_bins
+    min_bins = max(1, int(np.ceil(params.min_length_sec / params.bin_sec)))
     max_gap = int(round(params.max_gap_sec / params.bin_sec))
-
-    offsets, counts = np.unique(dt, return_counts=True)
-    # Merge neighbouring offsets before thresholding, since small timing jitter
-    # spreads one alignment over a few adjacent frames.
     tol = params.dt_tolerance
-    cum = np.concatenate(([0], np.cumsum(counts)))
-    left = np.searchsorted(offsets, offsets - tol, side="left")
-    right = np.searchsorted(offsets, offsets + tol, side="right")
-    spread = cum[right] - cum[left]
-    candidates = np.nonzero(spread >= min_hits_total)[0]
-    candidates = candidates[np.argsort(-spread[candidates], kind="stable")]
 
+    # Count hits per (offset, bin of A) cell.
+    bins = t_a // bin_frames
+    n_bins = int(bins.max()) + 1
+    cells, counts = np.unique((dt - dt.min()) * n_bins + bins, return_counts=True)
+
+    # Small timing jitter spreads one alignment over a few adjacent offsets,
+    # so each cell also counts the hits of the same bin at nearby offsets.
+    spread = counts.copy()
+    for d in range(-tol, tol + 1):
+        if d == 0:
+            continue
+        idx = np.searchsorted(cells, cells + d * n_bins)
+        idx_ok = np.minimum(idx, len(cells) - 1)
+        found = cells[idx_ok] == cells + d * n_bins
+        spread[found] += counts[idx_ok[found]]
+
+    active = spread >= params.min_hits_per_bin
+    cells, counts = cells[active], counts[active]
+    if len(cells) == 0:
+        return []
+    offset, cell_bin = cells // n_bins, cells % n_bins
+
+    # Consecutive active cells at one offset form a run, bridging small gaps.
+    new_run = np.ones(len(cells), dtype=bool)
+    new_run[1:] = (offset[1:] != offset[:-1]) | (cell_bin[1:] - cell_bin[:-1] > max_gap + 1)
+    run_id = np.cumsum(new_run) - 1
+    first = cell_bin[new_run]
+    last = cell_bin[np.append(new_run[1:], True)]
+    run_offset = offset[new_run] + dt.min()
+    run_hits = np.bincount(run_id, weights=counts)
+    long_enough = np.nonzero(last - first + 1 >= min_bins)[0]
+
+    # Strongest first: the true offset beats its jittered neighbours, which
+    # then get dropped as overlapping.
+    coarse = [
+        Run(int(first[i]) * bin_frames, (int(last[i]) + 1) * bin_frames, int(run_offset[i]),
+            int(run_hits[i]))
+        for i in long_enough
+    ]
+    coarse = _drop_overlapping(coarse)
+
+    # Tighten each run to the hits it actually contains.
     order = np.argsort(dt, kind="stable")
     dt_sorted = dt[order]
-    done: list[int] = []
-    runs: list[Run] = []
-    for c in candidates:
-        off = int(offsets[c])
-        if any(abs(off - d) <= tol for d in done):
-            continue
-        done.append(off)
-        s = np.searchsorted(dt_sorted, off - tol, side="left")
-        e = np.searchsorted(dt_sorted, off + tol, side="right")
+    runs = []
+    for r in coarse:
+        s = np.searchsorted(dt_sorted, r.dt - tol, side="left")
+        e = np.searchsorted(dt_sorted, r.dt + tol, side="right")
         ta_sel = t_a[order[s:e]]
-        bins = np.bincount(ta_sel // bin_frames)
-        for first, last in _runs_in_bins(bins >= params.min_hits_per_bin, max_gap):
-            if last - first + 1 < min_bins:
-                continue
-            in_run = (ta_sel >= first * bin_frames) & (ta_sel < (last + 1) * bin_frames)
-            hit_times = ta_sel[in_run]
-            a_start, a_end = int(hit_times.min()), int(hit_times.max()) + 1
-            if (a_end - a_start) * FRAME_SEC < params.min_length_sec * 0.9:
-                continue
-            runs.append(Run(a_start, a_end, off, int(in_run.sum())))
-
-    return _drop_overlapping(runs)
+        hit_times = ta_sel[(ta_sel >= r.a_start) & (ta_sel < r.a_end)]
+        a_start, a_end = int(hit_times.min()), int(hit_times.max()) + 1
+        if (a_end - a_start) * FRAME_SEC >= params.min_length_sec * 0.9:
+            runs.append(Run(a_start, a_end, r.dt, len(hit_times)))
+    return sorted(runs, key=lambda r: r.a_start)
 
 
 def _overlap(a0: int, a1: int, b0: int, b1: int) -> int:
@@ -151,7 +159,7 @@ def _drop_overlapping(runs: list[Run], max_shared: float = 0.5) -> list[Run]:
         )
         if not clash:
             kept.append(r)
-    return sorted(kept, key=lambda r: r.a_start)
+    return kept
 
 
 def common_runs(

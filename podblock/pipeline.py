@@ -8,12 +8,15 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
+from .breaks import SHORT_BLOCK_SEC, classify_bumpers
 from .feed import download, fetch_feed
 from .fingerprint import Fingerprint, fingerprint_file, frames_to_seconds
 from .matcher import MatchParams, common_runs
 from .store import SegmentMatch, Store
 
 log = logging.getLogger(__name__)
+
+SHORT_MIN_OCCURRENCES = 3  # blocks under SHORT_BLOCK_SEC must turn up this often
 
 
 @dataclass
@@ -126,7 +129,52 @@ def find_common_blocks(store: Store, episode_ids: list[int], params: MatchParams
     if split_segments(store, params, load):
         for ep_id in [r["id"] for r in store.fingerprinted_episodes()]:
             store.replace_occurrences(ep_id, store.scan(load(ep_id), params))
+    drop_nested_blocks(store)
+    prune_short_blocks(store)
+    store.set_kinds(classify_bumpers(store))
     return added
+
+
+def drop_nested_blocks(store: Store, share: float = 0.8) -> int:
+    """Drop blocks that nearly always play inside a longer block.
+
+    Short runs found in one pair of episodes can be slivers of a longer block
+    found in another pair; they add nothing but clutter.
+    """
+    lengths = {r["id"]: r["duration"] for r in store.segment_summary()}
+    by_episode: dict[int, list] = {}
+    for ep in store.fingerprinted_episodes():
+        by_episode[ep["id"]] = store.occurrences_for_episode(ep["id"])
+
+    dropped = 0
+    for seg_id, length in sorted(lengths.items(), key=lambda kv: kv[1]):
+        inside = total = 0
+        for matches in by_episode.values():
+            for m in matches:
+                if m.segment_id != seg_id:
+                    continue
+                total += 1
+                inside += any(
+                    lengths.get(o.segment_id, 0) > length
+                    and min(m.end, o.end) - max(m.start, o.start) >= 0.5 * (m.end - m.start)
+                    for o in matches
+                )
+        if total and inside >= share * total:
+            store.delete_segment(seg_id)
+            del lengths[seg_id]
+            for ep_id, matches in by_episode.items():
+                by_episode[ep_id] = [m for m in matches if m.segment_id != seg_id]
+            dropped += 1
+    return dropped
+
+
+def prune_short_blocks(store: Store, min_occurrences: int = SHORT_MIN_OCCURRENCES) -> int:
+    """Drop short blocks seen too rarely to trust; a pair of 2 s clips can match by chance."""
+    weak = [r["id"] for r in store.segment_summary()
+            if r["duration"] < SHORT_BLOCK_SEC and r["occurrences"] < min_occurrences]
+    for seg_id in weak:
+        store.delete_segment(seg_id)
+    return len(weak)
 
 
 def split_segments(store: Store, params: MatchParams, load) -> int:
@@ -143,9 +191,9 @@ def split_segments(store: Store, params: MatchParams, load) -> int:
             continue
         length = seg["source_end"] - seg["source_start"]
         edges = []
-        for o in store.occurrences_for_segment(seg["id"]):
-            edges += [o["segment_start"], o["segment_start"] + o["end"] - o["start"]]
-        cuts = _cut_points(edges, length, params.min_length_sec)
+        for start, end in _joined_spans(store.occurrences_for_segment(seg["id"])):
+            edges += [start, end]
+        cuts = _cut_points(edges, length, SHORT_BLOCK_SEC)
         if not cuts:
             continue
         source = load(seg["source_episode_id"])
@@ -159,6 +207,25 @@ def split_segments(store: Store, params: MatchParams, load) -> int:
         log.info("split block %d into %d", seg["id"], len(bounds) - 1)
         split += 1
     return split
+
+
+def _joined_spans(occurrences, gap: float = 15.0, tolerance: float = 0.2) -> list[tuple[float, float]]:
+    """Spans of the block (in block time) that each occurrence covers.
+
+    A quiet patch can break one occurrence into two matches at the same
+    offset; those are joined so the patch does not look like an edge.
+    """
+    spans: list[tuple[int, float, float, float]] = []  # (episode, offset, start, end)
+    for o in sorted(occurrences, key=lambda o: (o["episode_id"], o["start"])):
+        offset = o["start"] - o["segment_start"]
+        start, end = o["segment_start"], o["segment_start"] + o["end"] - o["start"]
+        if spans:
+            ep, off, s0, s1 = spans[-1]
+            if ep == o["episode_id"] and abs(off - offset) <= tolerance and start - s1 <= gap:
+                spans[-1] = (ep, off, s0, max(s1, end))
+                continue
+        spans.append((o["episode_id"], offset, start, end))
+    return [(s0, s1) for _, _, s0, s1 in spans]
 
 
 def _cut_points(edges: list[float], length: float, min_length: float,
