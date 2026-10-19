@@ -68,7 +68,8 @@ podblock report --feed "$FEED"        # repeated sections in the newest episode
 | `intro` | hand | its podcast only | the first one stretches back to 0:00 |
 | `outro` | hand | its podcast only | the last one stretches to the end (patron names, trailers) |
 | `show` | hand | its podcast only | its own span |
-| `bumper-in` / `bumper-out` / `bumper` | automatic, or hand | every podcast | marks an ad break: everything between a bumper-in and the next bumper-out is one section, even when the ads are new |
+| `bumper-in` / `bumper-out` / `bumper` | automatic, or hand | every podcast | marks an ad break: what plays between a bumper-in and the next bumper-out is one section, even when the ads are new. The bumpers themselves are left out, since hosts often talk over them |
+| `ignored` | hand | nowhere | a false positive: never reported, but kept so the same audio isn't taken up as a new block |
 
 A block's podcast is the one it was first found in. Automatic tagging never
 overwrites a type set by hand.

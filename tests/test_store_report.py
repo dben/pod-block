@@ -78,8 +78,8 @@ def test_bumpers_turn_new_ads_into_one_section():
 
     [section] = build_sections(matches, types, 1000)
 
-    assert (section.start, section.end) == (500, 704)
-    assert section.types == [BREAK, BUMPER_IN, BUMPER_OUT]
+    assert (section.start, section.end) == (504, 700)  # the bumpers themselves stay out
+    assert section.types == [BREAK]
 
 
 def test_neighbours_alternate_newer_and_older():
@@ -131,3 +131,18 @@ def test_fingerprint_keeps_its_loudness_curve(tmp_path):
     fp.loudness = np.linspace(-60, -20, 100).astype(np.float16)
     fp.save(tmp_path / "fp.npz")
     assert np.array_equal(Fingerprint.load(tmp_path / "fp.npz").loudness, fp.loudness)
+
+
+def test_ignored_blocks_are_never_reported_or_found_again(tmp_path):
+    store = Store(tmp_path / "db.sqlite")
+    ep = store.upsert_episode("e")
+    fp = tones(7)
+    block = store.add_segment(fp, None, 0, 20)
+    store.replace_occurrences(ep, [SegmentMatch(block, 0, 20, 0, 99)])
+
+    store.set_type(block, "ignored")
+
+    assert store.scan(fp, _params()) == []
+    assert store.occurrences_for_episode(ep) == []
+    # It still covers its audio, so the same audio is not stored again.
+    assert [g for g in store.uncovered(fp, _params()) if g[1] - g[0] >= 1.5] == []

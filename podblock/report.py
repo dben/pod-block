@@ -1,8 +1,9 @@
 """Turn the block matches in one episode into a list of repeated sections.
 
-Every match of a stored block is a part. Ad breaks found from bumpers are parts
-too, covering the new ads between the bumpers, and so is an outro read over a
-music bed (see outro.py). The first intro in the first
+Every match of a stored block is a part, except bumpers: hosts often talk over
+them. Ad breaks found from bumpers are parts too, covering what plays between
+the bumpers (new ads included), and so is an outro read over a music bed (see
+outro.py). The first intro in the first
 half of an episode is stretched back to the start, and the last outro in the
 second half forward to the end, so whatever plays before the intro or after
 the outro (patron thank-yous, trailers) is included. Parts that touch, or sit
@@ -13,7 +14,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 
-from .breaks import find_breaks
+from .breaks import BUMPER_TYPES, find_breaks
 from .store import INTRO, OUTRO, REPEATED, TYPES, SegmentMatch
 
 BREAK = "break"
@@ -60,7 +61,9 @@ class Section:
 def build_sections(matches: list[SegmentMatch], types: dict[int, str], duration: float,
                    fill_gaps: float = 0.0, outro_bed_start: float | None = None) -> list[Section]:
     """`outro_bed_start` is where a talked-over music-bed outro begins, if one was found."""
-    parts = [Part(m.start, m.end, types.get(m.segment_id, REPEATED), m.segment_id) for m in matches]
+    # Bumpers only mark breaks; hosts often talk over them, so they are left out.
+    parts = [Part(m.start, m.end, types.get(m.segment_id, REPEATED), m.segment_id) for m in matches
+             if types.get(m.segment_id) not in BUMPER_TYPES]
     if outro_bed_start is not None:
         parts.append(Part(outro_bed_start, duration, OUTRO))
 
@@ -73,7 +76,7 @@ def build_sections(matches: list[SegmentMatch], types: dict[int, str], duration:
 
     # Breaks without bumpers are only their known blocks, which are parts already.
     parts += [Part(b.start, b.end, BREAK) for b in find_breaks(matches, types)
-              if b.opened_by is not None or b.closed_by is not None]
+              if (b.opened_by is not None or b.closed_by is not None) and b.length > 0]
 
     sections: list[Section] = []
     reach = max(JOIN_SEC, fill_gaps)

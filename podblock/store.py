@@ -4,6 +4,8 @@ One store holds every feed, so blocks shared across podcasts (network promos,
 ads) are found too. Each block has a type. `repeated` blocks, and the bumpers
 tagged automatically, are checked against every episode; `intro`, `outro`
 and `show` blocks only against episodes of the podcast they came from.
+`ignored` blocks, false positives flagged by hand, are never reported; they
+stay stored only so the same audio is not taken up as a new block.
 """
 
 from __future__ import annotations
@@ -22,7 +24,8 @@ SCHEMA_VERSION = "3"
 
 REPEATED, INTRO, OUTRO, SHOW = "repeated", "intro", "outro", "show"
 BUMPER_IN, BUMPER_OUT, BUMPER = "bumper-in", "bumper-out", "bumper"
-TYPES = (REPEATED, INTRO, OUTRO, SHOW, BUMPER_IN, BUMPER_OUT, BUMPER)
+IGNORED = "ignored"  # a false positive: kept so it is not found again, otherwise skipped
+TYPES = (REPEATED, INTRO, OUTRO, SHOW, BUMPER_IN, BUMPER_OUT, BUMPER, IGNORED)
 PODCAST_ONLY = {INTRO, OUTRO, SHOW}  # only checked against their own podcast
 
 SEGMENTS_TABLE = """
@@ -301,8 +304,10 @@ class Store:
             self.db.execute("UPDATE segments SET type = ?, type_manual = 0, confirmed = 0 WHERE id = ?",
                             (REPEATED, segment_id))
         elif block_type in TYPES:
-            self.db.execute("UPDATE segments SET type = ?, type_manual = 1 WHERE id = ?",
+            self.db.execute("UPDATE segments SET type = ?, type_manual = 1, confirmed = 0 WHERE id = ?",
                             (block_type, segment_id))
+            if block_type == IGNORED:  # forget where it played, so breaks and tags drop it
+                self.db.execute("DELETE FROM occurrences WHERE segment_id = ?", (segment_id,))
         else:
             raise ValueError(f"unknown type {block_type!r}; pick one of {', '.join(TYPES)}")
         self.db.commit()
@@ -403,11 +408,11 @@ class Store:
         return self._index
 
     def visible_segments(self, podcast_id: int | None) -> np.ndarray:
-        """Ids of the blocks that apply to an episode of `podcast_id`."""
+        """Ids of the blocks that apply to an episode of `podcast_id`; never ignored ones."""
         scoped = ", ".join("?" * len(PODCAST_ONLY))
         rows = self.db.execute(
-            f"SELECT id FROM segments WHERE type NOT IN ({scoped}) OR podcast_id IS ?",
-            (*PODCAST_ONLY, podcast_id),
+            f"SELECT id FROM segments WHERE type != ? AND (type NOT IN ({scoped}) OR podcast_id IS ?)",
+            (IGNORED, *PODCAST_ONLY, podcast_id),
         ).fetchall()
         return np.array([r[0] for r in rows], dtype=np.int64)
 
@@ -415,7 +420,8 @@ class Store:
              everything: bool = False, heard: bool = False) -> list[SegmentMatch]:
         """Find the stored blocks that appear in `fp`.
 
-        Only blocks that apply to `podcast_id` are used, unless `everything`.
+        Only blocks that apply to `podcast_id`, and not ignored ones, are used,
+        unless `everything`.
         With `heard`, the blocks found count as heard now, which keeps them
         from being pruned; pass it for audio being processed, not for
         rescans of episodes already stored.
