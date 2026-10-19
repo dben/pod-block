@@ -6,6 +6,7 @@ import pytest
 
 from podblock.fingerprint import SAMPLE_RATE, decode_audio, fingerprint_samples, frames_to_seconds
 from podblock.matcher import MatchParams, common_runs
+from podblock.pipeline import _cut_points
 from podblock.store import Store
 
 
@@ -97,3 +98,22 @@ def test_survives_mp3_encoding(tmp_path, jingle):
 
     assert len(runs) == 1
     assert runs[0].length_sec == pytest.approx(40, abs=3)
+
+
+def test_scan_finds_every_repeat_of_a_block(tmp_path, jingle):
+    fa = fingerprint_samples(episode([jingle, fake_audio(10, 16)]))
+    store = Store(tmp_path / "db.sqlite")
+    seg_id = store.add_segment(fa.slice(0, 40), None, 0, 40)
+
+    c = episode([fake_audio(30, 17), jingle, fake_audio(60, 18), jingle])
+    matches = store.scan(fingerprint_samples(c), MatchParams())
+
+    assert [m.segment_id for m in matches] == [seg_id, seg_id]
+    assert [round(m.start) for m in matches] == pytest.approx([30, 130], abs=2)
+
+
+def test_cut_points_keep_pieces_long_enough():
+    # Edges at 0/40/41 and 75 split a 100 s block into 0-40.5, 40.5-75, 75-100;
+    # the edge at 95 would leave a 5 s piece, so it is ignored.
+    edges = [0, 40, 41, 75, 95, 100]
+    assert _cut_points(edges, 100, 10) == pytest.approx([40.5, 75])

@@ -149,6 +149,9 @@ class Store:
     def segment(self, segment_id: int) -> sqlite3.Row:
         return self.db.execute("SELECT * FROM segments WHERE id = ?", (segment_id,)).fetchone()
 
+    def segments(self) -> list[sqlite3.Row]:
+        return self.db.execute("SELECT * FROM segments ORDER BY id").fetchall()
+
     def segment_summary(self) -> list[sqlite3.Row]:
         return self.db.execute(
             """
