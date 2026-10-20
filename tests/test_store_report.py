@@ -7,8 +7,18 @@ from podblock.feed import parse_feed
 from podblock.fingerprint import Fingerprint, FingerprintConfig
 from podblock.pipeline import neighbours
 from podblock.report import BREAK, build_sections
-from podblock.store import (BUMPER_IN, BUMPER_OUT, INTRO, OUTRO, REPEATED, Connection, SegmentMatch, Store,
-                            StoreError, transaction)
+from podblock.store import (
+    BUMPER_IN,
+    BUMPER_OUT,
+    INTRO,
+    OUTRO,
+    REPEATED,
+    Connection,
+    SegmentMatch,
+    Store,
+    StoreError,
+    transaction,
+)
 
 
 def tones(seed, n=400):
@@ -110,7 +120,9 @@ def test_music_bed_outro_found_where_the_floor_steadies():
     from podblock.fingerprint import FRAME_SEC
     from podblock.outro import music_bed_outro
     rng = np.random.default_rng(5)
-    frames = lambda sec: int(sec / FRAME_SEC)
+    def frames(sec):
+        return int(sec / FRAME_SEC)
+
     # The show: talk whose quiet moments swing between near-silence and a bed.
     show = np.repeat(rng.choice([-70.0, -40.0], size=frames(1800) // 50), 50)
     show = show + rng.normal(0, 3, len(show))

@@ -12,8 +12,7 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import FileResponse, PlainTextResponse, Response
 
 from ...app import chapters, grabs
-from ...app.private_feeds import (build_feed, build_omni, feed_by_token, omni_by_token, podcast_by_token,
-                                  ready_episode)
+from ...app.private_feeds import build_feed, build_omni, feed_by_token, omni_by_token, podcast_by_token, ready_episode
 from ..deps import base_url, get_db
 
 NOT_FOUND = PlainTextResponse("Not found", status_code=404)

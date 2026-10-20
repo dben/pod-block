@@ -283,9 +283,16 @@ user_episodes(user_id, episode_id, archived, kept)        -- web app, per user
 The web app adds its own columns to `podcasts` and `episodes` (feed metadata,
 raw XML); `WEBAPP.md` lists them.
 
-## Tests
+## Tests and lint
 
 ```sh
-pip install -e '.[test]'
-pytest
+pip install -c constraints.txt -e '.[web,test,dev]'
+pytest -m "not slow"   # about 30 seconds
+pytest                 # everything, about 5 minutes: the slow tests cut real audio and start workers
+ruff check .
 ```
+
+`constraints.txt` pins every package to the versions CI tests and the Docker
+image ships; `pyproject.toml` keeps the ranges pod-block works with. Its first
+lines say how to update it. Shared test helpers are in `tests/fakes.py`, and
+the fixtures built on them in `tests/conftest.py`.

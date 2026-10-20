@@ -9,7 +9,6 @@ from podblock.matcher import MatchParams, common_runs
 from podblock.pipeline import _cut_points
 from podblock.store import Store
 
-
 CONFIG = FingerprintConfig()
 SAMPLE_RATE = CONFIG.sample_rate
 ALL_CONFIGS = [FingerprintConfig(high_band=h, split_bands=s) for h in (False, True) for s in (False, True)]

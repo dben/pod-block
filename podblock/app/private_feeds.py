@@ -40,8 +40,8 @@ import io
 import sqlite3
 import time
 import xml.etree.ElementTree as ET
-from email.utils import format_datetime
 from datetime import datetime, timezone
+from email.utils import format_datetime
 from pathlib import Path
 
 from ..feed import ITUNES, PODCAST, PSC
@@ -310,7 +310,8 @@ def build_omni(db: sqlite3.Connection, user_id: int, base: str, token: str, by_d
     ET.SubElement(channel, f"{ITUNES}author").text = "pod-block"
     ET.SubElement(channel, f"{ITUNES}summary").text = OMNI_ABOUT
     ET.SubElement(channel, f"{ITUNES}type").text = "episodic"
-    ET.SubElement(channel, f"{ITUNES}explicit").text = "true" if any(ep["podcast_explicit"] for ep in episodes) else "false"
+    explicit = any(ep["podcast_explicit"] for ep in episodes)
+    ET.SubElement(channel, f"{ITUNES}explicit").text = "true" if explicit else "false"
     ET.SubElement(channel, f"{ITUNES}block").text = "Yes"
     ET.SubElement(channel, f"{PODCAST}locked").text = "yes"
     for ep in episodes:

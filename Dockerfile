@@ -9,9 +9,9 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY pyproject.toml README.md LICENSE ./
+COPY pyproject.toml constraints.txt README.md LICENSE ./
 COPY podblock ./podblock
-RUN pip install --no-cache-dir '.[web]'
+RUN pip install --no-cache-dir -c constraints.txt '.[web]'
 
 RUN groupadd --system --gid 1000 podblock \
     && useradd --system --uid 1000 --gid 1000 --home /data podblock \

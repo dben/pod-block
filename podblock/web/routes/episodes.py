@@ -87,7 +87,7 @@ def episode_peaks(request: Request, episode_id: int, user=Depends(current_user),
     try:
         path = processing.ensure_peaks(db, request.app.state.settings, episode_id)
     except cut.CutError as e:
-        raise HTTPException(500, str(e))
+        raise HTTPException(500, str(e)) from e
     if path is None:
         raise HTTPException(404, "No audio to draw")
     return FileResponse(path, media_type="application/json", headers={"Cache-Control": "private, max-age=86400"})

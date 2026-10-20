@@ -12,10 +12,10 @@ from __future__ import annotations
 
 import sqlite3
 import time
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator
 
 import numpy as np
 
@@ -502,7 +502,7 @@ class Store:
         starts = np.concatenate(([0], bounds))
         ends = np.concatenate((bounds, [len(matched_seg)]))
         found: list[SegmentMatch] = []
-        for s, e in zip(starts, ends):
+        for s, e in zip(starts, ends, strict=True):
             for run in find_runs(tq[s:e], tref[s:e], params):
                 found.append(SegmentMatch(
                     segment_id=int(matched_seg[s]),

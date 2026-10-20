@@ -130,5 +130,6 @@ def plural(n: int, one: str, many: str | None = None) -> str:
 
 
 templates.env.globals.update(static=static, flashes=take_flashes, active_jobs=active_jobs, expires=expires)
-templates.env.filters.update(until=until, filesize=filesize, ago=ago, day=day, duration=duration, clock=clock, web_url=web_url, plural=plural,
-                             text=html_to_text, fromjson=lambda text: json.loads(text) if text else [])
+templates.env.filters.update(until=until, filesize=filesize, ago=ago, day=day, duration=duration, clock=clock,
+                             web_url=web_url, plural=plural, text=html_to_text,
+                             fromjson=lambda text: json.loads(text) if text else [])

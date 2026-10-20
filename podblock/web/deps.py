@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
-from typing import Iterator
+from collections.abc import Iterator
 
 from fastapi import Depends, HTTPException, Request
 

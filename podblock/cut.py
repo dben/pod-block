@@ -13,9 +13,10 @@ from __future__ import annotations
 import json
 import subprocess
 import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass
+from itertools import pairwise
 from pathlib import Path
-from typing import Callable
 
 import numpy as np
 
@@ -106,7 +107,7 @@ def _ffmetadata(chapters: list[dict], length: float) -> str:
 
     lines = [";FFMETADATA1"]
     starts = [round(c["start"] * 1000) for c in chapters] + [round(length * 1000)]
-    for c, start, end in zip(chapters, starts, starts[1:]):
+    for c, (start, end) in zip(chapters, pairwise(starts), strict=True):
         if end > start:
             lines += ["[CHAPTER]", "TIMEBASE=1/1000", f"START={start}", f"END={end}", f"title={esc(c['title'])}"]
     return "\n".join(lines) + "\n"

@@ -16,9 +16,20 @@ from .feed import download, fetch_feed
 from .fingerprint import FingerprintConfig, fingerprint_file
 from .matcher import MatchParams
 from .outro import music_bed_outro
-from .pipeline import (COMPARE_OTHER, COMPARE_SAME, OTHER_WINDOW_DAYS, Paths, episode_report,
-                       find_common_blocks, ingest_episodes, ingest_feed, ingest_file,
-                       neighbours, prune, refingerprint)
+from .pipeline import (
+    COMPARE_OTHER,
+    COMPARE_SAME,
+    OTHER_WINDOW_DAYS,
+    Paths,
+    episode_report,
+    find_common_blocks,
+    ingest_episodes,
+    ingest_feed,
+    ingest_file,
+    neighbours,
+    prune,
+    refingerprint,
+)
 from .report import MIN_SECTION_SEC, build_sections
 from .store import TYPES, Store, StoreError
 
@@ -489,7 +500,8 @@ def main(argv: list[str] | None = None) -> None:
                                       "itself unless PODBLOCK_JOBS is threads or none")
     p.add_argument("--media-dir", type=Path, default=None,
                    help="where episode audio lives (default: $PODBLOCK_MEDIA_DIR, else DATA_DIR/media)")
-    p.add_argument("--workers", type=int, default=None, help="threads running jobs (default: $PODBLOCK_WORKERS, else 1)")
+    p.add_argument("--workers", type=int, default=None,
+                   help="threads running jobs (default: $PODBLOCK_WORKERS, else 1)")
     p.add_argument("--parent", type=int, default=None, help=argparse.SUPPRESS)  # the web app that started it
     p.add_argument("--ready-fd", type=int, default=None, help=argparse.SUPPRESS)  # where to say it is running
     p.set_defaults(func=cmd_worker)

@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import subprocess
 from dataclasses import asdict, dataclass
+from itertools import pairwise
 from pathlib import Path
 
 import numpy as np
@@ -76,7 +77,7 @@ class FingerprintConfig:
     def bands(self) -> list[tuple[int, int]]:
         """Frequency bands as [lo, hi) bin ranges."""
         edges = SPLIT_EDGES_HZ if self.split_bands else MAIN_BAND_HZ
-        ranges = list(zip(edges, edges[1:]))
+        ranges = list(pairwise(edges))
         if self.high_band:
             ranges.append(HIGH_BAND_HZ)
         return [(int(lo / BIN_HZ), int(hi / BIN_HZ)) for lo, hi in ranges]
@@ -90,7 +91,7 @@ class FingerprintConfig:
         return json.dumps(asdict(self), sort_keys=True)
 
     @classmethod
-    def from_json(cls, text: str) -> "FingerprintConfig":
+    def from_json(cls, text: str) -> FingerprintConfig:
         return cls(**json.loads(text))
 
 
@@ -111,14 +112,14 @@ class Fingerprint:
         )
 
     @classmethod
-    def load(cls, path: Path) -> "Fingerprint":
+    def load(cls, path: Path) -> Fingerprint:
         with np.load(path) as data:
             config = str(data["config"]) if "config" in data else ""
             return cls(data["hashes"], data["times"], float(data["duration"]),
                        FingerprintConfig.from_json(config) if config else None,
                        data["loudness"] if "loudness" in data else None)
 
-    def slice(self, start_sec: float, end_sec: float) -> "Fingerprint":
+    def slice(self, start_sec: float, end_sec: float) -> Fingerprint:
         """Hashes whose anchor falls inside [start, end), re-timed to start at 0."""
         lo, hi = seconds_to_frames(start_sec), seconds_to_frames(end_sec)
         keep = (self.times >= lo) & (self.times < hi)

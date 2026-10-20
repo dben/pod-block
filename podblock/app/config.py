@@ -8,7 +8,6 @@ from pathlib import Path
 
 from .media import Media
 
-
 JOBS = ("process", "threads", "none")
 
 
@@ -46,7 +45,7 @@ class Settings:
         return Media(self.media_dir)
 
     @classmethod
-    def from_env(cls, data_dir: Path | None = None, media_dir: Path | None = None) -> "Settings":
+    def from_env(cls, data_dir: Path | None = None, media_dir: Path | None = None) -> Settings:
         data_dir = data_dir or Path(os.environ.get("PODBLOCK_DATA_DIR", "podblock-data"))
         media_dir = media_dir or Path(os.environ.get("PODBLOCK_MEDIA_DIR") or data_dir / "media")
         return cls(

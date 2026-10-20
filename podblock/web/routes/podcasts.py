@@ -86,7 +86,8 @@ def subscribe(request: Request, podcast_id: int, on: bool = Form(...), next: str
 
 
 @router.post("/omni-token")
-def new_omni_address(request: Request, user=Depends(current_user), db: sqlite3.Connection = Depends(get_db)) -> Response:
+def new_omni_address(request: Request, user=Depends(current_user),
+                     db: sqlite3.Connection = Depends(get_db)) -> Response:
     """Give your omni feed a new address."""
     private_feeds.new_omni_token(db, user["id"])
     flash(request, "Your omni feed has a new address. The old one no longer works.")
@@ -94,7 +95,8 @@ def new_omni_address(request: Request, user=Depends(current_user), db: sqlite3.C
 
 
 @router.post("/episodes/archive-expired")
-def archive_all_expired(request: Request, user=Depends(current_user), db: sqlite3.Connection = Depends(get_db)) -> Response:
+def archive_all_expired(request: Request, user=Depends(current_user),
+                        db: sqlite3.Connection = Depends(get_db)) -> Response:
     """Archive every cleaned-up episode, of every podcast, for this user."""
     changed = library.archive_expired(db, user["id"])
     flash(request, f"Archived {len(changed):,} cleaned-up {'episode' if len(changed) == 1 else 'episodes'}.")

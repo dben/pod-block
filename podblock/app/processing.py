@@ -73,7 +73,8 @@ def _fetch(ctx: Context, settings: Settings, store: Store, paths: Paths, episode
         original = settings.media.original(ep)
         ctx.step("Downloading", episode_id)
         try:
-            download(ep["audio_url"], original, progress=lambda done, total: ctx.progress(done / total if total else None))
+            download(ep["audio_url"], original,
+                     progress=lambda done, total: ctx.progress(done / total if total else None))
         except (Cancelled, ProcessError):
             raise
         except Exception as e:

@@ -94,7 +94,7 @@ class Shift:
     def joins(self) -> list[tuple[float, float, float]]:
         """Each cut that has kept audio after it: where it is in the cut audio, and what it took out."""
         found, prev = [], 0.0
-        for (a, b), at in zip(self.keep, self.offsets):
+        for (a, b), at in zip(self.keep, self.offsets[:-1], strict=True):  # each kept stretch, and where it starts
             if a - prev > 0.01:
                 found.append((at, prev, a))
             prev = b
@@ -340,7 +340,8 @@ def _shift_json(text: str, shift: Shift) -> str:
         end = shift(seg["endTime"]) if isinstance(seg.get("endTime"), (int, float)) else None
         if end is not None and end - start < 0.01:
             continue
-        segments.append({**seg, "startTime": round(start, 3), **({"endTime": round(end, 3)} if end is not None else {})})
+        ends = {"endTime": round(end, 3)} if end is not None else {}
+        segments.append({**seg, "startTime": round(start, 3), **ends})
     return json.dumps({**doc, "segments": segments}, ensure_ascii=False)
 
 

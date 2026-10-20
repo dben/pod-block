@@ -190,7 +190,8 @@ def counts(db: sqlite3.Connection, user_id: int, podcast_id: int) -> dict[str, i
 
 def _set_flag(db: sqlite3.Connection, flag: str, user_id: int, podcast_id: int | None, ids: list[int],
               value: bool) -> list[int]:
-    """Set a user's `archived` or `kept` flag on episodes (of one podcast, unless None). Returns the ids that changed."""
+    """Set a user's `archived` or `kept` flag on episodes (of one podcast, unless None). Returns the ids that
+    changed."""
     assert flag in ("archived", "kept")
     ids = list(dict.fromkeys(ids))[:MAX_IDS]
     if not ids:

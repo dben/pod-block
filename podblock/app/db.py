@@ -151,7 +151,8 @@ MIGRATIONS = [
     """,
     # 9: password logins, and the podcasts each user picked for their home page
     """
-    ALTER TABLE users ADD COLUMN session_version INTEGER NOT NULL DEFAULT 0;  -- goes up on a password change, ending other sessions
+    -- session_version goes up on a password change, ending the user's other sessions
+    ALTER TABLE users ADD COLUMN session_version INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE users ADD COLUMN last_login_at REAL;
     CREATE TABLE user_podcasts (
         user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -203,8 +204,8 @@ MIGRATIONS = [
     # 14: chapters and transcripts, shifted to fit the cut audio; and each time a user grabs an episode,
     # through their feed or in the app
     """
-    ALTER TABLE episodes ADD COLUMN source_chapters TEXT;  -- JSON list, from the feed or the file; NULL until looked for
-    ALTER TABLE episodes ADD COLUMN transcripts TEXT;  -- JSON list of the source's transcripts saved under the media folder
+    ALTER TABLE episodes ADD COLUMN source_chapters TEXT;  -- JSON list, from the feed or file; NULL until looked for
+    ALTER TABLE episodes ADD COLUMN transcripts TEXT;  -- JSON list of the source's transcripts, saved as files
     ALTER TABLE episodes ADD COLUMN cut_chapters TEXT;  -- JSON list of the chapters written into the cut file
     CREATE TABLE grabs (
         id INTEGER PRIMARY KEY,
