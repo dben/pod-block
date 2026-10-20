@@ -5,6 +5,18 @@
   <div>
     <h1>Podcasts</h1>
     <p class="muted">{{ mine_count|plural('feed') }} on your home page</p>
+    {% if space.disk and space.disk.total %}
+    {% set ours = 100 * space.used / space.disk.total %}
+    {% set others = 100 * [space.disk.used - space.used, 0]|max / space.disk.total %}
+    {% set about = space.used|filesize ~ ' of ' ~ space.disk.total|filesize ~ ' used by downloads, ' ~ space.disk.free|filesize ~ ' free' %}
+    {% if user.is_admin %}<a class="usage-mini" href="/downloads" title="See every download">{% else %}<div class="usage-mini">{% endif %}
+      <span class="usage-bar usage-bar-sm" role="img" aria-label="Downloads use {{ '%.1f'|format(ours) }}% of the space">
+        <span class="usage-ours" style="width: {{ '%.2f'|format(ours) }}%"></span>
+        <span class="usage-others" style="width: {{ '%.2f'|format(others) }}%"></span>
+      </span>
+      <span>{{ about }}</span>
+    {% if user.is_admin %}</a>{% else %}</div>{% endif %}
+    {% endif %}
   </div>
   <div class="page-head-actions">
   <a class="btn btn-ghost btn-sm" href="/?omni=1" @click.prevent="omni = !omni" :aria-expanded="omni"

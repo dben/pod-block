@@ -17,6 +17,7 @@ from datetime import datetime
 from pathlib import Path
 
 from ..store import Store
+from . import locks
 
 MAX_TITLE = 500  # characters of a title that filters look at
 
@@ -195,6 +196,27 @@ MIGRATIONS = [
     CREATE UNIQUE INDEX users_omni_token ON users(omni_token);
     ALTER TABLE podcasts ADD COLUMN sort_oldest INTEGER NOT NULL DEFAULT 0;  -- list episodes oldest first
     """,
+    # 14: chapters and transcripts, shifted to fit the cut audio; and each time a user grabs an episode,
+    # through their feed or in the app
+    """
+    ALTER TABLE episodes ADD COLUMN source_chapters TEXT;  -- JSON list, from the feed or the file; NULL until looked for
+    ALTER TABLE episodes ADD COLUMN transcripts TEXT;  -- JSON list of the source's transcripts saved under the media folder
+    ALTER TABLE episodes ADD COLUMN cut_chapters TEXT;  -- JSON list of the chapters written into the cut file
+    CREATE TABLE grabs (
+        id INTEGER PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        episode_id INTEGER NOT NULL REFERENCES episodes(id) ON DELETE CASCADE,
+        via TEXT NOT NULL,  -- feed, omni, app (played on the episode page) or download (its Download button)
+        first_at REAL NOT NULL,
+        last_at REAL NOT NULL,  -- hits soon after this count as the same grab
+        hits INTEGER NOT NULL DEFAULT 1
+    );
+    CREATE INDEX grabs_user_episode ON grabs(user_id, episode_id, last_at);
+    """,
+    # 15: the job working on each episode, so two workers never work on one at once
+    """
+    ALTER TABLE episodes ADD COLUMN held_by INTEGER;  -- the running job working on it: its own, or taken along
+    """,
 ]
 
 
@@ -245,6 +267,11 @@ def set_setting(db: sqlite3.Connection, key: str, value: str) -> None:
 
 def prepare(path: Path) -> None:
     """Make or upgrade the database: the detector's tables first, then the app's."""
+    with locks.exclusive(path.with_name("migrate.lock")):  # the web app and a worker may start together
+        _prepare(path)
+
+
+def _prepare(path: Path) -> None:
     Store(path).close()  # creates the detector's tables; raises StoreError on a foreign store
     db = connect(path)
     try:

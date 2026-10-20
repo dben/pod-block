@@ -11,7 +11,6 @@ import json
 import logging
 import re
 import sqlite3
-import threading
 import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
@@ -20,18 +19,22 @@ from html.parser import HTMLParser
 import requests
 
 from ..feed import CONTENT, ITUNES, Feed, FeedError, get_feed, parse_feed
-from . import filters, jobs
+from . import filters, jobs, locks
 from .db import new_token
 
 log = logging.getLogger(__name__)
 
 SUMMARY_CHARS = 400
 AUTO_DOWNLOAD_MAX = 5  # a refresh queues at most this many new episodes, should a feed re-issue its back catalogue
-_refreshing = threading.Lock()  # one refresh at a time, so two can't insert the same episode
 
 
 class RefreshError(Exception):
     pass
+
+
+def _refreshing(db: sqlite3.Connection):
+    """One refresh at a time, in the web app and the job process both, so two can't insert the same episode."""
+    return locks.exclusive(locks.beside(db, "refresh"))
 
 
 @dataclass
@@ -129,7 +132,7 @@ def add_podcast(db: sqlite3.Connection, url: str) -> Refreshed:
         return refresh(db, row["id"], conditional=False)
     fetched = _fetch(url)
     feed = _parse(fetched.xml, url)
-    with _refreshing:
+    with _refreshing(db):
         cur = db.execute("INSERT INTO podcasts (name, feed_url, added_at, public_token) VALUES (?, ?, ?, ?)",
                          (feed.title, url, time.time(), new_token()))
         result = _apply(db, cur.lastrowid, feed, fetched.etag, fetched.last_modified)
@@ -157,7 +160,7 @@ def refresh(db: sqlite3.Connection, podcast_id: int, conditional: bool = True) -
                    (time.time(), str(e), podcast_id))
         db.commit()
         raise
-    with _refreshing:
+    with _refreshing(db):
         result = _apply(db, podcast_id, feed, fetched.etag, fetched.last_modified)
     result.moved_to = _follow_move(db, pod, fetched.moved_to or feed.new_url)
     if pod["auto_download"] and result.new_ids:

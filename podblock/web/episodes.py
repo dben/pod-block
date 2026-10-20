@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 
 from .. import cut
-from . import jobs, library, processing
+from . import grabs, jobs, library, processing
 from .deps import current_user, get_db
 from .feeds import show_notes
 from .templating import flash, page
@@ -27,10 +27,10 @@ def wake_worker(request: Request) -> None:
 def _episode(db: sqlite3.Connection, user_id: int, episode_id: int) -> sqlite3.Row:
     row = db.execute(
         f"""SELECT e.*, COALESCE(ue.archived, 0) AS archived, COALESCE(ue.kept, 0) AS kept,
-                  {library.KEPT_ANY} AS kept_any, p.retention_days
+                  {library.KEPT_ANY} AS kept_any, {library.GRABS}, p.retention_days
            FROM episodes e JOIN podcasts p ON p.id = e.podcast_id AND p.followed = 1
            LEFT JOIN user_episodes ue ON ue.episode_id = e.id AND ue.user_id = ?
-           WHERE e.id = ?""", (user_id, episode_id)).fetchone()
+           WHERE e.id = ?""", (user_id, user_id, user_id, episode_id)).fetchone()
     if row is None:
         raise HTTPException(404, "No such episode")
     return row
@@ -62,7 +62,8 @@ def show_episode(request: Request, episode_id: int, user=Depends(current_user),
                 "editable": ep["state"] == "ready", "audio": f"/episodes/{episode_id}/original",
                 "peaks": f"/episodes/{episode_id}/peaks", "save": f"/episodes/{episode_id}/edits"}
     return page(request, "episode.html", title=ep["title"], nav="podcasts", user=user, episode=ep,
-                podcast=podcast, report=report, job=job, notes=show_notes(ep["item_xml"]), timeline=data)
+                podcast=podcast, report=report, job=job, notes=show_notes(ep["item_xml"]), timeline=data,
+                play_needed=round(grabs.play_needed(ep["cut_duration"] or ep["duration"])))
 
 
 @router.get("/episodes/{episode_id}/peaks")
@@ -119,10 +120,21 @@ def episode_status(request: Request, episode_id: int, user=Depends(current_user)
 
 
 @router.get("/episodes/{episode_id}/audio")
-def cut_audio(episode_id: int, download: bool = False, user=Depends(current_user),
+def cut_audio(request: Request, episode_id: int, download: bool = False, user=Depends(current_user),
               db: sqlite3.Connection = Depends(get_db)) -> Response:
+    """The cut audio, for the page's player; with `download`, as a file to save, which counts as a grab."""
     ep = _episode(db, user["id"], episode_id)
-    return _audio(ep["cut_path"], ep["title"], download)
+    response = _audio(ep["cut_path"], ep["title"], download)
+    if download:
+        grabs.record(db, user["id"], episode_id, "download", resumed=grabs.resumed(request.headers.get("range")))
+    return response
+
+
+@router.post("/episodes/{episode_id}/played")
+def played(episode_id: int, user=Depends(current_user), db: sqlite3.Connection = Depends(get_db)) -> Response:
+    """The page's player has played enough of the episode to count as a grab (see `grabs.play_needed`)."""
+    _episode(db, user["id"], episode_id)
+    return JSONResponse({"new": grabs.record(db, user["id"], episode_id, "app")})
 
 
 @router.get("/episodes/{episode_id}/original")
@@ -155,7 +167,9 @@ def process_episode(request: Request, episode_id: int, user=Depends(current_user
 
 @router.get("/jobs")
 def jobs_page(request: Request, user=Depends(current_user), db: sqlite3.Connection = Depends(get_db)) -> Response:
-    return page(request, "jobs.html", title="Jobs", nav="jobs", user=user, jobs=jobs.listing(db))
+    background = getattr(request.app.state, "background", None)
+    return page(request, "jobs.html", title="Jobs", nav="jobs", user=user, jobs=jobs.listing(db),
+                worker_down=background is not None and not background.running())
 
 
 @router.post("/jobs/{job_id}/cancel")

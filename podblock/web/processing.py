@@ -24,8 +24,9 @@ from ..fingerprint import fingerprint_file
 from ..matcher import MatchParams
 from ..pipeline import Paths, episode_report, find_common_blocks, load_fingerprint, rescan
 from ..store import BUMPER, BUMPER_IN, BUMPER_OUT, IGNORED, INTRO, OUTRO, PODCAST_ONLY, REPEATED, SHOW, Store
+from . import chapters
 from .config import Settings
-from .jobs import Cancelled, Context, enqueue, settle_episode
+from .jobs import Cancelled, Context, enqueue, settle_episode, take_along
 
 log = logging.getLogger(__name__)
 
@@ -66,7 +67,8 @@ def companions(db: sqlite3.Connection, ep: sqlite3.Row, count: int) -> list[sqli
     if count <= 0 or ep["pub_ts"] is None:
         return []
     usable = """podcast_id = ? AND id != ? AND fingerprint_path IS NULL AND audio_url IS NOT NULL
-                AND in_feed = 1 AND skip_processing = 0 AND COALESCE(state, '') NOT IN ('queued', 'running')"""
+                AND in_feed = 1 AND skip_processing = 0 AND COALESCE(state, '') NOT IN ('queued', 'running')
+                AND held_by IS NULL"""
     after = db.execute(f"SELECT * FROM episodes WHERE {usable} AND pub_ts > ? ORDER BY pub_ts LIMIT ?",
                        (ep["podcast_id"], ep["id"], ep["pub_ts"], count)).fetchall()
     before = db.execute(f"SELECT * FROM episodes WHERE {usable} AND pub_ts <= ? ORDER BY pub_ts DESC LIMIT ?",
@@ -123,7 +125,14 @@ def _render(ctx: Context, settings: Settings, episode_id: int, report: dict) -> 
     if not keep:
         raise ProcessError("the whole episode was found to repeat, so nothing would be left")
     spec = json.dumps([[round(a, 2), round(b, 2)] for a, b in keep])
-    if spec == ep["cut_spec"] and ep["cut_path"] and Path(ep["cut_path"]).exists():
+    if ep["source_chapters"] is None:
+        ctx.step("Reading chapters", episode_id)
+        chapters.gather(ctx.db, ep, settings.media_dir / "transcripts" / media_key(ep["guid"]))
+        ep = _episode(ctx.db, episode_id)
+    edits = ctx.db.execute("SELECT start, end FROM edits WHERE episode_id = ?", (episode_id,)).fetchall()
+    marks = chapters.build(json.loads(spec), chapters.cuts(report, edits), json.loads(ep["source_chapters"]))
+    if (spec == ep["cut_spec"] and json.dumps(marks) == ep["cut_chapters"] and ep["cut_path"]
+            and Path(ep["cut_path"]).exists()):
         ctx.db.execute("UPDATE episodes SET state = 'ready', state_note = NULL, ready_at = COALESCE(ready_at, ?) "
                        "WHERE id = ?", (time.time(), episode_id))
         ctx.db.commit()  # nothing to cut differently
@@ -131,16 +140,17 @@ def _render(ctx: Context, settings: Settings, episode_id: int, report: dict) -> 
     ctx.step("Cutting", episode_id)
     try:
         out = cut.render(Path(ep["original_path"]), settings.media_dir / "cut" / media_key(ep["guid"]), keep,
-                         progress=ctx.progress)
+                         progress=ctx.progress, chapters=marks)
     except cut.CutError as e:
         raise ProcessError(str(e)) from None
     if ep["cut_path"] and Path(ep["cut_path"]) != out.path:
         Path(ep["cut_path"]).unlink(missing_ok=True)
     ctx.db.execute(
         """UPDATE episodes SET state = 'ready', state_note = NULL, cut_path = ?, cut_type = ?, cut_duration = ?,
-                  cut_bytes = ?, cut_spec = ?, processed_at = ?, ready_at = COALESCE(ready_at, ?), expired_at = NULL,
-                  ever_downloaded = 1 WHERE id = ?""",
-        (str(out.path), out.mime, out.duration, out.size, spec, time.time(), time.time(), episode_id))
+                  cut_bytes = ?, cut_spec = ?, cut_chapters = ?, processed_at = ?, ready_at = COALESCE(ready_at, ?),
+                  expired_at = NULL, ever_downloaded = 1 WHERE id = ?""",
+        (str(out.path), out.mime, out.duration, out.size, spec, json.dumps(marks), time.time(), time.time(),
+         episode_id))
     ctx.db.commit()
 
 
@@ -176,13 +186,9 @@ def run(ctx: Context, settings: Settings) -> None:
         have = ctx.db.execute("SELECT COUNT(*) FROM episodes WHERE podcast_id = ? AND fingerprint_path IS NOT NULL "
                               "AND skip_processing = 0", (ep["podcast_id"],)).fetchone()[0]
         extra = companions(ctx.db, ep, COMPARE_WITH - have) if learn else []
-        for c in extra:
-            ctx.db.execute("UPDATE episodes SET state = 'queued', state_note = ? WHERE id = ?",
-                           (f"Coming along with “{ep['title']}”", c["id"]))
-        ctx.db.commit()
-        group += [c["id"] for c in extra]
-        for c in extra:
-            _fetch(ctx, settings, store, paths, c["id"])
+        group += take_along(ctx.db, ctx.job["id"], [c["id"] for c in extra], f"Coming along with “{ep['title']}”")
+        for other in group[1:]:
+            _fetch(ctx, settings, store, paths, other)
 
         ctx.step("Finding repeats", episode_id)
         for other in group[1:]:

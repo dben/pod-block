@@ -8,3 +8,5 @@
 {% elif e.kept_any %}<span class="badge badge-kept" title="Someone is keeping it, so it won't be cleaned up">Kept</span>
 {% else %}{% set ex = expires(e, podcast) %}{% if ex %}<span class="ep-expiry" title="Downloads go {{ podcast.retention_days }} days after they're ready unless kept">Cleaned up {{ ex|until }}</span>{% endif %}
 {% endif %}
+{% if e.grabs %}<span class="badge badge-grab" title="You grabbed it {{ e.grabs|plural('time') }}, last {{ e.grabbed_at|ago }}"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11m-4.5-4.5L12 15l4.5-4.5M5 20h14"/></svg>Grabbed{% if e.grabs > 1 %} ×{{ e.grabs }}{% endif %}</span>
+{% endif %}

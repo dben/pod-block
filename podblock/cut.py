@@ -4,7 +4,8 @@ One ffmpeg decodes the episode to raw samples, the kept stretches go through
 here with their edges faded, and a second ffmpeg encodes them in the source's
 format at about its bitrate. Memory stays the same whatever the length, and
 cuts land on the exact sample. Tags and cover art are copied from the
-source; chapters are dropped, since their times would be wrong.
+source. The source's chapters are dropped, since their times would be wrong;
+the caller passes chapters that fit the cut (see `podblock/web/chapters.py`).
 """
 
 from __future__ import annotations
@@ -82,6 +83,35 @@ def probe(path: Path) -> Probe:
                  duration=float(length) if length else None)
 
 
+def chapters(path: Path) -> list[dict]:
+    """The chapters in an audio file: start and end in seconds, and title."""
+    out = subprocess.run(["ffprobe", "-v", "error", "-show_chapters", "-print_format", "json", str(path)],
+                         capture_output=True, text=True)
+    if out.returncode != 0:
+        raise CutError(f"ffprobe couldn't read {path.name}: {out.stderr.strip()[:200]}")
+    found = []
+    for c in json.loads(out.stdout or "{}").get("chapters", []):
+        try:
+            found.append({"start": float(c["start_time"]), "end": float(c["end_time"]),
+                          "title": (c.get("tags") or {}).get("title", "").strip()})
+        except (KeyError, ValueError):
+            continue
+    return sorted(found, key=lambda c: c["start"])
+
+
+def _ffmetadata(chapters: list[dict], length: float) -> str:
+    """Chapters as ffmpeg's metadata file: each runs to the next one's start, the last to the end."""
+    def esc(text: str) -> str:
+        return "".join("\\" + ch if ch in "=;#\\\n" else ch for ch in text)
+
+    lines = [";FFMETADATA1"]
+    starts = [round(c["start"] * 1000) for c in chapters] + [round(length * 1000)]
+    for c, start, end in zip(chapters, starts, starts[1:]):
+        if end > start:
+            lines += ["[CHAPTER]", "TIMEBASE=1/1000", f"START={start}", f"END={end}", f"title={esc(c['title'])}"]
+    return "\n".join(lines) + "\n"
+
+
 def keep_spans(cuts: list[tuple[float, float]], duration: float,
                min_keep: float = MIN_KEEP_SEC) -> list[tuple[float, float]]:
     """The stretches of [0, duration] outside every cut, leaving out slivers."""
@@ -116,9 +146,10 @@ def _gain(start: int, end: int, span: tuple[int, int], fade: int, fade_in: bool,
 
 
 def render(source: Path, dest_stem: Path, keep: list[tuple[float, float]],
-           progress: Callable[[float], None] | None = None) -> Rendered:
+           progress: Callable[[float], None] | None = None, chapters: list[dict] | None = None) -> Rendered:
     """Write the `keep` stretches of `source`, in order, to `dest_stem` plus a suffix for its format.
 
+    `chapters` ({start, title}, in the cut's time) are written into the file.
     `progress(fraction)` is called as it goes; an exception it raises stops the render.
     """
     info = probe(source)
@@ -137,7 +168,13 @@ def render(source: Path, dest_stem: Path, keep: list[tuple[float, float]],
     decode_cmd = ["ffmpeg", "-v", "error", "-nostdin", "-i", str(source), "-map", "0:a:0",
                   "-f", "s16le", "-acodec", "pcm_s16le", "-ar", str(sr), "-ac", str(ch), "pipe:1"]
     encode_cmd = ["ffmpeg", "-v", "error", "-y", "-f", "s16le", "-ar", str(sr), "-ac", str(ch), "-i", "pipe:0",
-                  "-i", str(source), "-map", "0:a", "-map_metadata", "1", "-map_chapters", "-1"]
+                  "-i", str(source)]
+    meta = tempfile.NamedTemporaryFile("w", suffix=".txt", encoding="utf-8", delete=False) if chapters else None
+    if meta:
+        with meta:
+            meta.write(_ffmetadata(chapters, total / sr))
+        encode_cmd += ["-f", "ffmetadata", "-i", meta.name]
+    encode_cmd += ["-map", "0:a", "-map_metadata", "1", "-map_chapters", "2" if meta else "-1"]
     if out.cover_art:
         encode_cmd += ["-map", "1:v?", "-c:v", "copy", "-disposition:v", "attached_pic"]
     encode_cmd += [*out.args, "-b:a", _bitrate(info), "-f", out.format, str(tmp)]
@@ -202,6 +239,8 @@ def render(source: Path, dest_stem: Path, keep: list[tuple[float, float]],
                     proc.kill()
                 proc.wait()
             dec.stdout.close()
+            if meta:
+                Path(meta.name).unlink(missing_ok=True)
     tmp.replace(dest)
     return Rendered(dest, out.mime, written / sr, dest.stat().st_size)
 

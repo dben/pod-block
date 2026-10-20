@@ -9,14 +9,14 @@ import segno
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 
-from . import directory, feeds, filters, jobs, library, publish
+from . import directory, downloads, feeds, filters, jobs, library, publish
 from .episodes import wake_worker
 from .deps import admin_user, current_user, get_db
 from .templating import flash, page
 
 PAGE_SIZE = 50
 VIEWS = {"active": (False, False), "archived": (True, False), "downloaded": (False, True),  # (archived, downloaded)
-         "filtered": (False, False)}
+         "grabbed": (False, False), "filtered": (False, False)}
 TABS = ("episodes", "feed", "filters", "settings")
 RETENTION_DAYS = (0, 3650)
 REFRESH_MINUTES = (15, 7 * 24 * 60)
@@ -67,7 +67,7 @@ def _home(request: Request, user, db: sqlite3.Connection, view: str = "mine", st
                 podcasts=shown, view=view, mine_count=mine, all_count=everything, expired_total=expired_total,
                 omni_addresses=_addresses(request, publish.omni_token(db, user["id"])),
                 omni_count=len(publish.omni_published(db, user["id"])),
-                search=search, **context)
+                space=downloads.space(db, request.app.state.settings.media_dir), search=search, **context)
 
 
 @router.get("/")
@@ -137,13 +137,13 @@ def show_podcast(request: Request, podcast_id: int, view: str = "active", q: str
         archived, downloaded = VIEWS[view]
         rows, total = library.episodes(db, user["id"], podcast_id, archived, q, limit=PAGE_SIZE,
                                        offset=(page_no - 1) * PAGE_SIZE, downloaded=downloaded,
-                                       filtered=view == "filtered", oldest_first=bool(pod["sort_oldest"]))
+                                       filtered=view == "filtered", grabbed=view == "grabbed",
+                                       oldest_first=bool(pod["sort_oldest"]))
         more = page_no * PAGE_SIZE < total
         context.update(episodes=rows, total=total,
                        next_url=f"/podcasts/{podcast_id}?{urlencode({**query, 'page': page_no + 1})}" if more else None)
         if partial:
             return page(request, "_episodes.html", **context)
-    publish.ensure_token(db, podcast_id)  # for the audio links
     if tab == "feed":
         context.update(private_addresses=_addresses(request, publish.feed_token(db, user["id"], podcast_id)),
                        private_count=len(publish.published(db, podcast_id, user["id"])))

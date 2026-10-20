@@ -3,6 +3,12 @@
 Pages add jobs; worker threads (background.py) claim them one at a time and
 run them. A job reports what it is doing through its `Context`, which also
 stops it, between steps or mid-download, when someone cancels it.
+
+Only one job works on an episode at a time. A running job holds its own
+episode and the ones it takes along (`episodes.held_by`) until it finishes.
+A job asked for meanwhile waits in the queue until then, and an episode has
+at most one job waiting. `episodes.state` is only what pages show: a job
+moves it back and forth as it goes, so it can't say who may start one.
 """
 
 from __future__ import annotations
@@ -20,25 +26,74 @@ class Cancelled(Exception):
     pass
 
 
+HELD = "COALESCE(e.held_by IN (SELECT id FROM jobs WHERE state = 'running'), 0)"
+WAITING = "EXISTS (SELECT 1 FROM jobs w WHERE w.episode_id = e.id AND w.state = 'queued')"
+
+
+def _immediate(db: sqlite3.Connection) -> None:
+    """Start a write transaction now, so what is read next can't change before it is written."""
+    db.commit()
+    db.execute("BEGIN IMMEDIATE")
+
+
 def enqueue(db: sqlite3.Connection, kind: str, episode_ids: list[int], user_id: int | None,
             skip_ready: bool = True, payload: str | None = None, note: str | None = None) -> list[int]:
-    """Queue a job per episode, unless it already has one queued or running. Returns the episodes queued."""
+    """Queue a job per episode, unless one is already waiting. An episode a running job holds gets one that
+    waits for it, unless `skip_ready` (a plain download: that job is getting it ready anyway), which also
+    skips ready ones. Returns the episodes queued."""
     ids = list(dict.fromkeys(episode_ids))
     if not ids:
         return []
     marks = ", ".join("?" * len(ids))
-    rows = db.execute(f"SELECT id, state FROM episodes WHERE id IN ({marks})", ids).fetchall()
-    states = {r["id"]: r["state"] for r in rows}
     queued, now = [], time.time()
-    for ep_id in ids:
-        if ep_id not in states or states[ep_id] in ACTIVE or (skip_ready and states[ep_id] == "ready"):
-            continue
-        db.execute("INSERT INTO jobs (kind, episode_id, requested_by, created_at, payload) VALUES (?, ?, ?, ?, ?)",
-                   (kind, ep_id, user_id, now, payload))
-        db.execute("UPDATE episodes SET state = 'queued', state_note = ? WHERE id = ?", (note, ep_id))
-        queued.append(ep_id)
-    db.commit()
+    _immediate(db)
+    try:
+        rows = db.execute(f"SELECT e.id, e.state, {HELD} AS held, {WAITING} AS waiting FROM episodes e "
+                          f"WHERE e.id IN ({marks})", ids).fetchall()
+        found = {r["id"]: r for r in rows}
+        for ep_id in ids:
+            r = found.get(ep_id)
+            if r is None or r["waiting"] or (skip_ready and (r["held"] or r["state"] in (*ACTIVE, "ready"))):
+                continue
+            db.execute("INSERT INTO jobs (kind, episode_id, requested_by, created_at, payload) VALUES (?, ?, ?, ?, ?)",
+                       (kind, ep_id, user_id, now, payload))
+            if not r["held"]:  # a held one shows what its job is doing, and goes to queued when that finishes
+                db.execute("UPDATE episodes SET state = 'queued', state_note = ? WHERE id = ?", (note, ep_id))
+            queued.append(ep_id)
+        db.commit()
+    except BaseException:
+        db.rollback()
+        raise
     return queued
+
+
+def take_along(db: sqlite3.Connection, job_id: int, episode_ids: list[int], note: str) -> list[int]:
+    """Have a running job hold more episodes (comparison episodes), unless another job holds them or waits for
+    them. Returns the ones it took."""
+    if not episode_ids:
+        return []
+    _immediate(db)
+    try:
+        taken = [r["id"] for r in db.execute(
+            f"""SELECT e.id FROM episodes e WHERE e.id IN ({', '.join('?' * len(episode_ids))})
+                AND NOT {HELD} AND NOT {WAITING} AND COALESCE(e.state, '') NOT IN ('queued', 'running')""",
+            episode_ids)]
+        taken.sort(key=episode_ids.index)
+        db.executemany("UPDATE episodes SET held_by = ?, state = 'queued', state_note = ? WHERE id = ?",
+                       [(job_id, note, ep_id) for ep_id in taken])
+        db.commit()
+    except BaseException:
+        db.rollback()
+        raise
+    return taken
+
+
+def release(db: sqlite3.Connection, job_id: int) -> None:
+    """Let go of a job's episodes. Those with a job waiting show as queued. The caller commits."""
+    db.execute("""UPDATE episodes SET state = 'queued', state_note = NULL
+                   WHERE held_by = ? AND EXISTS (SELECT 1 FROM jobs w WHERE w.episode_id = episodes.id
+                                                 AND w.state = 'queued')""", (job_id,))
+    db.execute("UPDATE episodes SET held_by = NULL WHERE held_by = ?", (job_id,))
 
 
 def enqueue_task(db: sqlite3.Connection, kind: str, user_id: int | None, payload: str | None = None) -> int:
@@ -50,19 +105,32 @@ def enqueue_task(db: sqlite3.Connection, kind: str, user_id: int | None, payload
 
 
 def claim(db: sqlite3.Connection) -> sqlite3.Row | None:
-    """Take the oldest queued job and mark it running; None when there is none."""
-    row = db.execute(
-        """UPDATE jobs SET state = 'running', started_at = ?, attempts = attempts + 1, step = 'Starting',
-                  progress = NULL, error = NULL
-           WHERE id = (SELECT id FROM jobs WHERE state = 'queued' ORDER BY id LIMIT 1) AND state = 'queued'
-           RETURNING *""", (time.time(),)).fetchone()
-    db.commit()
+    """Take the oldest queued job whose episode no running job holds, mark it running and have it hold its
+    episode; None when there is none."""
+    if db.execute("SELECT 1 FROM jobs WHERE state = 'queued' LIMIT 1").fetchone() is None:
+        return None  # a read, so an idle worker looking every few seconds takes no write lock
+    _immediate(db)
+    try:
+        row = db.execute(
+            f"""UPDATE jobs SET state = 'running', started_at = ?, attempts = attempts + 1, step = 'Starting',
+                      progress = NULL, error = NULL
+               WHERE id = (SELECT j.id FROM jobs j LEFT JOIN episodes e ON e.id = j.episode_id
+                           WHERE j.state = 'queued' AND (e.id IS NULL OR NOT {HELD}) ORDER BY j.id LIMIT 1)
+                 AND state = 'queued'
+               RETURNING *""", (time.time(),)).fetchone()
+        if row is not None and row["episode_id"]:
+            db.execute("UPDATE episodes SET held_by = ? WHERE id = ?", (row["id"], row["episode_id"]))
+        db.commit()
+    except BaseException:
+        db.rollback()
+        raise
     return row
 
 
 def finish(db: sqlite3.Connection, job_id: int, state: str, error: str | None = None) -> None:
     db.execute("UPDATE jobs SET state = ?, error = ?, finished_at = ?, progress = NULL WHERE id = ?",
                (state, error, time.time(), job_id))
+    release(db, job_id)
     db.commit()
 
 
@@ -86,7 +154,8 @@ def cancel(db: sqlite3.Connection, job_id: int) -> bool:
         return False
     if job["state"] == "queued":
         finish(db, job_id, "cancelled")
-        if job["episode_id"]:
+        held = db.execute(f"SELECT {HELD} FROM episodes e WHERE e.id = ?", (job["episode_id"],)).fetchone()
+        if job["episode_id"] and not (held and held[0]):  # a held one is its job's to settle
             settle_episode(db, job["episode_id"])
     else:
         db.execute("UPDATE jobs SET cancel_requested = 1, step = 'Stopping' WHERE id = ?", (job_id,))
@@ -109,6 +178,7 @@ def recover(db: sqlite3.Connection) -> int:
     for job_id in stopping:
         finish(db, job_id, "cancelled")
     cur = db.execute("UPDATE jobs SET state = 'queued', step = NULL, progress = NULL WHERE state = 'running'")
+    db.execute("UPDATE episodes SET held_by = NULL WHERE held_by IS NOT NULL")
     db.execute("""UPDATE episodes SET state = 'queued', state_note = NULL
                   WHERE state = 'running' AND id IN (SELECT episode_id FROM jobs WHERE state = 'queued')""")
     for r in db.execute("SELECT id FROM episodes WHERE state IN ('queued', 'running') AND id NOT IN "

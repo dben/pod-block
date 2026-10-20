@@ -11,6 +11,9 @@ ARCHIVED = "COALESCE(ue.archived, 0)"
 KEPT_ANY = "EXISTS (SELECT 1 FROM user_episodes k WHERE k.episode_id = e.id AND k.kept = 1)"
 DOWNLOADED = "e.state IN ('queued', 'running', 'ready', 'failed', 'expired')"
 USER_JOIN = "LEFT JOIN user_episodes ue ON ue.episode_id = e.id AND ue.user_id = ?"
+GRABBED = "EXISTS (SELECT 1 FROM grabs g WHERE g.episode_id = e.id AND g.user_id = ?)"
+GRABS = ("(SELECT COUNT(*) FROM grabs g WHERE g.episode_id = e.id AND g.user_id = ?) AS grabs, "
+         "(SELECT MAX(g.last_at) FROM grabs g WHERE g.episode_id = e.id AND g.user_id = ?) AS grabbed_at")  # two users
 MAX_IDS = 5000  # per bulk action
 
 
@@ -71,26 +74,31 @@ def _like(q: str) -> str:
 
 def episodes(db: sqlite3.Connection, user_id: int, podcast_id: int, archived: bool, q: str = "",
              limit: int = 50, offset: int = 0, downloaded: bool = False, filtered: bool = False,
-             oldest_first: bool = False) -> tuple[list[sqlite3.Row], int]:
-    """One page of a podcast's episodes, newest first (or oldest), and how many match in all.
+             oldest_first: bool = False, grabbed: bool = False) -> tuple[list[sqlite3.Row], int]:
+    """One page of a podcast's episodes, newest first (or oldest), and how many match in all. Each row says
+    how often this user grabbed it (`grabs`), and when last (`grabbed_at`).
 
-    `downloaded` keeps only episodes downloaded at some point: queued, ready, failed or cleaned up.
-    Episodes a filter hides from this user are left out; `filtered` lists only those, archived or not."""
+    `downloaded` keeps only episodes downloaded at some point: queued, ready, failed or cleaned up; `grabbed`
+    only the ones this user grabbed. Episodes a filter hides from this user are left out; `filtered` lists only
+    those, archived or not."""
     if filtered:
         where, args = f"e.podcast_id = ? AND {HIDDEN}", [user_id, podcast_id, user_id]
     else:
         where = f"e.podcast_id = ? AND {ARCHIVED} = ? AND NOT {HIDDEN}" + (f" AND {DOWNLOADED}" if downloaded else "")
         args = [user_id, podcast_id, int(archived), user_id]
+        if grabbed:
+            where += f" AND {GRABBED}"
+            args.append(user_id)
     if q.strip():
         where += " AND e.title LIKE ? ESCAPE '\\'"
         args.append(_like(q.strip()))
     total = db.execute(f"SELECT COUNT(*) FROM episodes e {USER_JOIN} WHERE {where}", args).fetchone()[0]
     order = "ASC" if oldest_first else "DESC"
     rows = db.execute(
-        f"""SELECT e.*, {ARCHIVED} AS archived, COALESCE(ue.kept, 0) AS kept, {KEPT_ANY} AS kept_any
+        f"""SELECT e.*, {ARCHIVED} AS archived, COALESCE(ue.kept, 0) AS kept, {KEPT_ANY} AS kept_any, {GRABS}
             FROM episodes e {USER_JOIN} WHERE {where}
             ORDER BY e.pub_ts IS NULL, e.pub_ts {order}, e.id {order} LIMIT ? OFFSET ?""",
-        [*args, limit, offset]).fetchall()
+        [user_id, user_id, *args, limit, offset]).fetchall()
     return rows, total
 
 
@@ -99,11 +107,14 @@ def counts(db: sqlite3.Connection, user_id: int, podcast_id: int) -> dict[str, i
     row = db.execute(
         f"""SELECT COALESCE(SUM(h = 0), 0) AS everything, COALESCE(SUM(h = 0 AND a = 1), 0) AS archived,
                    COALESCE(SUM(h = 0 AND d AND a = 0), 0) AS downloaded,
-                   COALESCE(SUM(h = 0 AND x AND a = 0), 0) AS expired, COALESCE(SUM(h), 0) AS filtered
-            FROM (SELECT {ARCHIVED} AS a, {DOWNLOADED} AS d, e.state = 'expired' AS x, {HIDDEN} AS h
-                  FROM episodes e {USER_JOIN} WHERE e.podcast_id = ?)""", (user_id, user_id, podcast_id)).fetchone()
+                   COALESCE(SUM(h = 0 AND x AND a = 0), 0) AS expired, COALESCE(SUM(h), 0) AS filtered,
+                   COALESCE(SUM(h = 0 AND g AND a = 0), 0) AS grabbed
+            FROM (SELECT {ARCHIVED} AS a, {DOWNLOADED} AS d, e.state = 'expired' AS x, {HIDDEN} AS h, {GRABBED} AS g
+                  FROM episodes e {USER_JOIN} WHERE e.podcast_id = ?)""",
+        (user_id, user_id, user_id, podcast_id)).fetchone()
     return {"active": row["everything"] - row["archived"], "archived": row["archived"],
-            "downloaded": row["downloaded"], "expired": row["expired"], "filtered": row["filtered"]}
+            "downloaded": row["downloaded"], "expired": row["expired"], "filtered": row["filtered"],
+            "grabbed": row["grabbed"]}
 
 
 def _set_flag(db: sqlite3.Connection, flag: str, user_id: int, podcast_id: int | None, ids: list[int],

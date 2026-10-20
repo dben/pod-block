@@ -314,4 +314,30 @@
     const n = out.changed.length;
     toast(n ? `Queued ${n.toLocaleString()} ${n === 1 ? "episode" : "episodes"}.` : "Those are already ready or queued.");
   });
+
+  // ---- plays on a page count as grabs -------------------------------------------
+  // Adds up what the episode's player has played, leaving out jumps (seeks), and says so
+  // once it passes `data-grab-after` seconds. The timeline's player is for editing; it doesn't count.
+
+  const played = {};  // grab URL -> seconds played, and whether it was sent
+  for (const audio of $$("audio[data-grab]")) {
+    const url = audio.dataset.grab;
+    const after = Number(audio.dataset.grabAfter) || 300;
+    let last = null;
+    const restart = () => { last = audio.paused ? null : audio.currentTime; };
+    for (const name of ["playing", "pause", "seeked"]) audio.addEventListener(name, restart);
+    audio.addEventListener("seeking", () => { last = null; });
+    audio.addEventListener("timeupdate", () => {
+      if (last === null || audio.paused) return restart();
+      const step = audio.currentTime - last;
+      last = audio.currentTime;
+      if (step <= 0 || step > 2 * Math.max(1, audio.playbackRate)) return;  // a jump, not playing
+      const got = (played[url] ||= { secs: 0, sent: false });
+      got.secs += step;
+      if (got.secs >= after && !got.sent) {
+        got.sent = true;
+        fetch(url, { method: "POST", headers: { accept: "application/json" } }).catch(() => { got.sent = false; });
+      }
+    });
+  }
 })();

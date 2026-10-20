@@ -43,19 +43,28 @@ def on_disk(db: sqlite3.Connection, sort: str = "size") -> list[dict]:
     return sorted(out, key=key)
 
 
+def disk(media_dir: Path):
+    """The media volume's total, used and free bytes, or None if it can't be read."""
+    try:
+        return shutil.disk_usage(media_dir)
+    except OSError:
+        return None
+
+
+def space(db: sqlite3.Connection, media_dir: Path) -> dict:
+    """How much room the downloads take (`used`), and the media volume's (`disk`), for the home page."""
+    return {"used": sum(d["total"] for d in on_disk(db)), "disk": disk(media_dir)}
+
+
 @router.get("/downloads")
 def downloads_page(request: Request, sort: str = "size", user=Depends(admin_user),
                    db: sqlite3.Connection = Depends(get_db)) -> Response:
     sort = sort if sort in SORTS else "size"
     items = on_disk(db, sort)
-    media = request.app.state.settings.media_dir
-    try:
-        disk = shutil.disk_usage(media)
-    except OSError:
-        disk = None
     return page(request, "downloads.html", title="Downloads", nav="downloads", user=user, items=items, sort=sort,
                 sorts=SORTS, total=sum(d["total"] for d in items), originals=sum(d["original"] for d in items),
-                cuts=sum(d["cut"] for d in items), disk=disk, busy=jobs.ACTIVE)
+                cuts=sum(d["cut"] for d in items), disk=disk(request.app.state.settings.media_dir),
+                busy=jobs.ACTIVE)
 
 
 @router.post("/downloads/delete")

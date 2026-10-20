@@ -227,8 +227,13 @@ def test_the_shared_feed_becomes_the_admins_on_upgrade(tmp_path):
     db.execute("INSERT INTO podcasts (name, public_token) VALUES ('Show A', 'old-shared-token')")
     db.executescript("""DROP TABLE user_feeds;
                         DROP INDEX users_omni_token; ALTER TABLE users DROP COLUMN omni_token;
-                        ALTER TABLE podcasts DROP COLUMN sort_oldest;""")  # undo the last two steps
-    db.execute("UPDATE settings SET value = ? WHERE key = 'app_schema'", (str(len(MIGRATIONS) - 2),))  # before per-user feeds
+                        ALTER TABLE podcasts DROP COLUMN sort_oldest;
+                        DROP TABLE grabs; ALTER TABLE episodes DROP COLUMN source_chapters;
+                        ALTER TABLE episodes DROP COLUMN transcripts;
+                        ALTER TABLE episodes DROP COLUMN cut_chapters;
+                        ALTER TABLE episodes DROP COLUMN held_by;""")  # undo every step from per-user feeds on
+    before = next(n for n, m in enumerate(MIGRATIONS) if isinstance(m, str) and "CREATE TABLE user_feeds" in m)
+    db.execute("UPDATE settings SET value = ? WHERE key = 'app_schema'", (str(before),))
     db.commit()
     create_app(s)
     assert [tuple(r) for r in db.execute("SELECT user_id, token FROM user_feeds")] == \

@@ -857,6 +857,10 @@ select.input { appearance: auto; }
 .usage-key { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
 .usage-dot { display: inline-block; width: 10px; height: 10px; border-radius: 3px; }
 .usage-key .usage-dot:not(:first-child) { margin-left: 10px; }
+.usage-mini { display: grid; gap: 5px; width: min(320px, 100%); margin-top: 10px; font-size: 0.8rem; color: var(--faint);
+              text-decoration: none; font-variant-numeric: tabular-nums; }
+a.usage-mini:hover { color: var(--muted); }
+.usage-bar-sm { height: 6px; }
 .dl-show { color: var(--accent); text-decoration: none; font-weight: 600; }
 .dl-show:hover { text-decoration: underline; }
 .dl-sizes { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 0.85rem; color: var(--muted); font-variant-numeric: tabular-nums; }
@@ -866,3 +870,8 @@ select.input { appearance: auto; }
 .icon-btn.danger:hover { color: var(--danger); background: var(--danger-soft); }
 .btn-danger { background: var(--danger); color: #1a0709; }
 .btn-danger:hover { background: #ff7b87; }
+
+/* ---- grabs ---------------------------------------------------------------- */
+
+.badge-grab { background: rgb(139 123 255 / 0.16); color: #b3a9ff; }
+.badge-grab .icon { width: 12px; height: 12px; }

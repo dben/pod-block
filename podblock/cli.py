@@ -297,6 +297,19 @@ def cmd_serve(args, store: Store, paths: Paths) -> None:
     uvicorn.run(app, host=args.host, port=args.port, proxy_headers=True)
 
 
+def cmd_worker(args, store: Store, paths: Paths) -> None:
+    try:
+        from .web.background import run_worker
+        from .web.config import Settings
+    except ImportError:
+        sys.exit("podblock: the worker needs the web app's extras: pip install 'pod-block[web]'")
+    settings = Settings.from_env(data_dir=paths.root, media_dir=args.media_dir)
+    if args.workers:
+        settings.workers = args.workers
+    store.close()  # jobs open their own
+    sys.exit(run_worker(settings, parent=args.parent, ready_fd=args.ready_fd))
+
+
 def cmd_backup(args, store: Store, paths: Paths) -> None:
     """Copy the database while it is in use; a plain file copy can catch it half-written."""
     import sqlite3
@@ -473,6 +486,15 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--media-dir", type=Path, default=None,
                    help="where episode audio lives (default: $PODBLOCK_MEDIA_DIR, else DATA_DIR/media)")
     p.set_defaults(func=cmd_serve)
+
+    p = sub.add_parser("worker", help="run the web app's jobs, feed refreshes and clean-up; `serve` starts one "
+                                      "itself unless PODBLOCK_JOBS is threads or none")
+    p.add_argument("--media-dir", type=Path, default=None,
+                   help="where episode audio lives (default: $PODBLOCK_MEDIA_DIR, else DATA_DIR/media)")
+    p.add_argument("--workers", type=int, default=None, help="threads running jobs (default: $PODBLOCK_WORKERS, else 1)")
+    p.add_argument("--parent", type=int, default=None, help=argparse.SUPPRESS)  # the web app that started it
+    p.add_argument("--ready-fd", type=int, default=None, help=argparse.SUPPRESS)  # where to say it is running
+    p.set_defaults(func=cmd_worker)
 
     p = sub.add_parser("backup", help="copy the database to a file, safely, even while the web app runs")
     p.add_argument("dest", help="file to write, e.g. /data/backup.sqlite")

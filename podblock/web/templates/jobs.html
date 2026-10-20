@@ -8,6 +8,10 @@
       <p class="muted">{{ jobs.running|length }} running · {{ jobs.queued|length }} queued</p>
     </div>
   </div>
+  {% if worker_down %}
+  <p class="alert alert-error" role="alert">The job process stopped and is being started again. Jobs wait
+    until it's back; the log says why it stopped.</p>
+  {% endif %}
 
   {% for group, label in [('running', 'Running'), ('queued', 'Queued'), ('finished', 'Recent')] %}
   {% if jobs[group] %}
