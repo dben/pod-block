@@ -1,10 +1,12 @@
-# Test every push and pull request and build the image; publish the image to
-# the GitHub Container Registry only for pushes to main and version tags.
+# Test pull requests, pushes to main and version tags, and build the image;
+# publish the image to the GitHub Container Registry only for pushes to main
+# and version tags. Pushes to other branches run through pull_request, so a
+# PR gets one run per commit rather than two.
 name: CI
 
 on:
   push:
-    branches: ["**"]
+    branches: [main]
     tags: ["v*"]
   pull_request:
   workflow_dispatch:
