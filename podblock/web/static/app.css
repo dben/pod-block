@@ -300,7 +300,8 @@ a.podcast-card:hover { background: var(--surface-2); }
 }
 .show-info { display: grid; gap: 10px; min-width: 0; }
 .eyebrow { color: var(--accent); font-weight: 600; font-size: 0.9rem; }
-.show-info h1 { font-size: 2rem; }
+.show-title { display: grid; gap: 4px; }
+.show-info h1 { font-size: 2rem; overflow-wrap: anywhere; }
 .show-about p {
   color: #c9cfda; white-space: pre-line; max-width: 72ch;
   display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
@@ -313,8 +314,11 @@ a.podcast-card:hover { background: var(--surface-2); }
 
 @media (max-width: 720px) {
   .show-head { padding: 18px; margin-top: -4px; }
-  .show-head-inner { flex-direction: column; gap: 16px; }
-  .show-cover { width: 112px; height: 112px; font-size: 2rem; }
+  /* the cover and title side by side, everything else full width below */
+  .show-head-inner { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 12px 16px; }
+  .show-info { display: contents; }
+  .show-info > :not(.show-title) { grid-column: 1 / -1; }
+  .show-cover { width: 96px; height: 96px; border-radius: 12px; font-size: 2rem; }
   .show-info h1 { font-size: 1.45rem; }
 }
 

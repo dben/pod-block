@@ -11,8 +11,10 @@
     <div class="show-cover cover-blank" aria-hidden="true">{{ (podcast.name or '?')[:1]|upper }}</div>
     {% endif %}
     <div class="show-info">
-      {% if podcast.author %}<p class="eyebrow">{{ podcast.author }}</p>{% endif %}
-      <h1>{{ podcast.name }}</h1>
+      <div class="show-title">
+        {% if podcast.author %}<p class="eyebrow">{{ podcast.author }}</p>{% endif %}
+        <h1>{{ podcast.name }}</h1>
+      </div>
       <p class="stats">
         <span class="badge">{{ (counts.active + counts.archived)|plural('episode') }}</span>
         {% for c in (podcast.categories|fromjson)[:3] %}<span class="badge">{{ c }}</span>{% endfor %}
