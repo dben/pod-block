@@ -9,7 +9,7 @@ import segno
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 
-from . import feeds, filters, jobs, library, publish
+from . import directory, feeds, filters, jobs, library, publish
 from .episodes import wake_worker
 from .deps import admin_user, current_user, get_db
 from .templating import flash, page
@@ -41,8 +41,15 @@ def _qr(url: str) -> str:
 
 
 def _home(request: Request, user, db: sqlite3.Connection, view: str = "mine", status_code: int = 200,
-          **context) -> Response:
+          search: str = "", **context) -> Response:
     view = view if view in {"mine", "all"} else "mine"
+    if search := search.strip():
+        try:
+            found = directory.search(search)
+            context.update(found=found, known=library.by_feed(db, user["id"], [s.feed_url for s in found]))
+        except directory.DirectoryError as e:
+            context.update(found=[], known={}, error=f"Couldn't search: {e}.")
+        context.setdefault("url", search)
     shown = library.podcasts(db, user["id"], mine=view == "mine")
     everything = db.execute("SELECT COUNT(*) FROM podcasts WHERE followed = 1").fetchone()[0]
     mine = len(shown) if view == "mine" else sum(p["subscribed"] for p in shown)
@@ -51,13 +58,13 @@ def _home(request: Request, user, db: sqlite3.Connection, view: str = "mine", st
     return page(request, "home.html", status_code=status_code, title="Podcasts", nav="podcasts", user=user,
                 podcasts=shown, view=view, mine_count=mine, all_count=everything, expired_total=expired_total,
                 omni_url=omni, omni_qr=_qr(omni), omni_count=len(publish.omni_published(db, user["id"])),
-                **context)
+                search=search, **context)
 
 
 @router.get("/")
-def home(request: Request, view: str = "mine", user=Depends(current_user),
+def home(request: Request, view: str = "mine", search: str = "", user=Depends(current_user),
          db: sqlite3.Connection = Depends(get_db)) -> Response:
-    return _home(request, user, db, view)
+    return _home(request, user, db, view, search=search)
 
 
 @router.post("/podcasts/{podcast_id}/subscribe")
@@ -92,9 +99,13 @@ def archive_all_expired(request: Request, user=Depends(current_user), db: sqlite
 @router.post("/podcasts")
 def add_podcast(request: Request, url: str = Form(""), user=Depends(current_user),
                 db: sqlite3.Connection = Depends(get_db)) -> Response:
+    """Follow the feed at a web address, or search the podcast directory for anything else."""
+    address = directory.as_address(url)
+    if address is None:
+        return RedirectResponse(f"/?{urlencode({'search': url.strip()})}" if url.strip() else "/", status_code=303)
     try:
-        result = feeds.add_podcast(db, url)
-    except feeds.RefreshError as e:
+        result = feeds.add_podcast(db, directory.apple_feed(address) or address)
+    except (feeds.RefreshError, directory.DirectoryError) as e:
         return _home(request, user, db, status_code=422, url=url, error=f"Couldn't add that feed: {e}.")
     library.subscribe(db, user["id"], result.podcast_id)
     flash(request, f"Added, with {result.added:,} episodes." if result.added else "Added.")

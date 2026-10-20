@@ -32,19 +32,71 @@
 </div>
 </div>
 
-<form class="card add-feed" method="post" action="/podcasts" x-data="{ busy: false }" @submit="busy = true">
+<form class="card add-feed" method="post" action="/podcasts" @submit="busy = true"
+      x-data="{ busy: false, find: false,
+                check(v) { v = v.trim(); this.find = !!v && !/^(https?|feed|itpc|pcast|podcast):\/\/|^[\w-]+(\.[\w-]+)+\//i.test(v) } }"
+      x-init="check($refs.q.value)">
   <label class="field add-feed-field">
     <span>Add a podcast</span>
-    <input class="input" type="url" name="url" value="{{ url or '' }}" required
-           placeholder="https://example.com/podcast.rss" autocomplete="off" autocapitalize="off" spellcheck="false"
-           inputmode="url">
+    <input class="input" type="text" name="url" value="{{ url or '' }}" required x-ref="q" @input="check($event.target.value)"
+           placeholder="Search by name, or paste a feed address" autocomplete="off" autocapitalize="off" spellcheck="false">
   </label>
   <button class="btn btn-primary" type="submit" :disabled="busy">
-    <span x-show="!busy">Add</span>
-    <span x-show="busy" x-cloak class="spinner-label"><span class="spinner" aria-hidden="true"></span>Fetching…</span>
+    <span x-show="!busy" x-text="find ? 'Search' : 'Add'">Add</span>
+    <span x-show="busy" x-cloak class="spinner-label"><span class="spinner" aria-hidden="true"></span><span x-text="find ? 'Searching…' : 'Fetching…'"></span></span>
   </button>
   {% if error %}<p class="alert alert-error add-feed-error" role="alert">{{ error }}</p>{% endif %}
 </form>
+
+{% if search and found is defined %}
+<section class="search-results" aria-labelledby="search-head">
+  <div class="search-results-head">
+    <h2 id="search-head">{{ found|length|plural('show') }} for “{{ search }}”</h2>
+    <a class="btn btn-ghost btn-sm" href="/">Clear</a>
+  </div>
+  {% if found %}
+  <ul class="grid podcast-grid">
+    {% for s in found %}
+    {% set have = known.get(s.feed_url) %}
+    <li class="card podcast-item">
+      <div class="podcast-card">
+        {% if s.image_url|web_url %}
+        <img class="cover" src="{{ s.image_url }}" alt="" loading="lazy" referrerpolicy="no-referrer">
+        {% else %}
+        <div class="cover cover-blank" aria-hidden="true">{{ s.name[:1]|upper }}</div>
+        {% endif %}
+        <div class="podcast-card-body">
+          <h3 class="podcast-name">{{ s.name }}</h3>
+          {% if s.author %}<p class="muted truncate">{{ s.author }}</p>{% endif %}
+          <p class="stats">
+            {% if s.genre %}<span class="badge">{{ s.genre }}</span>{% endif %}
+            {% if s.episodes %}<span class="badge">{{ s.episodes|plural('episode') }}</span>{% endif %}
+          </p>
+        </div>
+      </div>
+      {% if have and have.subscribed %}
+      <div class="podcast-pick">
+        <span class="muted">On your home page</span>
+        <a class="btn btn-ghost btn-sm" href="/podcasts/{{ have.id }}">Open</a>
+      </div>
+      {% else %}
+      <form class="podcast-pick" method="post" action="/podcasts" x-data="{ busy: false }" @submit="busy = true">
+        <span class="muted truncate" title="{{ s.feed_url }}">{{ 'Here already' if have else s.feed_url }}</span>
+        <input type="hidden" name="url" value="{{ s.feed_url }}">
+        <button class="btn btn-primary btn-sm" type="submit" :disabled="busy">
+          <span x-show="!busy">{{ 'Subscribe' if have else 'Add' }}</span>
+          <span x-show="busy" x-cloak class="spinner-label"><span class="spinner" aria-hidden="true"></span>Fetching…</span>
+        </button>
+      </form>
+      {% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+  {% elif not error %}
+  <p class="muted">Nothing in Apple's podcast directory matches that. Try other words, or paste the show's feed address.</p>
+  {% endif %}
+</section>
+{% endif %}
 
 <nav class="tabs home-tabs" aria-label="Which podcasts">
   <a href="/" {% if view == 'mine' %}aria-current="page"{% endif %}>My podcasts <span class="count">{{ mine_count }}</span></a>
@@ -98,8 +150,8 @@
 <div class="card empty">
   <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a6 6 0 0 0-6 6v3a6 6 0 0 0 12 0V9a6 6 0 0 0-6-6Zm0 15v3m-4 0h8"/></svg>
   <h2>No podcasts yet</h2>
-  <p class="muted">Paste a podcast's RSS feed address above. Most podcast sites and apps have a
-    "copy RSS link" option.</p>
+  <p class="muted">Search for a podcast by name above, or paste its RSS feed address. Most podcast
+    sites and apps have a "copy RSS link" option.</p>
 </div>
 {% endif %}
 {% endblock %}
