@@ -67,7 +67,10 @@ its settings on GitHub.
   and `/tmp`.
 - **Size.** Fingerprinting takes about a core and 0.3 GB per job; the limit of
   2 GiB leaves room for one worker and the web side. Raise
-  `PODBLOCK_WORKERS` and the limits together.
+  `PODBLOCK_WORKERS` and the limits together. The jobs run in a second
+  process in the same container (`podblock worker`, which `serve` starts),
+  so a job that runs out of memory takes only that process down, and
+  `serve` starts it again.
 - **Probes.** `/healthz` answers once the database is open. The startup
   probe allows five minutes for the first start's database upgrade.
 - **Behind the ingress.** `FORWARDED_ALLOW_IPS=*` lets the app see the real

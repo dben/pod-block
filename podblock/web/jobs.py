@@ -107,6 +107,8 @@ def enqueue_task(db: sqlite3.Connection, kind: str, user_id: int | None, payload
 def claim(db: sqlite3.Connection) -> sqlite3.Row | None:
     """Take the oldest queued job whose episode no running job holds, mark it running and have it hold its
     episode; None when there is none."""
+    if db.execute("SELECT 1 FROM jobs WHERE state = 'queued' LIMIT 1").fetchone() is None:
+        return None  # a read, so an idle worker looking every few seconds takes no write lock
     _immediate(db)
     try:
         row = db.execute(

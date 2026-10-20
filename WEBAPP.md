@@ -31,22 +31,42 @@ built, and what could come next.
 | Timeline and player | `static/timeline.js`, no library | a canvas over the part in view, with waveform data worked out on the server |
 | Styling | hand-written CSS with custom properties | dark by default, mobile first, no build step |
 | Database | `podblock.sqlite`, through `sqlite3` as the detector's `Store` does | one file on a volume; the app's tables are added by numbered steps in `podblock/web/db.py` |
-| Background work | worker threads in the same process (`PODBLOCK_WORKERS`, default 1), taking jobs from a table in the database; one more thread refreshes feeds | survives restarts, needs no broker; can move to its own process or pod later without code changes |
+| Background work | a worker process, `podblock worker`, that `serve` starts and restarts; inside it, threads (`PODBLOCK_WORKERS`, default 1) take jobs from a table in the database, and one more refreshes feeds and cleans up | survives restarts, needs no broker; a crash or memory spike in a job can't take the pages down; the two share only the database, so the worker can move to its own container later |
 | Audio cutting | `podblock/cut.py`: one ffmpeg decodes to raw samples, Python drops the cut stretches and fades each join, a second ffmpeg encodes | flat memory whatever the length, cuts on the exact sample, real fades; one decode and one encode |
 
 ## How it fits together
 
 ```
-browser ──login──▶ management UI (FastAPI + Jinja + HTMX)
-                        │  writes jobs
-                        ▼
-                   jobs table ◀── worker thread: download, fingerprint, detect,
-                        │                         render cut audio, apply edits
+browser ──login──▶ management UI (FastAPI + Jinja + HTMX)     ── podblock serve
+                        │  writes jobs, then SIGUSR1 ─────────────────┐
+                        ▼                                             ▼
+                   jobs table ◀── worker threads: download, fingerprint, detect,   ── podblock worker
+                        │                         render cut audio, apply edits       (a child of serve)
                         │         refresh thread: refresh feeds
                         │         retention:      expire old downloads
 podcast app ──no login, secret path──▶ /p/<user's feed token>/feed.xml
-                                       /p/<podcast's token>/<episode key>.mp3
+                                       /p/<user's feed token>/<episode key>.mp3
 ```
+
+- Jobs, feed refreshes and clean-up run in a process of their own,
+  `podblock worker`, which `serve` starts as its child
+  (`podblock/web/background.py`). A crash or a memory spike while
+  fingerprinting can't take the pages down. If the worker dies, `serve`
+  starts it again, waiting a second, then twice as long each time it dies
+  soon after starting (up to a minute); the Jobs page says so meanwhile, and
+  jobs it was running go back in the queue. Stopping `serve` stops it, and a
+  worker whose `serve` is gone (killed outright) stops within two seconds.
+- The two share only the database. After queuing a job a page sends the
+  worker SIGUSR1 so it starts at once; it also looks every 5 seconds. The
+  worker tells `serve` over a pipe when it is ready for that signal, as one
+  sent sooner would kill it. Only one worker may run on a database (a lock
+  file, `worker.lock`, beside it), since on starting it puts jobs left
+  running back in the queue. Feed refreshes, which the pages run too, and
+  database upgrades take a lock file each, so they happen one at a time
+  across both (`podblock/web/locks.py`).
+- `PODBLOCK_JOBS=threads` runs the worker in `serve`'s own process instead,
+  as before; `none` runs none, for a `podblock worker` you start yourself
+  (another container in the same pod, say, sharing the volumes).
 
 - The worker is the only thing that writes to the detector's tables. The UI
   queues small jobs for block edits, so the store's in-memory hash index
@@ -80,6 +100,7 @@ Others:
 | `PODBLOCK_SECURE_COOKIES` | `true` to send the session cookie over HTTPS only; set it behind TLS |
 | `PODBLOCK_PUBLIC_URL` | base URL for links in the private feed, e.g. `https://pods.example.com`; falls back to the address the request came to |
 | `PODBLOCK_WORKERS` | threads running jobs (default 1). Fingerprinting takes about 0.3 GB and one core per thread |
+| `PODBLOCK_JOBS` | where jobs run: `process` (default, a `podblock worker` that `serve` starts), `threads` (inside `serve`) or `none` (run `podblock worker` yourself; only one may run) |
 | `FORWARDED_ALLOW_IPS` | Uvicorn's own: which proxies to trust for `X-Forwarded-*` headers; set it to the ingress's address range |
 
 The image (`Dockerfile`) is `python:3.12-slim` plus ffmpeg, runs as uid
@@ -167,8 +188,9 @@ on Kubernetes, with backups and upgrades, see `deployment/README.md`.
 - The jobs page (with a count in the nav) shows running, queued and recent
   jobs with their step, progress bar and errors, and lets you cancel or
   retry. Cancelling stops a running job between steps or mid-download.
-  Jobs left running when the app stops go back in the queue on start,
-  unless they were being cancelled.
+  Jobs left running when the worker stops go back in the queue when it
+  starts again, unless they were being cancelled. The jobs run in a process
+  of their own (see "How it fits together").
 - Only one job works on an episode at a time, however many workers there
   are. A running job holds its episode and the ones it took along
   (`episodes.held_by`); a job asked for one of those meanwhile (a re-cut,
@@ -513,9 +535,9 @@ only looks at fingerprinted ones, so they don't affect it.
 
 ## Future features
 
-- Run each job in a child process, so a crash or a memory spike in
-  fingerprinting can't take the web side down, and so cancelling can stop
-  fingerprinting too (today it stops only between steps).
+- Run each job in a child process of the worker, so cancelling can stop
+  fingerprinting too (today it stops only between steps), and a memory
+  spike in one job can't take the other threads' jobs down with it.
 - Move the edges of a section the detector found on the timeline (today:
   mark the extra by hand, or Keep it and mark the right span).
 - Let the admin hand out more admin rights, and give the admin a password of

@@ -167,7 +167,9 @@ def process_episode(request: Request, episode_id: int, user=Depends(current_user
 
 @router.get("/jobs")
 def jobs_page(request: Request, user=Depends(current_user), db: sqlite3.Connection = Depends(get_db)) -> Response:
-    return page(request, "jobs.html", title="Jobs", nav="jobs", user=user, jobs=jobs.listing(db))
+    background = getattr(request.app.state, "background", None)
+    return page(request, "jobs.html", title="Jobs", nav="jobs", user=user, jobs=jobs.listing(db),
+                worker_down=background is not None and not background.running())
 
 
 @router.post("/jobs/{job_id}/cancel")

@@ -17,6 +17,7 @@ from datetime import datetime
 from pathlib import Path
 
 from ..store import Store
+from . import locks
 
 MAX_TITLE = 500  # characters of a title that filters look at
 
@@ -266,6 +267,11 @@ def set_setting(db: sqlite3.Connection, key: str, value: str) -> None:
 
 def prepare(path: Path) -> None:
     """Make or upgrade the database: the detector's tables first, then the app's."""
+    with locks.exclusive(path.with_name("migrate.lock")):  # the web app and a worker may start together
+        _prepare(path)
+
+
+def _prepare(path: Path) -> None:
     Store(path).close()  # creates the detector's tables; raises StoreError on a foreign store
     db = connect(path)
     try:

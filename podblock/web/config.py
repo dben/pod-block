@@ -7,6 +7,16 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
+JOBS = ("process", "threads", "none")
+
+
+def _choice(name: str, choices: tuple[str, ...]) -> str:
+    value = os.environ.get(name, "").strip().lower() or choices[0]
+    if value not in choices:
+        raise ValueError(f"{name} should be one of {', '.join(choices)}, not {value!r}")
+    return value
+
+
 def _flag(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -19,7 +29,9 @@ class Settings:
     api_key: str | None = None  # fixed login key; else one is made on first start
     secret_key: str | None = None  # signs session cookies; else one is made and stored
     secure_cookies: bool = False  # send the session cookie over HTTPS only
-    background: bool = True  # refresh feeds and run jobs in background threads
+    background: bool = True  # refresh feeds, clean up and run jobs at all
+    jobs: str = "process"  # where: a child process (`podblock worker`), threads of this one, or "none" (run
+    #                        `podblock worker` yourself)
     workers: int = 1  # threads running jobs
 
     @property
@@ -38,4 +50,5 @@ class Settings:
             secret_key=os.environ.get("PODBLOCK_SECRET_KEY") or None,
             secure_cookies=_flag("PODBLOCK_SECURE_COOKIES"),
             workers=int(os.environ.get("PODBLOCK_WORKERS") or 1),
+            jobs=_choice("PODBLOCK_JOBS", JOBS),
         )

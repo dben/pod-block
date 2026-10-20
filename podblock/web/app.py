@@ -15,7 +15,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.middleware.sessions import SessionMiddleware
 
 from . import accounts, downloads, episodes, podcasts, publish, users
-from .background import Background
+from .background import JobProcess, in_process
 from .config import Settings
 from .db import connect, prepare, setting
 from .deps import LoginRequired, get_db, start_session
@@ -59,7 +59,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        background = Background(settings, workers=settings.workers) if settings.background else None
+        background = None
+        if settings.background and settings.jobs == "process":
+            background = JobProcess(settings)
+        elif settings.background and settings.jobs == "threads":
+            background = in_process(settings)
         app.state.background = background
         if background:
             background.start()

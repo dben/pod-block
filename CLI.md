@@ -35,7 +35,8 @@ podblock report --feed "$FEED"        # repeated sections in the newest episode
 | `export ID [-o file.mp3]` | Cut a block out of its source episode, to listen to it. |
 | `delete ID` | Remove a block. |
 | `prune` | Clear out old audio, fingerprints and blocks (see "Keeping it small" below). |
-| `serve [--host H] [--port P]` | Run the web app (see `WEBAPP.md`). |
+| `serve [--host H] [--port P]` | Run the web app (see `WEBAPP.md`). It starts a `worker` of its own. |
+| `worker [--workers N]` | Run the web app's jobs, feed refreshes and clean-up. Only needed with `PODBLOCK_JOBS=none`; only one may run on a database. |
 | `api-key` | Make a new login key for the web app, logging everyone out. |
 | `backup DEST [--force]` | Copy the database to `DEST`, safely, even while the web app runs. |
 
