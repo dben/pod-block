@@ -255,6 +255,13 @@ def connect(path: Path) -> sqlite3.Connection:
     return db
 
 
+def in_list(name: str, values) -> tuple[str, dict]:
+    """Named parameters for `IN (...)`, for queries that take named ones: the placeholders (`:name0, :name1`,
+    and so on) and their values."""
+    args = {f"{name}{i}": value for i, value in enumerate(values)}
+    return ", ".join(f":{key}" for key in args), args
+
+
 def setting(db: sqlite3.Connection, key: str) -> str | None:
     row = db.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
     return row["value"] if row else None

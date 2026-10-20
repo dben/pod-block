@@ -10,7 +10,7 @@ pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient
 
 from podblock.store import Store
-from podblock.web import directory, feeds, library
+from podblock.web import directory, feeds, filters, library
 from podblock.web.app import create_app
 from podblock.web.config import Settings
 from podblock.web.db import connect, prepare
@@ -327,6 +327,13 @@ def test_archiving_is_per_user(client, web):
     db.commit()
     assert [r["title"] for r in library.episodes(db, other, pod, archived=False)[0]] == ["Episode 2", "Episode 1"]
     db.close()
+
+
+def test_shared_query_fragments_take_named_parameters():
+    # A `?` in a fragment would take whatever value sits at its place in each caller's arguments.
+    for fragment in (library.ARCHIVED, library.KEPT_ANY, library.DOWNLOADED, library.USER_JOIN, library.GRABBED,
+                     library.GRABS, filters.HIDDEN):
+        assert "?" not in fragment
 
 
 def test_episodes_of_another_podcast_are_left_alone(client, web):

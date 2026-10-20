@@ -5,15 +5,18 @@ from __future__ import annotations
 import sqlite3
 import time
 
+from .db import in_list
 from .filters import HIDDEN
 
+# Fragments of the queries below. Those for one user name them `:user_id`, so a query using them takes
+# named parameters, and passes the user once however many fragments it uses.
 ARCHIVED = "COALESCE(ue.archived, 0)"
 KEPT_ANY = "EXISTS (SELECT 1 FROM user_episodes k WHERE k.episode_id = e.id AND k.kept = 1)"
 DOWNLOADED = "e.state IN ('queued', 'running', 'ready', 'failed', 'expired')"
-USER_JOIN = "LEFT JOIN user_episodes ue ON ue.episode_id = e.id AND ue.user_id = ?"
-GRABBED = "EXISTS (SELECT 1 FROM grabs g WHERE g.episode_id = e.id AND g.user_id = ?)"
-GRABS = ("(SELECT COUNT(*) FROM grabs g WHERE g.episode_id = e.id AND g.user_id = ?) AS grabs, "
-         "(SELECT MAX(g.last_at) FROM grabs g WHERE g.episode_id = e.id AND g.user_id = ?) AS grabbed_at")  # two users
+USER_JOIN = "LEFT JOIN user_episodes ue ON ue.episode_id = e.id AND ue.user_id = :user_id"
+GRABBED = "EXISTS (SELECT 1 FROM grabs g WHERE g.episode_id = e.id AND g.user_id = :user_id)"
+GRABS = ("(SELECT COUNT(*) FROM grabs g WHERE g.episode_id = e.id AND g.user_id = :user_id) AS grabs, "
+         "(SELECT MAX(g.last_at) FROM grabs g WHERE g.episode_id = e.id AND g.user_id = :user_id) AS grabbed_at")
 MAX_IDS = 5000  # per bulk action
 
 
@@ -27,12 +30,12 @@ def podcasts(db: sqlite3.Connection, user_id: int, mine: bool = True) -> list[sq
                COALESCE(SUM(e.state = 'ready'), 0) AS ready_count,
                COALESCE(SUM(e.state = 'expired' AND COALESCE(ue.archived, 0) = 0), 0) AS expired_count,
                COALESCE(SUM(CASE WHEN e.cut_duration IS NOT NULL THEN e.duration - e.cut_duration END), 0) AS cut_sec
-        FROM podcasts p {'' if mine else 'LEFT '}JOIN user_podcasts up ON up.podcast_id = p.id AND up.user_id = ?
+        FROM podcasts p {'' if mine else 'LEFT '}JOIN user_podcasts up ON up.podcast_id = p.id AND up.user_id = :user_id
         LEFT JOIN episodes e ON e.podcast_id = p.id AND NOT {HIDDEN}
-        LEFT JOIN user_episodes ue ON ue.episode_id = e.id AND ue.user_id = ?
+        {USER_JOIN}
         WHERE p.followed = 1
         GROUP BY p.id ORDER BY p.name COLLATE NOCASE
-        """, (user_id, user_id, user_id)
+        """, {"user_id": user_id}
     ).fetchall()
 
 
@@ -81,24 +84,25 @@ def episodes(db: sqlite3.Connection, user_id: int, podcast_id: int, archived: bo
     `downloaded` keeps only episodes downloaded at some point: queued, ready, failed or cleaned up; `grabbed`
     only the ones this user grabbed. Episodes a filter hides from this user are left out; `filtered` lists only
     those, archived or not."""
+    args = {"user_id": user_id, "podcast_id": podcast_id, "archived": int(archived)}
     if filtered:
-        where, args = f"e.podcast_id = ? AND {HIDDEN}", [user_id, podcast_id, user_id]
+        where = f"e.podcast_id = :podcast_id AND {HIDDEN}"
     else:
-        where = f"e.podcast_id = ? AND {ARCHIVED} = ? AND NOT {HIDDEN}" + (f" AND {DOWNLOADED}" if downloaded else "")
-        args = [user_id, podcast_id, int(archived), user_id]
+        where = f"e.podcast_id = :podcast_id AND {ARCHIVED} = :archived AND NOT {HIDDEN}"
+        if downloaded:
+            where += f" AND {DOWNLOADED}"
         if grabbed:
             where += f" AND {GRABBED}"
-            args.append(user_id)
     if q.strip():
-        where += " AND e.title LIKE ? ESCAPE '\\'"
-        args.append(_like(q.strip()))
+        where += " AND e.title LIKE :q ESCAPE '\\'"
+        args["q"] = _like(q.strip())
     total = db.execute(f"SELECT COUNT(*) FROM episodes e {USER_JOIN} WHERE {where}", args).fetchone()[0]
     order = "ASC" if oldest_first else "DESC"
     rows = db.execute(
         f"""SELECT e.*, {ARCHIVED} AS archived, COALESCE(ue.kept, 0) AS kept, {KEPT_ANY} AS kept_any, {GRABS}
             FROM episodes e {USER_JOIN} WHERE {where}
-            ORDER BY e.pub_ts IS NULL, e.pub_ts {order}, e.id {order} LIMIT ? OFFSET ?""",
-        [user_id, user_id, *args, limit, offset]).fetchall()
+            ORDER BY e.pub_ts IS NULL, e.pub_ts {order}, e.id {order} LIMIT :limit OFFSET :offset""",
+        {**args, "limit": limit, "offset": offset}).fetchall()
     return rows, total
 
 
@@ -110,8 +114,8 @@ def counts(db: sqlite3.Connection, user_id: int, podcast_id: int) -> dict[str, i
                    COALESCE(SUM(h = 0 AND x AND a = 0), 0) AS expired, COALESCE(SUM(h), 0) AS filtered,
                    COALESCE(SUM(h = 0 AND g AND a = 0), 0) AS grabbed
             FROM (SELECT {ARCHIVED} AS a, {DOWNLOADED} AS d, e.state = 'expired' AS x, {HIDDEN} AS h, {GRABBED} AS g
-                  FROM episodes e {USER_JOIN} WHERE e.podcast_id = ?)""",
-        (user_id, user_id, user_id, podcast_id)).fetchone()
+                  FROM episodes e {USER_JOIN} WHERE e.podcast_id = :podcast_id)""",
+        {"user_id": user_id, "podcast_id": podcast_id}).fetchone()
     return {"active": row["everything"] - row["archived"], "archived": row["archived"],
             "downloaded": row["downloaded"], "expired": row["expired"], "filtered": row["filtered"],
             "grabbed": row["grabbed"]}
@@ -124,12 +128,12 @@ def _set_flag(db: sqlite3.Connection, flag: str, user_id: int, podcast_id: int |
     ids = list(dict.fromkeys(ids))[:MAX_IDS]
     if not ids:
         return []
-    marks = ", ".join("?" * len(ids))
-    scope = "e.podcast_id = ? AND " if podcast_id is not None else ""
+    marks, id_args = in_list("id", ids)
+    scope = "e.podcast_id = :podcast_id AND " if podcast_id is not None else ""
     changed = [r["id"] for r in db.execute(
         f"""SELECT e.id FROM episodes e {USER_JOIN}
-            WHERE {scope}e.id IN ({marks}) AND COALESCE(ue.{flag}, 0) != ?""",
-        (user_id, *([podcast_id] if podcast_id is not None else []), *ids, int(value)))]
+            WHERE {scope}e.id IN ({marks}) AND COALESCE(ue.{flag}, 0) != :value""",
+        {"user_id": user_id, "podcast_id": podcast_id, "value": int(value), **id_args})]
     db.executemany(
         f"""INSERT INTO user_episodes (user_id, episode_id, {flag}) VALUES (?, ?, ?)
             ON CONFLICT (user_id, episode_id) DO UPDATE SET {flag} = excluded.{flag}""",
@@ -152,12 +156,13 @@ def set_kept(db: sqlite3.Connection, user_id: int, podcast_id: int | None, ids: 
 def archive_expired(db: sqlite3.Connection, user_id: int, podcast_id: int | None = None) -> list[int]:
     """Archive every cleaned-up episode this user still has in their list, of one podcast or all of theirs."""
     if podcast_id is not None:
-        scope, args = "AND e.podcast_id = ?", [podcast_id]
+        scope = "AND e.podcast_id = :podcast_id"
     else:
-        scope, args = "AND p.id IN (SELECT podcast_id FROM user_podcasts WHERE user_id = ?)", [user_id]
+        scope = "AND p.id IN (SELECT podcast_id FROM user_podcasts WHERE user_id = :user_id)"
     ids = [r["id"] for r in db.execute(
         f"""SELECT e.id FROM episodes e {USER_JOIN} JOIN podcasts p ON p.id = e.podcast_id AND p.followed = 1
-            WHERE e.state = 'expired' AND {ARCHIVED} = 0 AND NOT {HIDDEN} {scope}""", (user_id, user_id, *args))]
+            WHERE e.state = 'expired' AND {ARCHIVED} = 0 AND NOT {HIDDEN} {scope}""",
+        {"user_id": user_id, "podcast_id": podcast_id})]
     changed = []
     for start in range(0, len(ids), MAX_IDS):
         changed += set_archived(db, user_id, None, ids[start:start + MAX_IDS], True)

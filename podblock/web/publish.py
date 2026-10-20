@@ -54,6 +54,7 @@ from . import chapters, grabs
 from .db import new_token
 from .deps import get_db
 from .filters import HIDDEN
+from .library import USER_JOIN
 from .processing import media_key
 
 ATOM = "{http://www.w3.org/2005/Atom}"
@@ -153,10 +154,10 @@ def published(db: sqlite3.Connection, podcast_id: int, user_id: int | None = Non
     (or downloaded) first. With a user, the ones in their feed: not archived by them, nor hidden by a filter."""
     mine = f"AND COALESCE(ue.archived, 0) = 0 AND NOT {HIDDEN}" if user_id is not None else ""
     rows = db.execute(
-        f"""SELECT e.* FROM episodes e LEFT JOIN user_episodes ue ON ue.episode_id = e.id AND ue.user_id = ?
-            WHERE e.podcast_id = ? AND e.state = 'ready' AND e.cut_path IS NOT NULL {mine}
+        f"""SELECT e.* FROM episodes e {USER_JOIN}
+            WHERE e.podcast_id = :podcast_id AND e.state = 'ready' AND e.cut_path IS NOT NULL {mine}
             ORDER BY {_order(by_download)}""",
-        (user_id, podcast_id, *([user_id] if user_id is not None else []))).fetchall()
+        {"user_id": user_id, "podcast_id": podcast_id}).fetchall()
     return [r for r in rows if Path(r["cut_path"]).exists()]
 
 
@@ -168,10 +169,10 @@ def omni_published(db: sqlite3.Connection, user_id: int, by_download: bool = Fal
         f"""SELECT e.*, p.name AS podcast_name, p.author AS podcast_author, p.image_url AS podcast_image,
                    p.explicit AS podcast_explicit
             FROM episodes e JOIN podcasts p ON p.id = e.podcast_id AND p.followed = 1
-            JOIN user_podcasts up ON up.podcast_id = p.id AND up.user_id = ?
-            LEFT JOIN user_episodes ue ON ue.episode_id = e.id AND ue.user_id = ?
+            JOIN user_podcasts up ON up.podcast_id = p.id AND up.user_id = :user_id
+            {USER_JOIN}
             WHERE e.state = 'ready' AND e.cut_path IS NOT NULL AND COALESCE(ue.archived, 0) = 0 AND NOT {HIDDEN}
-            ORDER BY {_order(by_download)}""", (user_id, user_id, user_id)).fetchall()
+            ORDER BY {_order(by_download)}""", {"user_id": user_id}).fetchall()
     return [r for r in rows if Path(r["cut_path"]).exists()]
 
 

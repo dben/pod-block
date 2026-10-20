@@ -28,9 +28,9 @@ from .db import title_pattern
 
 MAX_PATTERN = 200
 
-# An episode is hidden from the user whose id is this fragment's one parameter.
+# An episode is hidden from the user `:user_id` (a named parameter; see library.py).
 HIDDEN = """(e.skip_processing = 1 OR EXISTS (
-    SELECT 1 FROM episode_filters f WHERE f.user_id = ? AND (f.podcast_id IS NULL OR f.podcast_id = e.podcast_id)
+    SELECT 1 FROM episode_filters f WHERE f.user_id = :user_id AND (f.podcast_id IS NULL OR f.podcast_id = e.podcast_id)
     AND e.title REGEXP f.pattern))"""
 _PROCESSING = """EXISTS (
     SELECT 1 FROM episode_filters f WHERE f.processing = 1

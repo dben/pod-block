@@ -29,8 +29,8 @@ def _episode(db: sqlite3.Connection, user_id: int, episode_id: int) -> sqlite3.R
         f"""SELECT e.*, COALESCE(ue.archived, 0) AS archived, COALESCE(ue.kept, 0) AS kept,
                   {library.KEPT_ANY} AS kept_any, {library.GRABS}, p.retention_days
            FROM episodes e JOIN podcasts p ON p.id = e.podcast_id AND p.followed = 1
-           LEFT JOIN user_episodes ue ON ue.episode_id = e.id AND ue.user_id = ?
-           WHERE e.id = ?""", (user_id, user_id, user_id, episode_id)).fetchone()
+           {library.USER_JOIN}
+           WHERE e.id = :episode_id""", {"user_id": user_id, "episode_id": episode_id}).fetchone()
     if row is None:
         raise HTTPException(404, "No such episode")
     return row
