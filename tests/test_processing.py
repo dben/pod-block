@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 from test_feeds import FakeWeb, rss
 
 from podblock.cut import probe
+from podblock.store import Store
 from podblock.web import accounts, background, chapters, feeds, jobs, library, processing, publish
 from podblock.web.app import create_app
 from podblock.web.config import Settings
@@ -293,6 +294,26 @@ def test_cutting_a_stretch_by_hand(env):
     env.client.post(f"/episodes/{ep_id}/edits", json={"remove": [edit["id"]]})
     background.run_queue(env.settings)
     assert episode(env, "ep-4")["cut_duration"] == pytest.approx(full, abs=0.5)
+
+
+def test_changes_that_fail_partway_land_none_of_them(env, monkeypatch):
+    processed(env)
+    first = report_of(env, "ep-4")["sections"][0]
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(Store, "add_segment", broken)  # the last of the changes fails
+    env.client.post(f"/episodes/{env.ids['ep-4']}/edits", json={
+        "types": [{"type": "ignored", "blocks": first["blocks"], "bumpers": []}],
+        "add": [{"start": 20, "end": 30, "as_block": False}, {"start": 40, "end": 50, "as_block": True}]})
+    background.run_queue(env.settings)
+    job = env.db.execute("SELECT * FROM jobs WHERE kind = 'edit'").fetchone()
+    assert job["state"] == "failed" and "disk full" in job["error"]
+    types = dict(env.db.execute("SELECT id, type FROM segments").fetchall())
+    assert not any(types[b] == "ignored" for b in first["blocks"])
+    assert env.db.execute("SELECT COUNT(*) FROM edits").fetchone()[0] == 0
+    assert episode(env, "ep-4")["state"] == "ready"  # its cut from before stays
 
 
 def test_a_section_saved_as_a_block_is_found_in_other_episodes(env, tmp_path):
@@ -715,9 +736,9 @@ def test_daily_prune_spares_fingerprints_in_use(env):
     fp = Path(episode(env, "ep-3")["fingerprint_path"])
     old = fp.stat().st_mtime - 90 * 86400
     os.utime(fp, (old, old))
-    assert retention.prune_store(env.db, env.settings) is not None
+    assert retention.prune_store(env.db) is not None
     assert fp.exists()
-    assert retention.prune_store(env.db, env.settings) is None  # once a day
+    assert retention.prune_store(env.db) is None  # once a day
 
 
 

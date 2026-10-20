@@ -112,7 +112,7 @@ class Background:
                 try:
                     feeds.refresh_due(db)
                     retention.expire_due(db)
-                    retention.prune_store(db, self.settings)
+                    retention.prune_store(db)
                 finally:
                     db.close()
             except Exception:  # keep going; the next tick may well work

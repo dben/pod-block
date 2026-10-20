@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 from typing import Iterator
 
@@ -10,16 +11,23 @@ from fastapi import Depends, HTTPException, Request
 from . import accounts
 from .db import connect
 
+log = logging.getLogger(__name__)
+
 
 class LoginRequired(Exception):
     pass
 
 
 def get_db(request: Request) -> Iterator[sqlite3.Connection]:
+    """A connection for the request. Each write commits in its own `transaction` block; a route that needs
+    several to land together wraps them in one."""
     db = connect(request.app.state.settings.db_path)
     try:
         yield db
     finally:
+        if db.in_transaction:  # a write outside a transaction block: it would hold the write lock until now
+            log.error("%s %s left a write uncommitted; rolled back", request.method, request.url.path)
+            db.rollback()
         db.close()
 
 

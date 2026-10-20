@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse, RedirectResponse, Response
 
 from . import directory, downloads, feeds, filters, jobs, library, publish
 from .episodes import wake_worker
+from .db import transaction
 from .deps import admin_user, current_user, get_db
 from .templating import flash, page
 
@@ -166,10 +167,11 @@ def podcast_settings(request: Request, podcast_id: int, retention_days: int = Fo
             and FILL_GAPS[0] <= fill_gaps <= FILL_GAPS[1]):
         flash(request, "Those settings are out of range.", "error")
     else:
-        db.execute("UPDATE podcasts SET retention_days = ?, refresh_minutes = ?, fill_gaps = ?, auto_download = ?, "
-                   "sort_oldest = ? WHERE id = ?",
-                   (retention_days, refresh_minutes, fill_gaps, int(auto_download), int(sort == "oldest"), podcast_id))
-        db.commit()
+        with transaction(db):
+            db.execute("UPDATE podcasts SET retention_days = ?, refresh_minutes = ?, fill_gaps = ?, "
+                       "auto_download = ?, sort_oldest = ? WHERE id = ?",
+                       (retention_days, refresh_minutes, fill_gaps, int(auto_download), int(sort == "oldest"),
+                        podcast_id))
         note = " Process episodes again to cut them with the new gap." if fill_gaps != pod["fill_gaps"] else ""
         flash(request, "Saved." + note)
     return RedirectResponse(f"/podcasts/{podcast_id}?tab=settings#tabs", status_code=303)

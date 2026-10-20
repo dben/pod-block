@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import RedirectResponse, Response
 
 from . import jobs, retention
+from .db import transaction
 from .deps import admin_user, get_db
 from .library import MAX_IDS
 from .templating import filesize, flash, page
@@ -75,14 +76,14 @@ def delete_downloads(request: Request, ids: list[int] = Form([]), next: str = Fo
     ids = list(dict.fromkeys(ids))[:MAX_IDS]
     rows = db.execute(f"SELECT * FROM episodes WHERE id IN ({', '.join('?' * len(ids))})", ids).fetchall() if ids else []
     now, freed, deleted, skipped = time.time(), 0, 0, 0
-    for ep in rows:
-        if ep["state"] in jobs.ACTIVE:
-            skipped += 1
-            continue
-        freed += sum(_size(ep[k]) for k in ("original_path", "cut_path", "peaks_path"))
-        retention.clear(db, ep, now)
-        deleted += 1
-    db.commit()
+    with transaction(db):
+        for ep in rows:
+            if ep["state"] in jobs.ACTIVE:
+                skipped += 1
+                continue
+            freed += sum(_size(ep[k]) for k in ("original_path", "cut_path", "peaks_path"))
+            retention.clear(db, ep, now)
+            deleted += 1
     note = f" {skipped:,} being processed {'was' if skipped == 1 else 'were'} left alone." if skipped else ""
     flash(request, f"Deleted {deleted:,} {'download' if deleted == 1 else 'downloads'}, freeing {filesize(freed)}.{note}"
           if deleted else "Nothing deleted." + note)

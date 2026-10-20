@@ -1,3 +1,5 @@
+import sqlite3
+
 import numpy as np
 import pytest
 
@@ -5,7 +7,8 @@ from podblock.feed import parse_feed
 from podblock.fingerprint import Fingerprint, FingerprintConfig
 from podblock.pipeline import neighbours
 from podblock.report import BREAK, build_sections
-from podblock.store import BUMPER_IN, BUMPER_OUT, INTRO, OUTRO, REPEATED, SegmentMatch, Store, StoreError
+from podblock.store import (BUMPER_IN, BUMPER_OUT, INTRO, OUTRO, REPEATED, Connection, SegmentMatch, Store,
+                            StoreError, transaction)
 
 
 def tones(seed, n=400):
@@ -158,3 +161,51 @@ def test_short_sections_are_left_in_unless_they_matter():
     sections = build_sections(matches, types, 3000, pinned={4})
     assert [(s.start, s.end) for s in sections] == [(300, 404), (900, 905), (2000, 3000)]
     assert len(build_sections(matches, types, 3000, min_section=0)) == 4
+
+
+def names(store):
+    return [p["name"] for p in store.podcasts()]
+
+
+def test_a_transaction_commits_its_writes_together_or_not_at_all(tmp_path):
+    store = Store(tmp_path / "db.sqlite")
+    with transaction(store.db):
+        store.podcast_id("Show A", "http://a/feed")
+        store.podcast_id("Show B", "http://b/feed")
+    with pytest.raises(ValueError), transaction(store.db):
+        store.podcast_id("Show C", "http://c/feed")
+        store.set_type(store.add_segment(tones(1), None, 0, 5), "no such type")
+    other = Store(tmp_path / "db.sqlite")  # another connection sees only what was committed
+    assert names(other) == ["Show A", "Show B"] and other.segments() == []
+
+
+def test_a_failure_inside_a_transaction_rolls_back_only_its_own_writes(tmp_path):
+    store = Store(tmp_path / "db.sqlite")
+    with transaction(store.db):
+        store.podcast_id("Kept", "http://a/feed")
+        with pytest.raises(RuntimeError), transaction(store.db):
+            store.podcast_id("Dropped", "http://b/feed")
+            raise RuntimeError
+    assert names(Store(tmp_path / "db.sqlite")) == ["Kept"]
+
+
+def test_a_write_left_outside_a_transaction_is_caught(tmp_path):
+    store = Store(tmp_path / "db.sqlite")
+    store.db.execute("INSERT INTO podcasts (name) VALUES ('stray')")
+    with pytest.raises(RuntimeError, match="uncommitted"), transaction(store.db):
+        pass
+
+
+def test_a_store_on_another_connection_shares_its_transactions(tmp_path):
+    path = tmp_path / "db.sqlite"
+    Store(path).close()
+    db = sqlite3.connect(path, factory=Connection)
+    db.row_factory = sqlite3.Row
+    store = Store.on(db)
+    with pytest.raises(RuntimeError), transaction(db):
+        db.execute("INSERT INTO settings VALUES ('mine', 'x')")
+        store.podcast_id("Show", "http://a/feed")
+        raise RuntimeError
+    assert names(store) == [] and db.execute("SELECT * FROM settings WHERE key = 'mine'").fetchone() is None
+    store.close()
+    assert db.execute("SELECT 1").fetchone()[0] == 1  # the connection is its owner's to close

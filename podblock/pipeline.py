@@ -20,7 +20,7 @@ from .fingerprint import (Fingerprint, FingerprintConfig, fingerprint_file, fram
 from .matcher import MatchParams, common_runs
 from .outro import music_bed_outro
 from .report import MIN_SECTION_SEC, build_sections
-from .store import BUMPER, BUMPER_IN, BUMPER_OUT, SegmentMatch, Store
+from .store import BUMPER, BUMPER_IN, BUMPER_OUT, SegmentMatch, Store, transaction
 
 log = logging.getLogger(__name__)
 
@@ -438,12 +438,12 @@ def prune(store: Store, audio_days: float = 0.0, fingerprint_days: float = 30.0,
         (now - block_days * day,)).fetchone()[0]
     gone["old block matches"] += old_matches
     if not dry_run:
-        for seg_id in stale:
-            store.delete_segment(seg_id)
-        store.db.execute("DELETE FROM occurrences WHERE episode_id IN "
-                         "(SELECT id FROM episodes WHERE fingerprint_path IS NULL AND added_at < ?)",
-                         (now - block_days * day,))
-        store.db.commit()
+        with transaction(store.db):
+            for seg_id in stale:
+                store.delete_segment(seg_id)
+            store.db.execute("DELETE FROM occurrences WHERE episode_id IN "
+                             "(SELECT id FROM episodes WHERE fingerprint_path IS NULL AND added_at < ?)",
+                             (now - block_days * day,))
         if stale:
             retag_bumpers(store)
     return gone

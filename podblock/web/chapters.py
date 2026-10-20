@@ -36,6 +36,7 @@ import requests
 
 from .. import cut
 from ..feed import PODCAST, PSC, USER_AGENT
+from .db import transaction
 
 log = logging.getLogger(__name__)
 
@@ -201,9 +202,9 @@ def gather(db: sqlite3.Connection, ep: sqlite3.Row, stem: Path) -> None:
         tmp.replace(path)
         transcripts.append({"format": fmt, "path": str(path),
                             **{k: el.get(k) for k in ("language", "rel") if el.get(k)}})
-    db.execute("UPDATE episodes SET source_chapters = ?, transcripts = ? WHERE id = ?",
-               (json.dumps(chapters), json.dumps(transcripts), ep["id"]))
-    db.commit()
+    with transaction(db):
+        db.execute("UPDATE episodes SET source_chapters = ?, transcripts = ? WHERE id = ?",
+                   (json.dumps(chapters), json.dumps(transcripts), ep["id"]))
 
 
 def forget(ep: sqlite3.Row) -> None:

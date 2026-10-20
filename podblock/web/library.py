@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 import time
 
-from .db import in_list
+from .db import in_list, transaction
 from .filters import HIDDEN
 
 # Fragments of the queries below. Those for one user name them `:user_id`, so a query using them takes
@@ -59,12 +59,12 @@ def subscribed(db: sqlite3.Connection, user_id: int, podcast_id: int) -> bool:
 
 def subscribe(db: sqlite3.Connection, user_id: int, podcast_id: int, on: bool = True) -> None:
     """Put a podcast on a user's home page, or take it off."""
-    if on:
-        db.execute("INSERT OR IGNORE INTO user_podcasts (user_id, podcast_id, added_at) VALUES (?, ?, ?)",
-                   (user_id, podcast_id, time.time()))
-    else:
-        db.execute("DELETE FROM user_podcasts WHERE user_id = ? AND podcast_id = ?", (user_id, podcast_id))
-    db.commit()
+    with transaction(db):
+        if on:
+            db.execute("INSERT OR IGNORE INTO user_podcasts (user_id, podcast_id, added_at) VALUES (?, ?, ?)",
+                       (user_id, podcast_id, time.time()))
+        else:
+            db.execute("DELETE FROM user_podcasts WHERE user_id = ? AND podcast_id = ?", (user_id, podcast_id))
 
 
 def podcast(db: sqlite3.Connection, podcast_id: int) -> sqlite3.Row | None:
@@ -130,15 +130,15 @@ def _set_flag(db: sqlite3.Connection, flag: str, user_id: int, podcast_id: int |
         return []
     marks, id_args = in_list("id", ids)
     scope = "e.podcast_id = :podcast_id AND " if podcast_id is not None else ""
-    changed = [r["id"] for r in db.execute(
-        f"""SELECT e.id FROM episodes e {USER_JOIN}
-            WHERE {scope}e.id IN ({marks}) AND COALESCE(ue.{flag}, 0) != :value""",
-        {"user_id": user_id, "podcast_id": podcast_id, "value": int(value), **id_args})]
-    db.executemany(
-        f"""INSERT INTO user_episodes (user_id, episode_id, {flag}) VALUES (?, ?, ?)
-            ON CONFLICT (user_id, episode_id) DO UPDATE SET {flag} = excluded.{flag}""",
-        [(user_id, ep_id, int(value)) for ep_id in changed])
-    db.commit()
+    with transaction(db):
+        changed = [r["id"] for r in db.execute(
+            f"""SELECT e.id FROM episodes e {USER_JOIN}
+                WHERE {scope}e.id IN ({marks}) AND COALESCE(ue.{flag}, 0) != :value""",
+            {"user_id": user_id, "podcast_id": podcast_id, "value": int(value), **id_args})]
+        db.executemany(
+            f"""INSERT INTO user_episodes (user_id, episode_id, {flag}) VALUES (?, ?, ?)
+                ON CONFLICT (user_id, episode_id) DO UPDATE SET {flag} = excluded.{flag}""",
+            [(user_id, ep_id, int(value)) for ep_id in changed])
     return changed
 
 
@@ -164,8 +164,9 @@ def archive_expired(db: sqlite3.Connection, user_id: int, podcast_id: int | None
             WHERE e.state = 'expired' AND {ARCHIVED} = 0 AND NOT {HIDDEN} {scope}""",
         {"user_id": user_id, "podcast_id": podcast_id})]
     changed = []
-    for start in range(0, len(ids), MAX_IDS):
-        changed += set_archived(db, user_id, None, ids[start:start + MAX_IDS], True)
+    with transaction(db):
+        for start in range(0, len(ids), MAX_IDS):
+            changed += set_archived(db, user_id, None, ids[start:start + MAX_IDS], True)
     return changed
 
 
@@ -181,6 +182,7 @@ def archive_older(db: sqlite3.Connection, user_id: int, podcast_id: int, episode
         "SELECT id FROM episodes WHERE podcast_id = ? AND (pub_ts <= ? OR id = ?)",
         (podcast_id, row["pub_ts"], episode_id))]
     changed = []
-    for start in range(0, len(ids), MAX_IDS):
-        changed += set_archived(db, user_id, podcast_id, ids[start:start + MAX_IDS], True)
+    with transaction(db):
+        for start in range(0, len(ids), MAX_IDS):
+            changed += set_archived(db, user_id, podcast_id, ids[start:start + MAX_IDS], True)
     return changed

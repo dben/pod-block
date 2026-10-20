@@ -51,7 +51,7 @@ from fastapi.responses import FileResponse, PlainTextResponse, Response
 
 from ..feed import ITUNES, PODCAST, PSC
 from . import chapters, grabs
-from .db import new_token
+from .db import new_token, transaction
 from .deps import get_db
 from .filters import HIDDEN
 from .library import USER_JOIN
@@ -107,10 +107,10 @@ def feed_token(db: sqlite3.Connection, user_id: int, podcast_id: int) -> str:
 def new_feed_token(db: sqlite3.Connection, user_id: int, podcast_id: int) -> str:
     """Give a user's feed of a podcast a new address; the old one stops working at once. Audio links stay."""
     token = new_token()
-    db.execute("""INSERT INTO user_feeds (user_id, podcast_id, token, created_at) VALUES (?, ?, ?, ?)
-                  ON CONFLICT (user_id, podcast_id) DO UPDATE SET token = excluded.token""",
-               (user_id, podcast_id, token, time.time()))
-    db.commit()
+    with transaction(db):
+        db.execute("""INSERT INTO user_feeds (user_id, podcast_id, token, created_at) VALUES (?, ?, ?, ?)
+                      ON CONFLICT (user_id, podcast_id) DO UPDATE SET token = excluded.token""",
+                   (user_id, podcast_id, token, time.time()))
     return token
 
 
@@ -123,8 +123,8 @@ def omni_token(db: sqlite3.Connection, user_id: int) -> str:
 def new_omni_token(db: sqlite3.Connection, user_id: int) -> str:
     """Give a user's omni feed a new address; the old one stops working at once."""
     token = new_token()
-    db.execute("UPDATE users SET omni_token = ? WHERE id = ?", (token, user_id))
-    db.commit()
+    with transaction(db):
+        db.execute("UPDATE users SET omni_token = ? WHERE id = ?", (token, user_id))
     return token
 
 
