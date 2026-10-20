@@ -289,8 +289,8 @@ def cmd_serve(args, store: Store, paths: Paths) -> None:
     try:
         import uvicorn
 
+        from .app.config import Settings
         from .web.app import create_app
-        from .web.config import Settings
     except ImportError:
         sys.exit("podblock: the web app needs its extras: pip install 'pod-block[web]'")
     app = create_app(Settings.from_env(data_dir=paths.root, media_dir=args.media_dir))
@@ -298,11 +298,9 @@ def cmd_serve(args, store: Store, paths: Paths) -> None:
 
 
 def cmd_worker(args, store: Store, paths: Paths) -> None:
-    try:
-        from .web.background import run_worker
-        from .web.config import Settings
-    except ImportError:
-        sys.exit("podblock: the worker needs the web app's extras: pip install 'pod-block[web]'")
+    from .app.config import Settings  # the app needs none of the web app's extras
+    from .app.worker import run_worker
+
     settings = Settings.from_env(data_dir=paths.root, media_dir=args.media_dir)
     if args.workers:
         settings.workers = args.workers
@@ -330,8 +328,8 @@ def cmd_backup(args, store: Store, paths: Paths) -> None:
 
 
 def cmd_api_key(args, store: Store, paths: Paths) -> None:
-    from .web import accounts
-    from .web.db import connect, prepare
+    from .app import accounts
+    from .app.db import connect, prepare
 
     prepare(paths.db)
     db = connect(paths.db)

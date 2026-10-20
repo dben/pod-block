@@ -12,9 +12,8 @@ from fastapi import Request
 from fastapi.responses import Response
 from fastapi.templating import Jinja2Templates
 
-from . import jobs
-from .db import connect
-from .feeds import html_to_text
+from ..app import jobs
+from ..app.text import html_to_text, web_url
 
 HERE = Path(__file__).parent
 STATIC = HERE / "static"
@@ -81,11 +80,6 @@ def duration(secs: float | None) -> str:
     return f"{mins // 60} hr {mins % 60} min" if mins % 60 else f"{mins // 60} hr"
 
 
-def web_url(url: str | None) -> str | None:
-    """Only http(s) links from a feed make it into a page."""
-    return url if url and url.split(":", 1)[0].lower() in {"http", "https"} else None
-
-
 def clock(secs: float | None) -> str:
     secs = int(round(secs or 0))
     h, rem = divmod(secs, 3600)
@@ -94,11 +88,9 @@ def clock(secs: float | None) -> str:
 
 
 def active_jobs(request: Request) -> int:
-    db = connect(request.app.state.settings.db_path)
-    try:
-        return jobs.active_count(db)
-    finally:
-        db.close()
+    """Jobs queued or running, for the nav. Pages with a nav have a connection (`deps.get_db`)."""
+    db = getattr(request.state, "db", None)
+    return jobs.active_count(db) if db is not None else 0
 
 
 def expires(ep, podcast=None) -> float | None:

@@ -10,11 +10,9 @@ cut and made ready too.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import sqlite3
-import threading
 import time
 from pathlib import Path
 
@@ -28,31 +26,15 @@ from . import chapters
 from .config import Settings
 from .db import transaction
 from .jobs import Cancelled, Context, enqueue, settle_episode, take_along
+from .locks import detecting
 
 log = logging.getLogger(__name__)
 
 COMPARE_WITH = 4  # fingerprinted episodes a show should have before its repeats are looked for
 FILL_GAPS = 4.0  # default seconds of new audio between two repeats cut with them (podcasts.fill_gaps)
-AUDIO_SUFFIXES = {".mp3", ".m4a", ".mp4", ".aac", ".ogg", ".opus", ".oga", ".wav", ".flac"}
-MIME_SUFFIXES = {"audio/mpeg": ".mp3", "audio/mp3": ".mp3", "audio/mp4": ".m4a", "audio/x-m4a": ".m4a",
-                 "audio/aac": ".aac", "audio/ogg": ".ogg", "audio/opus": ".opus"}
-
-_detecting = threading.Lock()  # the store's blocks change while repeats are found; one group at a time
-
 
 class ProcessError(Exception):
     pass
-
-
-def media_key(guid: str) -> str:
-    return hashlib.sha1(guid.encode()).hexdigest()[:16]
-
-
-def audio_suffix(url: str | None, mime: str | None) -> str:
-    suffix = Path((url or "").split("?", 1)[0]).suffix.lower()
-    if suffix in AUDIO_SUFFIXES:
-        return suffix
-    return MIME_SUFFIXES.get((mime or "").split(";")[0].strip().lower(), ".mp3")
 
 
 def _episode(db: sqlite3.Connection, episode_id: int) -> sqlite3.Row:
@@ -84,7 +66,7 @@ def _fetch(ctx: Context, settings: Settings, store: Store, paths: Paths, episode
     if original is None or not original.exists():
         if not ep["audio_url"]:
             raise ProcessError("the feed gives no audio for it")
-        original = settings.media_dir / "original" / (media_key(ep["guid"]) + audio_suffix(ep["audio_url"], ep["audio_type"]))
+        original = settings.media.original(ep)
         ctx.step("Downloading", episode_id)
         try:
             download(ep["audio_url"], original, progress=lambda done, total: ctx.progress(done / total if total else None))
@@ -128,7 +110,7 @@ def _render(ctx: Context, settings: Settings, episode_id: int, report: dict) -> 
     spec = json.dumps([[round(a, 2), round(b, 2)] for a, b in keep])
     if ep["source_chapters"] is None:
         ctx.step("Reading chapters", episode_id)
-        chapters.gather(ctx.db, ep, settings.media_dir / "transcripts" / media_key(ep["guid"]))
+        chapters.gather(ctx.db, ep, settings.media.transcripts(ep))
         ep = _episode(ctx.db, episode_id)
     edits = ctx.db.execute("SELECT start, end FROM edits WHERE episode_id = ?", (episode_id,)).fetchall()
     marks = chapters.build(json.loads(spec), chapters.cuts(report, edits), json.loads(ep["source_chapters"]))
@@ -140,7 +122,7 @@ def _render(ctx: Context, settings: Settings, episode_id: int, report: dict) -> 
         return
     ctx.step("Cutting", episode_id)
     try:
-        out = cut.render(Path(ep["original_path"]), settings.media_dir / "cut" / media_key(ep["guid"]), keep,
+        out = cut.render(Path(ep["original_path"]), settings.media.cut(ep), keep,
                          progress=ctx.progress, chapters=marks)
     except cut.CutError as e:
         raise ProcessError(str(e)) from None
@@ -164,7 +146,7 @@ def ensure_peaks(db: sqlite3.Connection, settings: Settings, episode_id: int) ->
         return None
     per_second = 10
     values = cut.peaks(Path(ep["original_path"]), per_second)
-    path = settings.media_dir / "peaks" / f"{media_key(ep['guid'])}.json"
+    path = settings.media.peaks(ep)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".part")
     tmp.write_text(json.dumps({"per_second": per_second, "peaks": values}, separators=(",", ":")))
@@ -196,7 +178,7 @@ def run(ctx: Context, settings: Settings) -> None:
             for other in group[1:]:
                 ctx.db.execute("UPDATE episodes SET state = 'running', state_note = 'Finding repeats' WHERE id = ?",
                                (other,))
-        with _detecting:
+        with detecting:
             if learn:
                 skip = {r["id"] for r in ctx.db.execute("SELECT id FROM episodes WHERE skip_processing = 1")}
                 added = find_common_blocks(store, group, params, skip=skip)
@@ -242,7 +224,7 @@ def run_unlearn(ctx: Context, settings: Settings) -> None:
     store = Store.on(ctx.db)
     touched: set[int] = set()
     ctx.step("Forgetting repeats found in filtered episodes")
-    with _detecting, transaction(ctx.db):
+    with detecting, transaction(ctx.db):
         skip = {r["id"] for r in ctx.db.execute("SELECT id FROM episodes WHERE skip_processing = 1")}
         eps = [e for e in wanted if e in skip]  # a filter taken away since then leaves the rest be
         if not eps:
@@ -333,7 +315,7 @@ def run_edit(ctx: Context, settings: Settings) -> None:
         touched = {r["episode_id"] for r in ctx.db.execute(
             f"SELECT DISTINCT episode_id FROM occurrences WHERE segment_id IN ({', '.join('?' * len(changed_blocks))})",
             tuple(changed_blocks))} if changed_blocks else set()
-        with _detecting:
+        with detecting:
             fp = load_fingerprint(store, episode_id) if any(a["as_block"] for a in changes["add"]) else None
             with transaction(ctx.db):  # the changes land together, or not at all
                 for t in changes["types"]:

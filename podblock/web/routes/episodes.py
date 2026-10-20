@@ -1,4 +1,4 @@
-"""Pages for one episode, its audio, and the job queue."""
+"""Pages for one episode, and its audio."""
 
 from __future__ import annotations
 
@@ -10,18 +10,13 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 
-from .. import cut
-from . import grabs, jobs, library, processing
-from .deps import current_user, get_db
-from .feeds import show_notes
-from .templating import flash, page
+from ... import cut
+from ...app import grabs, jobs, library, processing
+from ...app.feeds import show_notes
+from ..deps import current_user, get_db, wake_worker
+from ..templating import flash, page
 
 router = APIRouter()
-
-
-def wake_worker(request: Request) -> None:
-    if background := getattr(request.app.state, "background", None):
-        background.wake()
 
 
 def _episode(db: sqlite3.Connection, user_id: int, episode_id: int) -> sqlite3.Row:
@@ -163,28 +158,3 @@ def process_episode(request: Request, episode_id: int, user=Depends(current_user
     else:
         flash(request, "It's already queued.")
     return RedirectResponse(f"/episodes/{episode_id}", status_code=303)
-
-
-@router.get("/jobs")
-def jobs_page(request: Request, user=Depends(current_user), db: sqlite3.Connection = Depends(get_db)) -> Response:
-    background = getattr(request.app.state, "background", None)
-    return page(request, "jobs.html", title="Jobs", nav="jobs", user=user, jobs=jobs.listing(db),
-                worker_down=background is not None and not background.running())
-
-
-@router.post("/jobs/{job_id}/cancel")
-def cancel_job(request: Request, job_id: int, user=Depends(current_user),
-               db: sqlite3.Connection = Depends(get_db)) -> Response:
-    flash(request, "Cancelled." if jobs.cancel(db, job_id) else "That job had already finished.")
-    return RedirectResponse("/jobs", status_code=303)
-
-
-@router.post("/jobs/{job_id}/retry")
-def retry_job(request: Request, job_id: int, user=Depends(current_user),
-              db: sqlite3.Connection = Depends(get_db)) -> Response:
-    if jobs.retry(db, job_id, user["id"]):
-        wake_worker(request)
-        flash(request, "Queued again.")
-    else:
-        flash(request, "That can't be retried; it may be queued already.", "error")
-    return RedirectResponse("/jobs", status_code=303)

@@ -18,15 +18,15 @@ from fastapi.testclient import TestClient
 from test_feeds import rss
 from test_processing import audio_files  # noqa: F401  (a fixture)
 
-from podblock.web import background, locks
+from podblock.app import locks, worker
 from podblock.web.app import create_app
-from podblock.web.config import Settings
-from podblock.web.db import connect
+from podblock.app.config import Settings
+from podblock.app.db import connect
 
 HOLD = """
 import sys, time
 from pathlib import Path
-from podblock.web import locks
+from podblock.app import locks
 with locks.exclusive(Path(sys.argv[1])):
     print("held", flush=True)
     time.sleep(float(sys.argv[2]))
@@ -44,7 +44,7 @@ def test_a_lock_holds_across_processes(tmp_path):
     assert waited > 0.8  # it waited for the other process to let go
 
     assert (held := locks.hold(path)) is not None
-    taken = subprocess.run([sys.executable, "-c", "import sys; from pathlib import Path; from podblock.web import locks; "
+    taken = subprocess.run([sys.executable, "-c", "import sys; from pathlib import Path; from podblock.app import locks; "
                             "print(locks.hold(Path(sys.argv[1])))", str(path)], capture_output=True, text=True)
     assert taken.stdout.strip() == "None"
     os.close(held)
@@ -57,10 +57,10 @@ def settings(tmp_path, **kw):
 def test_only_one_process_runs_the_jobs(tmp_path):
     s = settings(tmp_path)
     create_app(s)
-    held = background.hold_worker(s)
+    held = worker.hold_worker(s)
     try:
-        assert background.run_worker(s) == 1
-        assert background.in_process(s) is None
+        assert worker.run_worker(s) == 1
+        assert worker.in_process(s) is None
     finally:
         os.close(held)
     assert subprocess.run([sys.executable, "-m", "podblock", "--data-dir", str(s.data_dir), "worker", "--parent",
@@ -115,7 +115,7 @@ def test_the_web_app_runs_jobs_in_a_worker_process(tmp_path, site, monkeypatch):
     app = create_app(s)
     with TestClient(app, follow_redirects=False) as client:
         jobs = app.state.background
-        assert isinstance(jobs, background.JobProcess)
+        assert isinstance(jobs, worker.JobProcess)
         first = wait_for(lambda: jobs._proc)
         assert first.pid != os.getpid()
         client.post("/login", data={"key": "k"})

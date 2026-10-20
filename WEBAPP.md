@@ -30,7 +30,7 @@ built, and what could come next.
 | Pages | Jinja2 templates, HTMX for partial updates, Alpine.js for small bits of client state | server-rendered, no Node build step; JS libraries are copied into `podblock/web/static/vendor/` so the container needs no CDN |
 | Timeline and player | `static/timeline.js`, no library | a canvas over the part in view, with waveform data worked out on the server |
 | Styling | hand-written CSS with custom properties | dark by default, mobile first, no build step |
-| Database | `podblock.sqlite`, through `sqlite3` as the detector's `Store` does | one file on a volume; the app's tables are added by numbered steps in `podblock/web/db.py` |
+| Database | `podblock.sqlite`, through `sqlite3` as the detector's `Store` does | one file on a volume; the app's tables are added by numbered steps in `podblock/app/db.py` |
 | Background work | a worker process, `podblock worker`, that `serve` starts and restarts; inside it, threads (`PODBLOCK_WORKERS`, default 1) take jobs from a table in the database, and one more refreshes feeds and cleans up | survives restarts, needs no broker; a crash or memory spike in a job can't take the pages down; the two share only the database, so the worker can move to its own container later |
 | Audio cutting | `podblock/cut.py`: one ffmpeg decodes to raw samples, Python drops the cut stretches and fades each join, a second ffmpeg encodes | flat memory whatever the length, cuts on the exact sample, real fades; one decode and one encode |
 
@@ -50,7 +50,7 @@ podcast app ──no login, secret path──▶ /p/<user's feed token>/feed.xml
 
 - Jobs, feed refreshes and clean-up run in a process of their own,
   `podblock worker`, which `serve` starts as its child
-  (`podblock/web/background.py`). A crash or a memory spike while
+  (`podblock/app/worker.py`). A crash or a memory spike while
   fingerprinting can't take the pages down. If the worker dies, `serve`
   starts it again, waiting a second, then twice as long each time it dies
   soon after starting (up to a minute); the Jobs page says so meanwhile, and
@@ -63,7 +63,7 @@ podcast app ──no login, secret path──▶ /p/<user's feed token>/feed.xml
   file, `worker.lock`, beside it), since on starting it puts jobs left
   running back in the queue. Feed refreshes, which the pages run too, and
   database upgrades take a lock file each, so they happen one at a time
-  across both (`podblock/web/locks.py`).
+  across both (`podblock/app/locks.py`).
 - `PODBLOCK_JOBS=threads` runs the worker in `serve`'s own process instead,
   as before; `none` runs none, for a `podblock worker` you start yourself
   (another container in the same pod, say, sharing the volumes).
@@ -81,6 +81,20 @@ podcast app ──no login, secret path──▶ /p/<user's feed token>/feed.xml
 - The app keeps its audio in its own columns and under the media folder.
   The detector's `prune` deletes whatever `episodes.audio_path` points at,
   so the app never puts its files there.
+
+### Code layout
+
+Three layers, each importing only the ones below it
+(`tests/test_layers.py` checks this):
+
+| Layer | Where | What |
+| --- | --- | --- |
+| Web app | `podblock/web/` | `app.py` puts the FastAPI app together; `routes/` has one module per part of the site, each parsing a request, calling the app and rendering; `deps.py` is what routes ask for (the database, the user); `templating.py`, `templates/` and `static/` are the pages |
+| App | `podblock/app/` | everything else the app does, with no HTTP in it: following feeds (`feeds.py`), the job queue (`jobs.py`) and what the jobs do (`processing.py`), the worker process that runs them (`worker.py`), private feeds (`private_feeds.py`), users, filters, grabs, retention, and the database's tables and transactions (`db.py`) |
+| Detector | `podblock/*.py` | fingerprinting, matching, the block store, reports and cutting; the command line (`cli.py`) starts all three |
+
+The worker process imports only the app and the detector, so it runs
+without the web app's extras.
 
 ## Settings
 
@@ -202,7 +216,7 @@ on Kubernetes, with backups and upgrades, see `deployment/README.md`.
   else becomes MP3) at the nearest standard bitrate, with a 40 ms fade
   either side of each join. Tags and cover art are copied. Kept stretches
   under a second between two cuts go too.
-- Chapters and transcripts are moved to fit the cut (`podblock/web/chapters.py`).
+- Chapters and transcripts are moved to fit the cut (`podblock/app/chapters.py`).
   The first time an episode is cut, its chapters are read: the feed's
   `podcast:chapters` JSON, else its inline `psc:chapters`, else the ones in
   the audio file. Its timed transcripts (`podcast:transcript` as WebVTT, SRT
@@ -350,7 +364,7 @@ on Kubernetes, with backups and upgrades, see `deployment/README.md`.
   switch, "By release date" or "By download date", that picks which
   address and QR code it shows.
 - A feed keeps the show's channel and each episode's `<item>` as the source
-  had them (`podblock/web/publish.py`), with these changes: the enclosure
+  had them (`podblock/app/private_feeds.py`), with these changes: the enclosure
   points at the cut file with its length and type, and `itunes:duration` is
   the cut length; `podcast:chapters` and `podcast:transcript` point at our
   copies, moved to fit the cut (see Processing), and the source's chapters,
@@ -385,7 +399,7 @@ on Kubernetes, with backups and upgrades, see `deployment/README.md`.
 ### Grabs
 
 - Every time a user's podcast app fetches an episode through their private
-  feed or omni feed, it counts toward a grab by that user (`podblock/web/grabs.py`,
+  feed or omni feed, it counts toward a grab by that user (`podblock/app/grabs.py`,
   table `grabs`). Apps fetch audio in pieces, some stream while a download
   runs alongside, and a seek is another request; so a hit within 10 minutes
   of the last one, or one that starts partway into the file, adds to the
@@ -411,7 +425,7 @@ on Kubernetes, with backups and upgrades, see `deployment/README.md`.
   private feed, and "Download again" brings it back, cut the same way.
   Downloads that never became ready (failed jobs, companions of a cancelled
   one) go on the same clock. The check runs every minute in the background
-  (`podblock/web/retention.py`).
+  (`podblock/app/retention.py`).
 - Keep (per user) stops an episode from being cleaned up while anyone keeps
   it: in each row's menu, in the selection bar, and on the episode page.
   Kept and ready episodes keep their fingerprints too.
@@ -443,7 +457,7 @@ on Kubernetes, with backups and upgrades, see `deployment/README.md`.
 ## Data model
 
 The app's tables and columns, added by migrations 1 to 15 in
-`podblock/web/db.py`, beside the detector's (see `README.md`):
+`podblock/app/db.py`, beside the detector's (see `README.md`):
 
 ```
 settings: app_schema, api_key_hash, auth_epoch, secret_key   -- rows beside the detector's own

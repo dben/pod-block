@@ -14,13 +14,13 @@ import sqlite3
 import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
-from html.parser import HTMLParser
 
 import requests
 
 from ..feed import CONTENT, ITUNES, Feed, FeedError, get_feed, parse_feed
 from . import filters, jobs, locks
 from .db import new_token, transaction
+from .text import html_to_text
 
 log = logging.getLogger(__name__)
 
@@ -63,39 +63,6 @@ class Refreshed:
         if self.queued:
             parts.append(f"{self.queued} queued to download")
         return ", ".join(parts).capitalize() + "." + (" The feed has moved; following it." if self.moved_to else "")
-
-
-class _Text(HTMLParser):
-    BREAKS = {"p", "br", "div", "li", "ul", "ol", "h1", "h2", "h3", "h4", "tr", "blockquote"}
-
-    def __init__(self):
-        super().__init__(convert_charrefs=True)
-        self.parts: list[str] = []
-
-    def handle_starttag(self, tag, attrs):
-        self.handle_endtag(tag)
-
-    def handle_endtag(self, tag):
-        if tag in self.BREAKS:
-            self.parts.append("\n")
-
-    def handle_data(self, data):
-        self.parts.append(data)
-
-
-def html_to_text(html: str | None) -> str:
-    """Show notes as plain text, one paragraph per line. Safe to show anywhere."""
-    if not html:
-        return ""
-    for _ in range(2):  # some feeds escape their HTML twice
-        parser = _Text()
-        parser.feed(html)
-        parser.close()
-        html = "".join(parser.parts)
-        if not re.search(r"<(p|br|a|div|span|li)\b", html, re.I):
-            break
-    lines = (re.sub(r"[ \t\r\f\v ]+", " ", line).strip() for line in html.split("\n"))
-    return "\n".join(line for line in lines if line)
 
 
 def summary(html: str | None) -> str:

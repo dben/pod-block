@@ -9,11 +9,10 @@ import segno
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 
-from . import directory, downloads, feeds, filters, jobs, library, publish
-from .episodes import wake_worker
-from .db import transaction
-from .deps import admin_user, current_user, get_db
-from .templating import flash, page
+from ...app import directory, feeds, filters, jobs, library, private_feeds, storage
+from ...app.db import transaction
+from ..deps import admin_user, current_user, feed_url, get_db, wake_worker
+from ..templating import flash, page
 
 PAGE_SIZE = 50
 VIEWS = {"active": (False, False), "archived": (True, False), "downloaded": (False, True),  # (archived, downloaded)
@@ -45,7 +44,7 @@ def _addresses(request: Request, token: str) -> list[dict]:
     """A feed's two addresses, newest released first and newest downloaded first, each with its QR code."""
     out = []
     for key, label, by_download in (("released", "By release date", False), ("downloaded", "By download date", True)):
-        url = publish.feed_url(request, token, by_download)
+        url = feed_url(request, token, by_download)
         out.append({"key": key, "label": label, "url": url, "qr": _qr(url)})
     return out
 
@@ -66,9 +65,9 @@ def _home(request: Request, user, db: sqlite3.Connection, view: str = "mine", st
     expired_total = sum(p["expired_count"] for p in shown if p["subscribed"])
     return page(request, "home.html", status_code=status_code, title="Podcasts", nav="podcasts", user=user,
                 podcasts=shown, view=view, mine_count=mine, all_count=everything, expired_total=expired_total,
-                omni_addresses=_addresses(request, publish.omni_token(db, user["id"])),
-                omni_count=len(publish.omni_published(db, user["id"])),
-                space=downloads.space(db, request.app.state.settings.media_dir), search=search, **context)
+                omni_addresses=_addresses(request, private_feeds.omni_token(db, user["id"])),
+                omni_count=len(private_feeds.omni_published(db, user["id"])),
+                space=storage.space(db, request.app.state.settings.media_dir), search=search, **context)
 
 
 @router.get("/")
@@ -93,7 +92,7 @@ def subscribe(request: Request, podcast_id: int, on: bool = Form(...), next: str
 @router.post("/omni-token")
 def new_omni_address(request: Request, user=Depends(current_user), db: sqlite3.Connection = Depends(get_db)) -> Response:
     """Give your omni feed a new address."""
-    publish.new_omni_token(db, user["id"])
+    private_feeds.new_omni_token(db, user["id"])
     flash(request, "Your omni feed has a new address. The old one no longer works.")
     return RedirectResponse("/?omni=1", status_code=303)
 
@@ -146,8 +145,8 @@ def show_podcast(request: Request, podcast_id: int, view: str = "active", q: str
         if partial:
             return page(request, "_episodes.html", **context)
     if tab == "feed":
-        context.update(private_addresses=_addresses(request, publish.feed_token(db, user["id"], podcast_id)),
-                       private_count=len(publish.published(db, podcast_id, user["id"])))
+        context.update(private_addresses=_addresses(request, private_feeds.feed_token(db, user["id"], podcast_id)),
+                       private_count=len(private_feeds.published(db, podcast_id, user["id"])))
     cut_sec = db.execute("SELECT COALESCE(SUM(duration - cut_duration), 0) FROM episodes WHERE podcast_id = ? "
                          "AND cut_duration IS NOT NULL", (podcast_id,)).fetchone()[0]
     return page(request, "podcast.html", title=pod["name"], nav="podcasts", user=user, cut_sec=cut_sec,
@@ -219,7 +218,7 @@ def new_feed_address(request: Request, podcast_id: int, user=Depends(current_use
                      db: sqlite3.Connection = Depends(get_db)) -> Response:
     """Give your own private feed of a podcast a new address. Everyone else's stays."""
     _podcast_or_404(db, podcast_id)
-    publish.new_feed_token(db, user["id"], podcast_id)
+    private_feeds.new_feed_token(db, user["id"], podcast_id)
     flash(request, "Your private feed has a new address. The old one no longer works.")
     return RedirectResponse(f"/podcasts/{podcast_id}?tab=feed#tabs", status_code=303)
 

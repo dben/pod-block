@@ -20,7 +20,7 @@ from ..pipeline import prune
 from ..store import Store
 from . import chapters
 from .db import set_setting, setting, transaction
-from .processing import _detecting
+from .locks import detecting
 
 log = logging.getLogger(__name__)
 
@@ -95,7 +95,7 @@ def prune_store(db: sqlite3.Connection, now: float | None = None) -> dict | None
             os.utime(r["fingerprint_path"], (now, now))
         except FileNotFoundError:
             pass
-    with _detecting:
+    with detecting:
         gone = prune(Store.on(db), audio_days=NO_AUDIO_PRUNE, fingerprint_days=FINGERPRINT_DAYS,
                      block_days=BLOCK_DAYS, bumper_days=BUMPER_DAYS)
     if any(gone.values()):

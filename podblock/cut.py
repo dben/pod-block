@@ -5,7 +5,7 @@ here with their edges faded, and a second ffmpeg encodes them in the source's
 format at about its bitrate. Memory stays the same whatever the length, and
 cuts land on the exact sample. Tags and cover art are copied from the
 source. The source's chapters are dropped, since their times would be wrong;
-the caller passes chapters that fit the cut (see `podblock/web/chapters.py`).
+the caller passes chapters that fit the cut (see `podblock/app/chapters.py`).
 """
 
 from __future__ import annotations

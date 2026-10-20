@@ -10,10 +10,10 @@ pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient
 
 from podblock.store import Store
-from podblock.web import directory, feeds, filters, library
+from podblock.app import directory, feeds, filters, library
 from podblock.web.app import create_app
-from podblock.web.config import Settings
-from podblock.web.db import connect, prepare
+from podblock.app.config import Settings
+from podblock.app.db import connect, prepare
 
 HTML = {"accept": "text/html"}
 JSON = {"accept": "application/json"}
@@ -276,7 +276,7 @@ def test_add_and_browse_a_podcast(client, web):
 
 
 def test_episode_list_pages_and_searches(client, web, monkeypatch):
-    monkeypatch.setattr("podblock.web.podcasts.PAGE_SIZE", 2)
+    monkeypatch.setattr("podblock.web.routes.podcasts.PAGE_SIZE", 2)
     pod = add(client, web, *(item(n) for n in range(1, 6)))
     first = client.get(f"/podcasts/{pod}").text
     assert "Episode 5" in first and "Episode 3" not in first and "page=2" in first
@@ -569,7 +569,7 @@ def test_show_page_tabs(client, web):
 
 
 def test_episodes_can_be_listed_oldest_first(client, web, monkeypatch):
-    monkeypatch.setattr("podblock.web.podcasts.PAGE_SIZE", 2)
+    monkeypatch.setattr("podblock.web.routes.podcasts.PAGE_SIZE", 2)
     pod = add(client, web, *(item(n) for n in range(1, 6)))
     assert titles(client, pod) == [4, 5] and "Newest first" in client.get(f"/podcasts/{pod}").text
 
@@ -585,7 +585,7 @@ def test_episodes_can_be_listed_oldest_first(client, web, monkeypatch):
 
 
 def test_the_next_page_loads_as_it_scrolls_into_view(client, web, monkeypatch):
-    monkeypatch.setattr("podblock.web.podcasts.PAGE_SIZE", 2)
+    monkeypatch.setattr("podblock.web.routes.podcasts.PAGE_SIZE", 2)
     pod = add(client, web, *(item(n) for n in range(1, 4)))
     more = re.search(r'<li class="ep-more">.*?</li>', client.get(f"/podcasts/{pod}").text, re.S).group(0)
     assert 'hx-trigger="revealed, click"' in more and f'href="/podcasts/{pod}?page=2"' in more

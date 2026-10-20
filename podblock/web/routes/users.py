@@ -7,9 +7,9 @@ import sqlite3
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import RedirectResponse, Response
 
-from . import accounts
-from .deps import admin_user, current_user, get_db, start_session
-from .templating import flash, page
+from ...app import accounts
+from ..deps import admin_user, current_user, get_db, start_session
+from ..templating import flash, page
 
 router = APIRouter()
 

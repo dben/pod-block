@@ -1,6 +1,6 @@
 """A queue of background jobs, kept in the database so it survives restarts.
 
-Pages add jobs; worker threads (background.py) claim them one at a time and
+Pages add jobs; worker threads (worker.py) claim them one at a time and
 run them. A job reports what it is doing through its `Context`, which also
 stops it, between steps or mid-download, when someone cancels it.
 

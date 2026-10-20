@@ -1,28 +1,26 @@
-"""The FastAPI app: management pages behind a login, and the private feed routes."""
+"""The FastAPI app: settings, keys and the database made ready, the worker started, and the routes put together."""
 
 from __future__ import annotations
 
-import asyncio
 import sqlite3
 import sys
 from contextlib import asynccontextmanager
 from urllib.parse import quote
 
-from fastapi import Depends, FastAPI, Form, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
-from starlette.concurrency import run_in_threadpool
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import accounts, downloads, episodes, podcasts, publish, users
-from .background import JobProcess, in_process
-from .config import Settings
-from .db import connect, prepare, setting
-from .deps import LoginRequired, get_db, start_session
-from .templating import STATIC, page
+from ..app import accounts
+from ..app.config import Settings
+from ..app.db import connect, prepare, setting
+from ..app.worker import JobProcess, in_process
+from .deps import LoginRequired, get_db
+from .routes import auth, downloads, episodes, jobs, podcasts, private_feeds, users
+from .templating import STATIC
 
 SESSION_DAYS = 30
-FAILED_LOGIN_DELAY = 1.0  # seconds, to slow down guessing
 
 
 def init(settings: Settings) -> tuple[str, str | None]:
@@ -41,13 +39,6 @@ def init(settings: Settings) -> tuple[str, str | None]:
         return settings.secret_key or accounts.secret_key(db), made
     finally:
         db.close()
-
-
-def safe_next(target: str | None) -> str:
-    """Only redirect within this site after login."""
-    if target and target.startswith("/") and not target.startswith("//") and "\\" not in target:
-        return target
-    return "/"
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -77,11 +68,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.add_middleware(SessionMiddleware, secret_key=secret, session_cookie="podblock_session",
                        max_age=SESSION_DAYS * 86400, same_site="lax", https_only=settings.secure_cookies)
     app.mount("/static", StaticFiles(directory=STATIC), name="static")
-    app.include_router(podcasts.router)
-    app.include_router(episodes.router)
-    app.include_router(publish.router)
-    app.include_router(users.router)
-    app.include_router(downloads.router)
+    for routes in (auth, podcasts, episodes, jobs, private_feeds, users, downloads):
+        app.include_router(routes.router)
 
     @app.exception_handler(LoginRequired)
     async def login_required(request: Request, exc: LoginRequired) -> Response:
@@ -104,29 +92,5 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def healthz(db: sqlite3.Connection = Depends(get_db)) -> dict:
         db.execute("SELECT 1").fetchone()
         return {"ok": True}
-
-    @app.get("/login")
-    def login_form(request: Request, next: str = "/") -> Response:
-        return page(request, "login.html", title="Log in", next=safe_next(next))
-
-    @app.post("/login")
-    async def login(request: Request, username: str = Form(""), password: str = Form(""), key: str = Form(""),
-                    next: str = Form("/"), db: sqlite3.Connection = Depends(get_db)) -> Response:
-        # `key` alone is the old form, kept for scripts: the API key, logging in as the admin
-        name, secret = (accounts.ADMIN, key) if key else (username, password)
-        found = await run_in_threadpool(accounts.log_in, db, name, secret)
-        if found is None:
-            await asyncio.sleep(FAILED_LOGIN_DELAY)
-            return page(request, "login.html", status_code=401, title="Log in", next=safe_next(next),
-                        username=username, error="That user name and password didn't work.")
-        accounts.logged_in(db, found["id"])
-        request.session.clear()
-        start_session(request, db, found)
-        return RedirectResponse(safe_next(next), status_code=303)
-
-    @app.post("/logout")
-    def logout(request: Request) -> Response:
-        request.session.clear()
-        return RedirectResponse("/login", status_code=303)
 
     return app

@@ -5,10 +5,11 @@ pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient
 
 from podblock.store import Store
-from podblock.web import accounts
-from podblock.web.app import create_app, safe_next
-from podblock.web.config import Settings
-from podblock.web.db import MIGRATIONS, connect, setting
+from podblock.app import accounts
+from podblock.web.app import create_app
+from podblock.web.routes.auth import safe_next
+from podblock.app.config import Settings
+from podblock.app.db import MIGRATIONS, connect, setting
 
 HTML = {"accept": "text/html"}
 

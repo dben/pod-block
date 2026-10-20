@@ -20,7 +20,7 @@ test = ["pytest", "httpx>=0.27"]
 podblock = "podblock.cli:main"
 
 [tool.setuptools]
-packages = ["podblock", "podblock.web"]
+packages = ["podblock", "podblock.app", "podblock.web", "podblock.web.routes"]
 
 [tool.setuptools.package-data]
 "podblock.web" = ["templates/*.html", "static/*", "static/vendor/*"]
