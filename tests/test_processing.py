@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 from test_feeds import FakeWeb, rss
 
 from podblock.cut import probe
-from podblock.web import accounts, background, feeds, jobs, library, processing, publish
+from podblock.web import accounts, background, chapters, feeds, jobs, library, processing, publish
 from podblock.web.app import create_app
 from podblock.web.config import Settings
 from podblock.web.db import connect
@@ -87,6 +87,8 @@ def env(tmp_path, monkeypatch, audio_files):
     web.pages[URL] = rss(*(item(n) for n in range(1, 6)))
     cdn = FakeCdn(audio_files)
     monkeypatch.setattr(processing, "download", cdn.download)
+    extras = {}  # chapters and transcript files, by address
+    monkeypatch.setattr(chapters, "get", lambda url: extras[url])  # a KeyError, like a 404, leaves one out
     settings = Settings(data_dir=tmp_path / "data", media_dir=tmp_path / "media", api_key="k", background=False)
     app = create_app(settings)
     client = TestClient(app, follow_redirects=False)
@@ -95,7 +97,8 @@ def env(tmp_path, monkeypatch, audio_files):
     pod = feeds.add_podcast(db, URL).podcast_id
     library.subscribe(db, accounts.admin_id(db), pod)
     ids = {r["guid"]: r["id"] for r in db.execute("SELECT id, guid FROM episodes")}
-    yield type("Env", (), dict(settings=settings, client=client, db=db, pod=pod, ids=ids, cdn=cdn, web=web))
+    yield type("Env", (), dict(settings=settings, client=client, db=db, pod=pod, ids=ids, cdn=cdn, web=web,
+                               extras=extras))
     db.close()
 
 
@@ -362,7 +365,8 @@ def test_private_feed_lists_ready_episodes_with_cut_audio(env):
     assert res.status_code == 200 and res.headers["content-type"].startswith("application/rss+xml")
     body = res.content
     assert b"ns0:" not in body and b"<itunes:block>Yes</itunes:block>" in body
-    assert b"podcast:chapters" not in body
+    assert b"https://example.com/c.json" not in body  # the source's chapters no longer fit
+    assert f'/p/{token}/{processing.media_key("ep-3")}.chapters.json'.encode() in body  # ours do
     assert b"https://cdn.example.com/" not in body  # nothing points at the uncut audio
     assert b"https://example.com/3.jpg" in body  # images stay
     assert f'/p/{token}/feed.xml'.encode() in body  # its own self link
@@ -372,7 +376,7 @@ def test_private_feed_lists_ready_episodes_with_cut_audio(env):
     assert [e.title for e in feed.episodes] == ["Episode 5", "Episode 4", "Episode 3", "Episode 2"]
     newest = feed.episodes[0]
     ep5 = episode(env, "ep-5")
-    assert newest.guid == "ep-5" and newest.audio_url.startswith(f"http://testserver/p/{audio_token(env)}/")
+    assert newest.guid == "ep-5" and newest.audio_url.startswith(f"http://testserver/p/{token}/")  # whose it is
     assert newest.audio_length == ep5["cut_bytes"] and newest.audio_type == "audio/mpeg"
     assert newest.duration == pytest.approx(ep5["cut_duration"], abs=1)
     assert ET.fromstring(newest.xml).findtext("description") == "Notes for episode 5."
@@ -388,17 +392,21 @@ def test_private_feed_lists_ready_episodes_with_cut_audio(env):
 def test_private_feed_is_hidden_behind_its_token(env):
     processed(env)
     token, anon = feed_of(env)
+    name = audio_url(env, anon, token).rsplit("/", 1)[1]
     for path in ("/p/nope/feed.xml", f"/p/{audio_token(env)}/0000000000000000.mp3", f"/p/{token[:-1]}/feed.xml",
-                 f"/p/{token}/{audio_url(env, anon, token).rsplit('/', 1)[1]}"):  # audio isn't under the feed's token
+                 f"/p/{token}/{name[:-4]}.ogg", f"/p/{token}/{name}x", f"/p/{token[:-1]}/{name}",
+                 f"/p/{audio_token(env)}/{name[:-4]}.chapters.json"):  # chapters only come through a feed
         res = anon.get(path)
         assert res.status_code == 404 and res.text == "Not found", path
+    assert anon.head(f"/p/{audio_token(env)}/{name}").status_code == 200  # links from before feeds had their own
 
     audio = audio_url(env, anon, token)
     env.client.post(f"/podcasts/{env.pod}/feed-token")
     assert anon.get(f"/p/{token}/feed.xml").status_code == 404
+    assert anon.head(audio).status_code == 404  # its audio links stop working too
     new, _ = feed_of(env)
     assert new != token and anon.get(f"/p/{new}/feed.xml").status_code == 200
-    assert audio_url(env, anon, new) == audio and anon.head(audio).status_code == 200  # audio links stay
+    assert anon.head(audio_url(env, anon, new)).status_code == 200
 
     env.client.post(f"/podcasts/{env.pod}/remove")
     assert anon.get(f"/p/{new}/feed.xml").status_code == 404
@@ -429,7 +437,7 @@ def test_each_user_has_their_own_feed(env):
     bob.post(f"/podcasts/{env.pod}/filters", data={"pattern": "episode 3"})
     assert guids(his) == ["ep-5", "ep-2"] and guids(mine) == ["ep-5", "ep-4", "ep-3", "ep-2"]
     assert "2 episodes with the" in bob.get(f"/podcasts/{env.pod}?tab=feed").text
-    assert audio_url(env, anon, mine) == audio_url(env, anon, his)  # the same audio links
+    assert audio_url(env, anon, mine) != audio_url(env, anon, his)  # each says whose feed it came through
 
     env.client.post(f"/podcasts/{env.pod}/filters", data={"pattern": "episode 5", "processing": "true"})
     assert guids(his) == ["ep-2"] and guids(mine) == ["ep-4", "ep-3", "ep-2"]
@@ -795,3 +803,186 @@ def test_filtering_an_episode_forgets_what_it_taught(rewind):
                           (env.ids["ep-5"], env.ids["ep-5"])).fetchone()[0] == 0
     for n in (1, 3, 4):
         assert episode(env, f"ep-{n}")["cut_duration"] == pytest.approx(2 * FILLER, abs=3)
+
+
+# ---- chapters and transcripts ---------------------------------------------------------
+
+def with_extras(env):
+    """Episode 3 gets chapters and a WebVTT transcript in the feed. Each episode is a jingle (0-20 s), show,
+    an ad (50-68 s) and more show; the jingle and the ad are cut."""
+    env.extras["https://example.com/3.json"] = json.dumps({"version": "1.2.0", "chapters": [
+        {"startTime": 0, "title": "Welcome"}, {"startTime": 25, "title": "Main"},
+        {"startTime": 52, "title": "Sponsor"}, {"startTime": 66, "title": "More"}]}).encode()
+    env.extras["https://example.com/3.vtt"] = (
+        b"WEBVTT\n\n00:00:21.000 --> 00:00:24.000\nShow talk\n\n"
+        b"00:00:55.000 --> 00:00:59.000\nAn ad read\n\n00:01:20.000 --> 00:01:22.000\nAfter the ad\n")
+    env.web.pages[URL] = env.web.pages[URL].replace(
+        b"<description>Notes for episode 3.</description>",
+        b'<description>Notes for episode 3.</description>'
+        b'<podcast:chapters url="https://example.com/3.json" type="application/json+chapters"/>'
+        b'<podcast:transcript url="https://example.com/3.vtt" type="text/vtt" language="en" rel="captions"/>'
+        b'<podcast:transcript url="https://example.com/3.html" type="text/html"/>'
+        b'<podcast:transcript url="https://example.com/missing.srt" type="application/x-subrip"/>')
+    feeds.refresh(env.db, env.pod, conditional=False)
+
+
+def test_chapters_and_transcripts_fit_the_cut_audio(env):
+    import xml.etree.ElementTree as ET
+    from podblock.cut import chapters as file_chapters
+    from podblock.feed import PODCAST
+    with_extras(env)
+    processed(env)
+    three = episode(env, "ep-3")
+    shift = chapters.Shift(json.loads(three["cut_spec"]))
+    assert len(shift.joins()) == 2  # the jingle and the ad
+
+    found = json.loads(three["cut_chapters"])
+    titles = [c["title"] for c in found]
+    assert titles[0].startswith("Welcome (after 20 sec repeat cut") and titles[1] == "Main"
+    assert "Sponsor" not in titles  # it was all inside the ad
+    assert re.fullmatch(r"More \(after 1[78] sec repeat cut\)", titles[2]) and len(titles) == 3
+    assert found[1]["start"] == pytest.approx(shift(25)) and found[2]["start"] == pytest.approx(shift.joins()[1][0])
+    in_file = file_chapters(Path(three["cut_path"]))
+    assert [c["title"] for c in in_file] == titles  # written into the cut file too
+    assert [c["start"] for c in in_file] == pytest.approx([c["start"] for c in found], abs=0.01)
+
+    token, anon = feed_of(env)
+    item = next(i for i in ET.fromstring(anon.get(f"/p/{token}/feed.xml").content).iter("item")
+                if i.findtext("guid") == "ep-3")
+    served = anon.get(item.find(f"{PODCAST}chapters").get("url").replace("http://testserver", ""))
+    assert served.status_code == 200 and [c["title"] for c in served.json()["chapters"]] == titles
+    links = item.findall(f"{PODCAST}transcript")
+    assert [(t.get("type"), t.get("language"), t.get("rel")) for t in links] == [("text/vtt", "en", "captions")]
+    vtt = anon.get(links[0].get("url").replace("http://testserver", ""))
+    assert vtt.status_code == 200 and vtt.headers["content-type"].startswith("text/vtt")
+    cues = re.findall(r"(\S+) --> (\S+)\n(.+)", vtt.text)
+    assert [c[2] for c in cues] == ["Show talk", "After the ad"]
+    assert chapters._clock(cues[0][0]) == pytest.approx(shift(21), abs=0.01)
+    assert chapters._clock(cues[1][0]) == pytest.approx(shift(80), abs=0.01)
+    assert anon.get(links[0].get("url").replace("http://testserver", "").replace(".vtt", ".srt")).status_code == 404
+
+    # Episodes without chapters of their own get one at each cut.
+    two = json.loads(episode(env, "ep-2")["cut_chapters"])
+    assert [c["start"] for c in two] == pytest.approx([0, shift.joins()[1][0]], abs=2)
+    assert all(re.fullmatch(r"\d+ sec repeat cut", c["title"]) for c in two)
+
+    # Cleaning up deletes the saved transcript, and the next download looks for them all again.
+    saved = Path(json.loads(three["transcripts"])[0]["path"])
+    assert saved.exists()
+    env.client.post("/downloads/delete", data={"ids": [three["id"]]})
+    assert not saved.exists() and episode(env, "ep-3")["source_chapters"] is None
+
+
+def test_episodes_cut_before_chapters_get_them_when_cut_again(env):
+    processed(env)
+    env.db.execute("UPDATE episodes SET cut_chapters = NULL, source_chapters = NULL")  # as cut by an older version
+    env.db.commit()
+    two = episode(env, "ep-2")
+    token, anon = feed_of(env)
+    name = audio_url(env, anon, token).rsplit("/", 1)[1].replace(processing.media_key("ep-5"),
+                                                                   processing.media_key("ep-2"))
+    served = anon.get(f"/p/{token}/{name[:-4]}.chapters.json").json()["chapters"]  # worked out from the report
+    assert len(served) == 2 and served[1]["title"].endswith("repeat cut")
+    jobs.enqueue(env.db, "process", [two["id"]], None, skip_ready=False)
+    background.run_queue(env.settings)
+    two = episode(env, "ep-2")
+    assert [c["title"] for c in json.loads(two["cut_chapters"])] == [c["title"] for c in served]
+    assert len(probe_chapters(two)) == 2
+
+
+def probe_chapters(ep):
+    from podblock.cut import chapters as file_chapters
+    return file_chapters(Path(ep["cut_path"]))
+
+
+# ---- grabs ------------------------------------------------------------------------------
+
+def grab_rows(env):
+    return [tuple(r) for r in env.db.execute("SELECT user_id, episode_id, via, hits FROM grabs ORDER BY id")]
+
+
+def test_fetching_through_a_feed_counts_as_a_grab(env):
+    processed(env)
+    admin = accounts.admin_id(env.db)
+    token, anon = feed_of(env)
+    audio = audio_url(env, anon, token)
+    five = env.ids["ep-5"]
+    assert anon.head(audio).status_code == 200 and grab_rows(env) == []  # a HEAD isn't a grab
+    anon.get(audio, headers={"range": "bytes=0-1"})  # a player streams it...
+    anon.get(audio)  # ...while a download runs alongside
+    anon.get(audio, headers={"range": "bytes=5000-"})
+    assert grab_rows(env) == [(admin, five, "feed", 3)]
+
+    env.db.execute("UPDATE grabs SET last_at = last_at - 86400")  # a day later
+    env.db.commit()
+    anon.get(audio, headers={"range": "bytes=9000-"})  # a seek: the same listen
+    assert grab_rows(env) == [(admin, five, "feed", 4)]
+    env.db.execute("UPDATE grabs SET last_at = last_at - 86400")
+    env.db.commit()
+    anon.get(audio)  # from the start again
+    assert grab_rows(env) == [(admin, five, "feed", 4), (admin, five, "feed", 1)]
+    anon.get(f"/p/{token}/{audio.rsplit('/', 1)[1][:-4]}.chapters.json")  # chapters aren't grabs
+    anon.get(f"/p/{audio_token(env)}/{audio.rsplit('/', 1)[1]}")  # links from before then say nothing of whose
+    assert len(grab_rows(env)) == 2
+
+    omni_token = publish.omni_token(env.db, admin)
+    from podblock.feed import parse_feed
+    omni_audio = parse_feed(anon.get(f"/p/{omni_token}/feed.xml").content, "x").episodes[-1].audio_url
+    assert f"/p/{omni_token}/" in omni_audio
+    anon.get(omni_audio.replace("http://testserver", ""))
+    assert grab_rows(env)[-1] == (admin, env.ids["ep-2"], "omni", 1)
+
+
+def test_grabs_show_in_the_list_with_a_view_of_their_own(env):
+    processed(env)
+    env.client.post("/users", data={"username": "bob", "password": "password1"})
+    bob_id = env.db.execute("SELECT id FROM users WHERE username = 'bob'").fetchone()[0]
+    bob = TestClient(env.client.app, follow_redirects=False)
+    bob.post("/login", data={"username": "bob", "password": "password1"})
+    mine, anon = feed_of(env)
+    anon.get(audio_url(env, anon, mine))  # the admin's app gets episode 5
+    his, _ = feed_of(env, bob_id)
+    for _ in range(2):
+        anon.get(audio_url(env, anon, his))  # bob's gets it twice, a day apart
+        env.db.execute("UPDATE grabs SET last_at = last_at - 86400")
+        env.db.commit()
+
+    page = env.client.get(f"/podcasts/{env.pod}").text
+    assert page.count("badge-grab") == 1 and 'data-count="grabbed">1<' in page
+    assert "Grabbed</span>" in page and "Grabbed ×2" not in page
+    assert "Grabbed ×2" in bob.get(f"/podcasts/{env.pod}").text
+    grabbed = env.client.get(f"/podcasts/{env.pod}?view=grabbed").text
+    assert grabbed.count('class="ep') - grabbed.count('class="ep-') == 1 and "Episode 5" in grabbed
+    env.client.post(f"/podcasts/{env.pod}/episodes", data={"action": "archive", "ids": env.ids["ep-5"]})
+    assert "Nothing grabbed yet" in env.client.get(f"/podcasts/{env.pod}?view=grabbed").text
+    assert "Grabbed ×2" in bob.get(f"/podcasts/{env.pod}?view=grabbed").text  # archiving is per user
+    users = env.client.get("/users").text
+    assert "1 grab<" in users and "2 grabs<" in users
+
+
+def test_playing_or_downloading_on_the_episode_page_counts(env):
+    processed(env)
+    two = env.ids["ep-2"]
+    page = env.client.get(f"/episodes/{two}").text
+    needed = re.findall(r'data-grab="/episodes/\d+/played" data-grab-after="(\d+)"', page)
+    short = episode(env, "ep-2")["cut_duration"]  # about a minute: it counts once 90% of it has played
+    assert needed == [str(round(0.9 * short))] * 2 and short < 300
+    assert env.client.post(f"/episodes/{two}/played").json() == {"new": True}
+    assert env.client.post(f"/episodes/{two}/played").json() == {"new": False}  # the same listen
+    assert env.client.get(f"/episodes/{two}/audio").status_code == 200 and len(grab_rows(env)) == 1  # the player
+    env.db.execute("UPDATE grabs SET last_at = last_at - 86400")
+    env.db.commit()
+    assert env.client.get(f"/episodes/{two}/audio?download=1").status_code == 200
+    assert [r[2:] for r in grab_rows(env)] == [("app", 2), ("download", 1)]
+    assert "Grabbed ×2" in env.client.get(f"/episodes/{two}").text
+
+
+def test_the_home_page_shows_the_space_downloads_take(env):
+    processed(env)
+    page = env.client.get("/").text
+    assert "used by downloads" in page and 'href="/downloads" title="See every download"' in page
+    env.client.post("/users", data={"username": "bob", "password": "password1"})
+    bob = TestClient(env.client.app, follow_redirects=False)
+    bob.post("/login", data={"username": "bob", "password": "password1"})
+    page = bob.get("/").text
+    assert "used by downloads" in page and 'href="/downloads"' not in page  # the page is the admin's

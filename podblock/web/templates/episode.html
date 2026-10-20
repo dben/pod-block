@@ -39,7 +39,8 @@
         {{ e.cut_duration|duration }} left.</p>
       {% endif %}
       {% if e.state_note %}<p class="alert alert-error">{{ e.state_note }}</p>{% endif %}
-      <audio class="player" controls preload="none" src="/episodes/{{ e.id }}/audio"></audio>
+      <audio class="player" controls preload="none" src="/episodes/{{ e.id }}/audio"
+             data-grab="/episodes/{{ e.id }}/played" data-grab-after="{{ play_needed }}"></audio>
       <div class="row-actions">
         <a class="btn btn-primary btn-sm" href="/episodes/{{ e.id }}/audio?download=1">
           <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11m0 0-4-4m4 4 4-4M5 20h14"/></svg>Download file</a>
@@ -98,7 +99,8 @@
         <span class="muted">{{ report.sections|length|plural('section') }} cut</span>
       </div>
       <script type="application/json" id="timeline-data">{{ timeline|tojson }}</script>
-      <audio data-original preload="none" src="{{ timeline.audio }}"></audio>
+      <audio data-original preload="none" src="{{ timeline.audio }}"
+             data-grab="/episodes/{{ e.id }}/played" data-grab-after="{{ play_needed }}"></audio>
 
       <div class="tl-toolbar">
         <button class="btn btn-primary btn-sm icon-only tl-playbtn" type="button" data-tl="play" aria-label="Play">

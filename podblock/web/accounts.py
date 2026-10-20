@@ -82,10 +82,12 @@ def user(db: sqlite3.Connection, user_id: int) -> sqlite3.Row | None:
 
 
 def users(db: sqlite3.Connection) -> list[sqlite3.Row]:
-    """Everyone, the admin first, with how many podcasts each has picked."""
+    """Everyone, the admin first, with how many podcasts each has picked and episodes each has grabbed."""
     return db.execute(
         """SELECT u.*, (SELECT COUNT(*) FROM user_podcasts up JOIN podcasts p ON p.id = up.podcast_id
-                        WHERE up.user_id = u.id AND p.followed = 1) AS podcast_count
+                        WHERE up.user_id = u.id AND p.followed = 1) AS podcast_count,
+                  (SELECT COUNT(*) FROM grabs g WHERE g.user_id = u.id) AS grab_count,
+                  (SELECT MAX(last_at) FROM grabs g WHERE g.user_id = u.id) AS grabbed_at
            FROM users u ORDER BY u.username != ?, u.username""", (ADMIN,)).fetchall()
 
 

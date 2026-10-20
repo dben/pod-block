@@ -34,6 +34,7 @@
       <p class="user-name">{{ u.username }}{% if u.is_admin %} <span class="badge">Admin</span>{% endif %}</p>
       <p class="muted user-meta">
         <span>{{ u.podcast_count|plural('podcast') }}</span>
+        <span title="{{ 'Last ' ~ u.grabbed_at|ago if u.grabbed_at else 'Nothing yet' }}">{{ u.grab_count|plural('grab') }}</span>
         <span>Added {{ u.created_at|day }}</span>
         <span>Last login {{ u.last_login_at|ago }}</span>
       </p>

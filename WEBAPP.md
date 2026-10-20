@@ -19,6 +19,7 @@ built, and what could come next.
 | Downloads | By hand, apart from the comparison episodes above and podcasts set to download new episodes on their own. |
 | Short repeats | Sections under 15 seconds aren't cut (`report.MIN_SECTION_SEC`; the CLI's `--min-section`), unless they are ad breaks, intros, outros, show blocks or blocks typed by hand. Short blocks are still stored, since bumpers are short and are how breaks are found. |
 | Intro and outro marks | Marking a section Intro types only its last block, and Outro only its first: the report runs those to the ends anyway, and a section's other blocks are often ads that also play in mid-roll breaks. Keep and Show only type every block in the section. |
+| Grabs | A grab is a user getting an episode: through their private feed or omni feed, by playing it on its page, or with its Download button. Hits within 10 minutes of the last one, or starting partway into the file, are the same grab, since apps stream and download at once and seek with byte ranges. A play on the page counts after the longer of 5 minutes and 5% of the episode (90% of one shorter than that). |
 | Keeping it generic | No real feed URLs, show names or audio in the repo, its history or its tests. Real feeds for trying things by hand live in the environment variable `PODBLOCK_TEST_FEEDS` (space-separated), set in the cloud environment's settings. |
 
 ## Stack
@@ -99,6 +100,9 @@ on Kubernetes, with backups and upgrades, see `deployment/README.md`.
   (three lines, then "More"), Subscribe, Refresh and Website, when the feed
   was last checked, and the last error. How much has been cut shows here and
   on the podcast's card on the home page.
+- The home page shows, under its heading, a small bar of how much of the
+  media volume the downloads take, with the free space. For the admin it
+  links to the Downloads page.
 - Below the header, tabs: Episodes, Private feed, Filters and Settings
   (`?tab=`; links land on the tabs with `#tabs`, so a phone needn't scroll
   past the header again). Only the open tab is rendered. Remove is at the
@@ -167,8 +171,23 @@ on Kubernetes, with backups and upgrades, see `deployment/README.md`.
   unless they were being cancelled.
 - Cut audio keeps the source format (MP3, AAC in M4A, Opus, Vorbis; anything
   else becomes MP3) at the nearest standard bitrate, with a 40 ms fade
-  either side of each join. Tags and cover art are copied; chapters are
-  dropped. Kept stretches under a second between two cuts go too.
+  either side of each join. Tags and cover art are copied. Kept stretches
+  under a second between two cuts go too.
+- Chapters and transcripts are moved to fit the cut (`podblock/web/chapters.py`).
+  The first time an episode is cut, its chapters are read: the feed's
+  `podcast:chapters` JSON, else its inline `psc:chapters`, else the ones in
+  the audio file. Its timed transcripts (`podcast:transcript` as WebVTT, SRT
+  or JSON) are saved under `media/transcripts/`. A time in a kept stretch
+  moves back by everything cut before it; a time inside a cut moves to the
+  join; a chapter or cue left with nothing (a sponsor chapter, an ad read)
+  goes. Transcripts with no times (HTML, plain text) are left out.
+- Each join gets a chapter saying what was cut and how much: "1:32 ad break
+  cut", or, inside a chapter of the source's, "Interview (after 1:32 ad
+  break cut)". An episode with no chapters of its own gets a "Start"
+  chapter before its first cut. The chapters are written into the cut file
+  (ID3 chapters in MP3, chapters in M4A and Ogg) and served beside it.
+  Episodes cut before this get chapters in their feed at once, worked out
+  from their report, and in the file when next cut.
 - Every section the report lists is cut. Up to 4 seconds of new audio
   between two repeats is cut with them (set per podcast, 0 to 120 seconds),
   so a cut never leaves a scrap of sound between two others, and a new ad
@@ -304,8 +323,10 @@ on Kubernetes, with backups and upgrades, see `deployment/README.md`.
 - A feed keeps the show's channel and each episode's `<item>` as the source
   had them (`podblock/web/publish.py`), with these changes: the enclosure
   points at the cut file with its length and type, and `itunes:duration` is
-  the cut length; chapters, transcripts and soundbites go, as their times no
-  longer fit; every other link to the uncut audio goes (`media:content` for
+  the cut length; `podcast:chapters` and `podcast:transcript` point at our
+  copies, moved to fit the cut (see Processing), and the source's chapters,
+  other transcripts and soundbites go, as their times no longer fit; every
+  other link to the uncut audio goes (`media:content` for
   audio, `podcast:alternateEnclosure`), since some apps play those instead;
   `itunes:new-feed-url` goes, as it would send apps back to the source;
   `atom:link rel="self"` points at the private feed; and `itunes:block`
@@ -315,26 +336,48 @@ on Kubernetes, with backups and upgrades, see `deployment/README.md`.
   between changes). Namespace prefixes are kept as the source wrote them,
   and guids stay the source's.
 - Each episode's audio is at `/p/<token>/<key>.<ext>`, where the token is
-  the podcast's (`podcasts.public_token`), the same in every user's feed,
-  and the key is the one its files are named by. The podcast's token guards
-  the path, and the feed lists them all anyway, so a second token per
-  episode would add nothing. Byte ranges, `HEAD`, `ETag` and caching
-  headers come with it; the feed itself answers `If-None-Match` with 304.
+  the feed's own, so each fetch says whose it is (see Grabs), and the key is
+  the one its files are named by. Its chapters are at
+  `/p/<token>/<key>.chapters.json`, and its transcripts at
+  `/p/<token>/<key>.transcript.<vtt|srt|json>`. Byte ranges, `HEAD`, `ETag`
+  and caching headers come with the audio; the feed itself answers
+  `If-None-Match` with 304. Audio links from before feeds carried their own
+  token used the podcast's (`podcasts.public_token`); those still work, and
+  count for nobody.
 - "Make a new address" gives your own feed, or your omni feed, a new token
   after a confirmation; the old address stops working at once, in both
-  orders. Audio links stay as they were.
+  orders, and so do the audio links that came through it.
 - Unknown tokens, and podcasts removed in the app, get a plain "Not found"
   that says nothing more.
 - Feed links use `PODBLOCK_PUBLIC_URL`, else the address the request came
   to. Behind a proxy, set one or the other (`FORWARDED_ALLOW_IPS`), or
   links will point at the inside address.
 
+### Grabs
+
+- Every time a user's podcast app fetches an episode through their private
+  feed or omni feed, it counts toward a grab by that user (`podblock/web/grabs.py`,
+  table `grabs`). Apps fetch audio in pieces, some stream while a download
+  runs alongside, and a seek is another request; so a hit within 10 minutes
+  of the last one, or one that starts partway into the file, adds to the
+  grab before it. A `HEAD`, and the chapters and transcripts, count for
+  nothing.
+- Playing an episode on its page counts too, once the players there have
+  played the longer of 5 minutes and 5% of it (or 90% of an episode shorter
+  than 5 minutes); jumps and seeks don't add to the time. So does the
+  page's Download button.
+- Each row in the episode list, and the episode page, shows "Grabbed" (with
+  "×2" and so on) for your own grabs, with when you last did in its tooltip.
+  A Grabbed tab lists the episodes you grabbed, until you archive them. The
+  Users page counts each user's grabs.
+
 ### Retention
 
 - Downloads are cleaned up a set time after the episode was first made
   ready (default 7 days, set per podcast; 0 keeps them for good).
   Processing again or saving timeline changes doesn't restart the clock.
-  The download, cut file and waveform go; the episode's metadata, report and
+  The download, cut file, waveform and saved transcripts go (and the next
+  download looks for chapters and transcripts again); the episode's metadata, report and
   hand-cut sections stay. It shows as "Cleaned up" with the date, leaves the
   private feed, and "Download again" brings it back, cut the same way.
   Downloads that never became ready (failed jobs, companions of a cancelled
@@ -370,7 +413,7 @@ on Kubernetes, with backups and upgrades, see `deployment/README.md`.
 
 ## Data model
 
-The app's tables and columns, added by migrations 1 to 13 in
+The app's tables and columns, added by migrations 1 to 14 in
 `podblock/web/db.py`, beside the detector's (see `README.md`):
 
 ```
@@ -382,6 +425,7 @@ user_episodes(user_id, episode_id, archived, kept)
 user_podcasts(user_id, podcast_id, added_at)                 -- the podcasts on each user's home page
 user_feeds(user_id, podcast_id, token, created_at)           -- each user's private feed of each podcast
 episode_filters(id, user_id, podcast_id, pattern, processing, created_at)  -- podcast_id NULL: every podcast
+grabs(id, user_id, episode_id, via, first_at, last_at, hits)  -- via: feed, omni, app or download
 
 podcasts  + author, description, image_url, link, language, categories (JSON), explicit,
             channel_xml,                                     -- raw <channel> minus items
@@ -397,6 +441,8 @@ episodes  + pub_ts, summary, image_url, link, audio_type, audio_length, feed_dur
             original_path, cut_path, cut_type, cut_duration, cut_bytes, processed_at,
             cut_spec,                                        -- the stretches kept in the cut file
             peaks_path,                                      -- the waveform
+            source_chapters, transcripts,                    -- the source's, as found when first cut
+            cut_chapters,                                    -- the chapters written into the cut file
             ready_at, expired_at                             -- the retention clock
 
 jobs(id, kind, episode_id, state, step, progress, error, cancel_requested, attempts,
@@ -425,10 +471,12 @@ only looks at fingerprinted ones, so they don't affect it.
 | `GET /healthz` | no | probe |
 | `GET /p/{token}/feed.xml` | no | a private feed or an omni feed |
 | `GET /p/{token}/downloaded.xml` | no | the same feed, newest downloaded first |
-| `GET /p/{token}/{key}.{ext}` | no | cut audio, with byte ranges |
+| `GET /p/{token}/{key}.{ext}` | no | cut audio, with byte ranges; counts toward a grab |
+| `GET /p/{token}/{key}.chapters.json` | no | its chapters, moved to fit the cut |
+| `GET /p/{token}/{key}.transcript.{vtt,srt,json}` | no | its transcript, moved to fit the cut |
 | `GET /` (`?view=all`) | yes | your podcasts, or every podcast with Subscribe |
 | `POST /podcasts` | yes | add a feed |
-| `GET /podcasts/{id}?view=&q=&page=&tab=` | yes | show header and a tab: episodes (`view` = active, archived, downloaded or filtered), `feed`, `filters` or `settings`; `partial=1` gives only the rows |
+| `GET /podcasts/{id}?view=&q=&page=&tab=` | yes | show header and a tab: episodes (`view` = active, archived, downloaded, grabbed or filtered), `feed`, `filters` or `settings`; `partial=1` gives only the rows |
 | `POST /podcasts/{id}/refresh` | yes | refresh now |
 | `POST /podcasts/{id}/episodes` | yes | `action` on `ids`: archive, unarchive, archive_older, download, reprocess, keep, unkeep or archive_expired; JSON when asked |
 | `POST /podcasts/{id}/settings` | yes | clean-up days, refresh interval, gap, auto-download, `sort` (newest or oldest) |
@@ -441,7 +489,8 @@ only looks at fingerprinted ones, so they don't affect it.
 | `POST /episodes/archive-expired` | yes | archive every cleaned-up episode of your podcasts |
 | `GET /episodes/{id}` | yes | episode page and timeline |
 | `GET /episodes/{id}/row`, `/status` | yes | pieces of pages that poll while an episode is processed |
-| `GET /episodes/{id}/audio[?download=1]` | yes | cut audio, with byte ranges |
+| `GET /episodes/{id}/audio[?download=1]` | yes | cut audio, with byte ranges; a download counts as a grab |
+| `POST /episodes/{id}/played` | yes | the page's player played enough to count as a grab |
 | `GET /episodes/{id}/original` | yes | original audio, with byte ranges |
 | `GET /episodes/{id}/peaks` | yes | the waveform, made on first ask |
 | `POST /episodes/{id}/edits` | yes | save timeline changes (JSON: `types`, `add`, `remove`); queues an edit job |
@@ -465,8 +514,6 @@ only looks at fingerprinted ones, so they don't affect it.
   its own beside the API key.
 - Just-in-time streaming of episodes not yet downloaded: a quick pass and a
   stream that starts before the podcast app gives up.
-- Shift chapter and transcript timestamps to match the cut audio, and add
-  chapters marking where cuts were made.
 - A per-podcast choice of which section types to cut.
 - Join two particular sections on the timeline (the per-podcast gap setting
   joins every pair that close). In the test show, a new ad played between two

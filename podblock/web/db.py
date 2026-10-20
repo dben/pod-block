@@ -195,6 +195,23 @@ MIGRATIONS = [
     CREATE UNIQUE INDEX users_omni_token ON users(omni_token);
     ALTER TABLE podcasts ADD COLUMN sort_oldest INTEGER NOT NULL DEFAULT 0;  -- list episodes oldest first
     """,
+    # 14: chapters and transcripts, shifted to fit the cut audio; and each time a user grabs an episode,
+    # through their feed or in the app
+    """
+    ALTER TABLE episodes ADD COLUMN source_chapters TEXT;  -- JSON list, from the feed or the file; NULL until looked for
+    ALTER TABLE episodes ADD COLUMN transcripts TEXT;  -- JSON list of the source's transcripts saved under the media folder
+    ALTER TABLE episodes ADD COLUMN cut_chapters TEXT;  -- JSON list of the chapters written into the cut file
+    CREATE TABLE grabs (
+        id INTEGER PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        episode_id INTEGER NOT NULL REFERENCES episodes(id) ON DELETE CASCADE,
+        via TEXT NOT NULL,  -- feed, omni, app (played on the episode page) or download (its Download button)
+        first_at REAL NOT NULL,
+        last_at REAL NOT NULL,  -- hits soon after this count as the same grab
+        hits INTEGER NOT NULL DEFAULT 1
+    );
+    CREATE INDEX grabs_user_episode ON grabs(user_id, episode_id, last_at);
+    """,
 ]
 
 

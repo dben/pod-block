@@ -18,6 +18,7 @@ from pathlib import Path
 
 from ..pipeline import prune
 from ..store import Store
+from . import chapters
 from .config import Settings
 from .db import set_setting, setting
 from .processing import _detecting
@@ -40,17 +41,18 @@ def _unlink(path: str | None) -> None:
 
 
 def clear(db: sqlite3.Connection, ep: sqlite3.Row, now: float | None = None) -> None:
-    """Delete an episode's download, cut file and waveform. A ready one becomes `expired`, to be downloaded
-    again and cut the same way; any other keeps its state. The caller commits."""
+    """Delete an episode's download, cut file, waveform and transcripts. A ready one becomes `expired`, to be
+    downloaded again and cut the same way; any other keeps its state. The caller commits."""
     for path in (ep["original_path"], ep["cut_path"], ep["peaks_path"]):
         _unlink(path)
+    chapters.forget(ep)
+    gone = ("original_path = NULL, cut_path = NULL, peaks_path = NULL, cut_spec = NULL, cut_chapters = NULL, "
+            "source_chapters = NULL, transcripts = NULL")  # chapters are looked for again on the next download
     if ep["state"] == "ready":
-        db.execute("""UPDATE episodes SET state = 'expired', state_note = NULL, original_path = NULL, cut_path = NULL,
-                      peaks_path = NULL, cut_spec = NULL, ready_at = NULL, expired_at = ? WHERE id = ?""",
-                   (now or time.time(), ep["id"]))
+        db.execute(f"UPDATE episodes SET state = 'expired', state_note = NULL, {gone}, ready_at = NULL, expired_at = ? "
+                   "WHERE id = ?", (now or time.time(), ep["id"]))
     else:
-        db.execute("UPDATE episodes SET original_path = NULL, cut_path = NULL, peaks_path = NULL, cut_spec = NULL "
-                   "WHERE id = ?", (ep["id"],))
+        db.execute(f"UPDATE episodes SET {gone} WHERE id = ?", (ep["id"],))
 
 
 def expire_due(db: sqlite3.Connection, now: float | None = None) -> list[int]:

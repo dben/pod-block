@@ -200,6 +200,9 @@
       All <span class="count" data-count="active">{{ '{:,}'.format(counts.active) }}</span></a>
     <a href="/podcasts/{{ podcast.id }}?view=downloaded" {% if view == 'downloaded' %}aria-current="page"{% endif %}>
       Downloaded <span class="count" data-count="downloaded">{{ '{:,}'.format(counts.downloaded) }}</span></a>
+    <a href="/podcasts/{{ podcast.id }}?view=grabbed" {% if view == 'grabbed' %}aria-current="page"{% endif %}
+       title="Episodes you got through your private feed or omni feed, or played or downloaded here">
+      Grabbed <span class="count" data-count="grabbed">{{ '{:,}'.format(counts.grabbed) }}</span></a>
     <a href="/podcasts/{{ podcast.id }}?view=archived" {% if view == 'archived' %}aria-current="page"{% endif %}>
       Archived <span class="count" data-count="archived">{{ '{:,}'.format(counts.archived) }}</span></a>
     {% if counts.filtered or view == 'filtered' %}
@@ -243,6 +246,7 @@
   <div class="card empty">
     {% if q %}<h2>Nothing matches “{{ q }}”</h2>
     {% elif view == 'downloaded' %}<h2>Nothing downloaded yet</h2><p class="muted">Episodes you download show here, and stay after they're cleaned up until you archive them.</p>
+    {% elif view == 'grabbed' %}<h2>Nothing grabbed yet</h2><p class="muted">Episodes show here once your podcast app gets them through your private feed or omni feed, or once you play or download them here, until you archive them.</p>
     {% elif view == 'filtered' %}<h2>Nothing filtered</h2><p class="muted">No filter matches an episode of this podcast.</p>
     {% elif view == 'archived' %}<h2>Nothing archived</h2><p class="muted">Archived episodes are hidden from your list. Archive them from the list, one at a time or a selection at once.</p>
     {% else %}<h2>No episodes</h2><p class="muted">Every episode is archived, or the feed has none yet.</p>{% endif %}

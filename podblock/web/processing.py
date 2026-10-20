@@ -24,6 +24,7 @@ from ..fingerprint import fingerprint_file
 from ..matcher import MatchParams
 from ..pipeline import Paths, episode_report, find_common_blocks, load_fingerprint, rescan
 from ..store import BUMPER, BUMPER_IN, BUMPER_OUT, IGNORED, INTRO, OUTRO, PODCAST_ONLY, REPEATED, SHOW, Store
+from . import chapters
 from .config import Settings
 from .jobs import Cancelled, Context, enqueue, settle_episode
 
@@ -123,7 +124,14 @@ def _render(ctx: Context, settings: Settings, episode_id: int, report: dict) -> 
     if not keep:
         raise ProcessError("the whole episode was found to repeat, so nothing would be left")
     spec = json.dumps([[round(a, 2), round(b, 2)] for a, b in keep])
-    if spec == ep["cut_spec"] and ep["cut_path"] and Path(ep["cut_path"]).exists():
+    if ep["source_chapters"] is None:
+        ctx.step("Reading chapters", episode_id)
+        chapters.gather(ctx.db, ep, settings.media_dir / "transcripts" / media_key(ep["guid"]))
+        ep = _episode(ctx.db, episode_id)
+    edits = ctx.db.execute("SELECT start, end FROM edits WHERE episode_id = ?", (episode_id,)).fetchall()
+    marks = chapters.build(json.loads(spec), chapters.cuts(report, edits), json.loads(ep["source_chapters"]))
+    if (spec == ep["cut_spec"] and json.dumps(marks) == ep["cut_chapters"] and ep["cut_path"]
+            and Path(ep["cut_path"]).exists()):
         ctx.db.execute("UPDATE episodes SET state = 'ready', state_note = NULL, ready_at = COALESCE(ready_at, ?) "
                        "WHERE id = ?", (time.time(), episode_id))
         ctx.db.commit()  # nothing to cut differently
@@ -131,16 +139,17 @@ def _render(ctx: Context, settings: Settings, episode_id: int, report: dict) -> 
     ctx.step("Cutting", episode_id)
     try:
         out = cut.render(Path(ep["original_path"]), settings.media_dir / "cut" / media_key(ep["guid"]), keep,
-                         progress=ctx.progress)
+                         progress=ctx.progress, chapters=marks)
     except cut.CutError as e:
         raise ProcessError(str(e)) from None
     if ep["cut_path"] and Path(ep["cut_path"]) != out.path:
         Path(ep["cut_path"]).unlink(missing_ok=True)
     ctx.db.execute(
         """UPDATE episodes SET state = 'ready', state_note = NULL, cut_path = ?, cut_type = ?, cut_duration = ?,
-                  cut_bytes = ?, cut_spec = ?, processed_at = ?, ready_at = COALESCE(ready_at, ?), expired_at = NULL,
-                  ever_downloaded = 1 WHERE id = ?""",
-        (str(out.path), out.mime, out.duration, out.size, spec, time.time(), time.time(), episode_id))
+                  cut_bytes = ?, cut_spec = ?, cut_chapters = ?, processed_at = ?, ready_at = COALESCE(ready_at, ?),
+                  expired_at = NULL, ever_downloaded = 1 WHERE id = ?""",
+        (str(out.path), out.mime, out.duration, out.size, spec, json.dumps(marks), time.time(), time.time(),
+         episode_id))
     ctx.db.commit()
 
 

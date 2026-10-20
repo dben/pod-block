@@ -18,6 +18,8 @@ MAX_FEED_BYTES = 64 << 20  # the largest feeds seen run to a few tens of MB
 
 ITUNES = "{http://www.itunes.com/dtds/podcast-1.0.dtd}"
 CONTENT = "{http://purl.org/rss/1.0/modules/content/}"
+PODCAST = "{https://podcastindex.org/namespace/1.0}"
+PSC = "{http://podlove.org/simple-chapters}"
 
 
 class FeedError(Exception):
