@@ -25,7 +25,7 @@ from ..store import BUMPER, BUMPER_IN, BUMPER_OUT, IGNORED, INTRO, OUTRO, PODCAS
 from . import chapters
 from .config import Settings
 from .db import transaction
-from .jobs import Cancelled, Context, enqueue, settle_episode, take_along
+from .jobs import ACTIVE, Cancelled, Context, enqueue, settle_episode, take_along
 from .locks import detecting
 
 log = logging.getLogger(__name__)
@@ -35,6 +35,10 @@ FILL_GAPS = 4.0  # default seconds of new audio between two repeats cut with the
 
 class ProcessError(Exception):
     pass
+
+
+class Busy(ProcessError):
+    """The episode is queued or being processed, so it can't be changed until that is done."""
 
 
 def _episode(db: sqlite3.Connection, episode_id: int) -> sqlite3.Row:
@@ -270,28 +274,37 @@ def _edge_block(plays, blocks: list[int], section: dict, last: bool) -> int:
 
 
 def check_edits(db: sqlite3.Connection, episode_id: int, changes: dict) -> dict:
-    """Keep only well-formed changes that touch this episode. Raises ProcessError when there are none."""
+    """Keep the timeline changes that make sense for this episode: blocks that play in it, types a section can
+    take, stretches long enough to cut, its own hand-made cuts. `changes` is shaped as the timeline sends it:
+
+        {"types": [{"type", "blocks": [ids], "bumpers": [ids], "start", "end"}],
+         "add": [{"start", "end", "as_block", "type"}], "remove": [edit ids]}
+
+    (the web app checks that shape). Raises Busy while the episode is being processed, and ProcessError when
+    no change is left."""
     ep = _episode(db, episode_id)
+    if ep["state"] in ACTIVE:
+        raise Busy("it's being processed; save again when that's done")
     plays = db.execute("SELECT segment_id, start, end FROM occurrences WHERE episode_id = ?", (episode_id,)).fetchall()
     here = {r["segment_id"] for r in plays}
     types = []
     for t in changes.get("types", []):
         value = t.get("type")
-        blocks = [int(b) for b in t.get("blocks", []) if int(b) in here]
-        bumpers = [int(b) for b in t.get("bumpers", []) if int(b) in here]
+        blocks = [b for b in t.get("blocks", []) if b in here]
+        bumpers = [b for b in t.get("bumpers", []) if b in here]
         if value in (INTRO, OUTRO) and blocks:
             blocks = [_edge_block(plays, blocks, t, last=value == INTRO)]
         if value in EDIT_TYPES and (blocks or bumpers):
             types.append({"type": value, "blocks": blocks, "bumpers": bumpers if value == IGNORED else []})
     added = []
     for a in changes.get("add", []):
-        start, end = max(0.0, float(a["start"])), min(float(ep["duration"] or 0), float(a["end"]))
+        start, end = max(0.0, a["start"]), min(ep["duration"] or 0.0, a["end"])
         block_type = a.get("type", "repeated")
         if end - start < MIN_BLOCK_SEC or block_type not in EDIT_TYPES - {IGNORED}:
             continue
         added.append({"start": round(start, 2), "end": round(end, 2), "as_block": bool(a.get("as_block")),
                       "type": block_type})
-    removed = [int(r) for r in changes.get("remove", [])]
+    removed = changes.get("remove", [])
     removed = [r["id"] for r in db.execute(
         f"SELECT id FROM edits WHERE episode_id = ? AND id IN ({', '.join('?' * len(removed))})",
         (episode_id, *removed))] if removed else []

@@ -40,10 +40,14 @@ async def login(request: Request, username: str = Form(""), password: str = Form
         await asyncio.sleep(FAILED_LOGIN_DELAY)
         return page(request, "login.html", status_code=401, title="Log in", next=safe_next(next),
                     username=username, error="That user name and password didn't work.")
-    accounts.logged_in(db, found["id"])
-    request.session.clear()
-    start_session(request, db, found)
+    await run_in_threadpool(_start, request, db, found)  # it writes, so not on the event loop
     return RedirectResponse(safe_next(next), status_code=303)
+
+
+def _start(request: Request, db: sqlite3.Connection, user: sqlite3.Row) -> None:
+    accounts.logged_in(db, user["id"])
+    request.session.clear()
+    start_session(request, db, user)
 
 
 @router.post("/logout")

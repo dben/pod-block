@@ -8,6 +8,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
+from pydantic import BaseModel
 
 from ... import cut
 from ...app import grabs, jobs, library, processing
@@ -16,6 +17,30 @@ from ..deps import current_user, get_db, wake_worker
 from ..templating import flash, page
 
 router = APIRouter()
+
+
+class TypeChange(BaseModel):
+    """A section of the timeline given a type: the blocks in it, and for an ad break, the bumpers around it."""
+    type: str
+    blocks: list[int] = []
+    bumpers: list[int] = []
+    start: float = 0  # the section, to find the block at its edge (processing.check_edits)
+    end: float = 1e12
+
+
+class Addition(BaseModel):
+    """A stretch cut by hand; with `as_block`, saved as a block, to be looked for in other episodes too."""
+    start: float
+    end: float
+    as_block: bool = False
+    type: str = "repeated"
+
+
+class Edits(BaseModel):
+    """The changes the timeline saves (`changes()` in timeline.js)."""
+    types: list[TypeChange] = []
+    add: list[Addition] = []
+    remove: list[int] = []  # hand-made cuts to undo, by id
 
 
 def _episode(db: sqlite3.Connection, user_id: int, episode_id: int) -> sqlite3.Row:
@@ -69,18 +94,15 @@ def episode_peaks(request: Request, episode_id: int, user=Depends(current_user),
 
 
 @router.post("/episodes/{episode_id}/edits")
-async def save_edits(request: Request, episode_id: int, user=Depends(current_user),
-                     db: sqlite3.Connection = Depends(get_db)) -> Response:
+def save_edits(request: Request, episode_id: int, edits: Edits, user=Depends(current_user),
+               db: sqlite3.Connection = Depends(get_db)) -> Response:
     """Save the changes made on the timeline: queue a job to apply them and cut the episode again."""
-    ep = _episode(db, user["id"], episode_id)
-    if ep["state"] in jobs.ACTIVE:
-        return JSONResponse({"error": "It's being processed; save again when that's done."}, status_code=409)
+    _episode(db, user["id"], episode_id)
     try:
-        changes = processing.check_edits(db, episode_id, await request.json())
+        changes = processing.check_edits(db, episode_id, edits.model_dump())
     except processing.ProcessError as e:
-        return JSONResponse({"error": f"Nothing saved: {e}."}, status_code=400)
-    except (ValueError, TypeError, KeyError, AttributeError):
-        return JSONResponse({"error": "Those changes didn't make sense."}, status_code=400)
+        busy = isinstance(e, processing.Busy)
+        return JSONResponse({"error": f"Nothing saved: {e}."}, status_code=409 if busy else 400)
     processing.queue_edits(db, episode_id, user["id"], changes)
     wake_worker(request)
     flash(request, "Saved. Cutting it again with your changes.")

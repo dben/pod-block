@@ -8,6 +8,8 @@ from contextlib import asynccontextmanager
 from urllib.parse import quote
 
 from fastapi import Depends, FastAPI, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
@@ -79,6 +81,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if "text/html" in request.headers.get("accept", ""):
             return RedirectResponse(target, status_code=303)
         return JSONResponse({"detail": "login required"}, status_code=401)
+
+    @app.exception_handler(RequestValidationError)
+    async def bad_request(request: Request, exc: RequestValidationError) -> Response:
+        """A request whose form or JSON isn't shaped as its route asks: FastAPI's list of what is wrong, and
+        `error`, the first of them in words, as the pages' own JSON errors give it."""
+        errors = exc.errors()
+        where = ".".join(str(part) for part in errors[0]["loc"] if part != "body") if errors else ""
+        if errors and errors[0]["type"] == "json_invalid":
+            where = ""  # its place is a character offset
+        what = errors[0]["msg"] if errors else "it isn't shaped as it should be"
+        return JSONResponse({"error": f"That request didn't make sense ({where + ': ' if where else ''}{what})",
+                             "detail": jsonable_encoder(errors)}, status_code=422)
 
     @app.middleware("http")
     async def security_headers(request: Request, call_next):

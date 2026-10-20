@@ -338,8 +338,12 @@ def test_edits_that_make_no_sense_are_refused(env):
                  {"types": [{"type": "bogus", "blocks": report_of(env, "ep-3")["sections"][0]["blocks"]}]},
                  {"remove": [123]}):
         assert env.client.post(f"/episodes/{ep_id}/edits", json=body).status_code == 400, body
-    assert env.client.post(f"/episodes/{ep_id}/edits", content=b"not json",
-                           headers={"content-type": "application/json"}).status_code == 400
+    # not shaped as the timeline sends them: refused before they are looked at
+    for body in ({"add": [{"start": "soon", "end": 30}]}, {"types": [{"blocks": [1]}]}, {"remove": "all"}):
+        res = env.client.post(f"/episodes/{ep_id}/edits", json=body)
+        assert res.status_code == 422 and res.json()["error"].startswith("That request didn't make sense"), body
+    res = env.client.post(f"/episodes/{ep_id}/edits", content=b"not json", headers={"content-type": "application/json"})
+    assert res.status_code == 422 and "JSON" in res.json()["error"]
     assert episode(env, "ep-3")["state"] == "ready"
 
 

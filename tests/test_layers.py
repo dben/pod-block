@@ -11,7 +11,7 @@ import ast
 from pathlib import Path
 
 ROOT = Path(__file__).parent.parent / "podblock"
-WEB_PACKAGES = {"fastapi", "starlette", "jinja2", "uvicorn", "segno", "multipart", "itsdangerous"}
+WEB_PACKAGES = {"fastapi", "starlette", "pydantic", "jinja2", "uvicorn", "segno", "multipart", "itsdangerous"}
 
 
 def imports(path: Path) -> set[str]:
