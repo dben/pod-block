@@ -4,7 +4,7 @@
   aside);
 - `podblock.app` never imports the web app, nor a package made for HTTP, so the worker process runs without
   the web app's extras;
-- `podblock.web` may import anything.
+- `podblock.web` may import anything, but its routes run no SQL of their own: they ask the app.
 """
 
 import ast
@@ -45,6 +45,13 @@ def test_the_app_imports_nothing_made_for_the_web():
     for path in (ROOT / "app").glob("*.py"):
         wrong = {m for m in imports(path) if under(m, "podblock.web") or m.split(".")[0] in WEB_PACKAGES}
         assert not wrong, f"app/{path.name} imports {sorted(wrong)}"
+
+
+def test_routes_leave_the_database_to_the_app():
+    for path in (ROOT / "web" / "routes").glob("*.py"):
+        calls = [node.lineno for node in ast.walk(ast.parse(path.read_text()))
+                 if isinstance(node, ast.Attribute) and node.attr in {"execute", "executemany", "executescript"}]
+        assert not calls, f"routes/{path.name} runs SQL on lines {calls}"
 
 
 def test_the_check_sees_relative_imports():

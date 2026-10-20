@@ -26,14 +26,10 @@ def change_password(request: Request, current: str = Form(""), new: str = Form("
     def again(error: str) -> Response:
         return page(request, "account.html", status_code=422, title="Account", nav="account", user=user, error=error)
 
-    if user["is_admin"]:
-        return again("The admin logs in with the API key; `podblock api-key` makes a new one.")
-    if not accounts.check_password(user["password_hash"], current):
-        return again("That isn't your current password.")
     if new != repeat:
         return again("The new passwords don't match.")
     try:
-        accounts.set_password(db, user["id"], new)
+        accounts.change_password(db, user["id"], current, new)
     except accounts.AccountError as e:
         return again(str(e))
     start_session(request, db, accounts.user(db, user["id"]))

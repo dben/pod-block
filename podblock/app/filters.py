@@ -66,6 +66,12 @@ def add(db: sqlite3.Connection, user_id: int, podcast_id: int | None, pattern: s
     return cur.lastrowid
 
 
+def matches(db: sqlite3.Connection, podcast_id: int, pattern: str) -> int:
+    """How many of a podcast's episodes a pattern matches."""
+    return db.execute("SELECT COUNT(*) FROM episodes WHERE podcast_id = ? AND title REGEXP ?",
+                      (podcast_id, pattern.strip())).fetchone()[0]
+
+
 def get(db: sqlite3.Connection, filter_id: int) -> sqlite3.Row | None:
     return db.execute("SELECT * FROM episode_filters WHERE id = ?", (filter_id,)).fetchone()
 

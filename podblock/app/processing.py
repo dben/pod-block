@@ -300,6 +300,12 @@ def check_edits(db: sqlite3.Connection, episode_id: int, changes: dict) -> dict:
     return {"types": types, "add": added, "remove": removed}
 
 
+def queue_edits(db: sqlite3.Connection, episode_id: int, user_id: int | None, changes: dict) -> None:
+    """Queue an `edit` job to apply timeline changes (as `check_edits` returns them) and cut the episode again."""
+    enqueue(db, "edit", [episode_id], user_id, skip_ready=False, payload=json.dumps(changes),
+            note="Saving your changes")
+
+
 def run_edit(ctx: Context, settings: Settings) -> None:
     """Apply saved timeline changes, cut the episode again, and queue the other episodes they touch."""
     episode_id = ctx.job["episode_id"]

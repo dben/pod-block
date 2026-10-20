@@ -170,6 +170,11 @@ def recover(db: sqlite3.Connection) -> int:
     return cur.rowcount
 
 
+def latest(db: sqlite3.Connection, episode_id: int) -> sqlite3.Row | None:
+    """The episode's most recent job, in whatever state."""
+    return db.execute("SELECT * FROM jobs WHERE episode_id = ? ORDER BY id DESC LIMIT 1", (episode_id,)).fetchone()
+
+
 def active_count(db: sqlite3.Connection) -> int:
     return db.execute("SELECT COUNT(*) FROM jobs WHERE state IN ('queued', 'running')").fetchone()[0]
 

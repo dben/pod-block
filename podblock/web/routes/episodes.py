@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import re
 import sqlite3
 from pathlib import Path
@@ -20,12 +19,7 @@ router = APIRouter()
 
 
 def _episode(db: sqlite3.Connection, user_id: int, episode_id: int) -> sqlite3.Row:
-    row = db.execute(
-        f"""SELECT e.*, COALESCE(ue.archived, 0) AS archived, COALESCE(ue.kept, 0) AS kept,
-                  {library.KEPT_ANY} AS kept_any, {library.GRABS}, p.retention_days
-           FROM episodes e JOIN podcasts p ON p.id = e.podcast_id AND p.followed = 1
-           {library.USER_JOIN}
-           WHERE e.id = :episode_id""", {"user_id": user_id, "episode_id": episode_id}).fetchone()
+    row = library.episode(db, user_id, episode_id)
     if row is None:
         raise HTTPException(404, "No such episode")
     return row
@@ -47,10 +41,9 @@ def _audio(path: str | None, title: str | None, download: bool) -> Response:
 def show_episode(request: Request, episode_id: int, user=Depends(current_user),
                  db: sqlite3.Connection = Depends(get_db)) -> Response:
     ep = _episode(db, user["id"], episode_id)
-    podcast = db.execute("SELECT * FROM podcasts WHERE id = ?", (ep["podcast_id"],)).fetchone()
-    saved = db.execute("SELECT report FROM reports WHERE episode_id = ?", (episode_id,)).fetchone()
-    report = json.loads(saved["report"]) if saved else None
-    job = db.execute("SELECT * FROM jobs WHERE episode_id = ? ORDER BY id DESC LIMIT 1", (episode_id,)).fetchone()
+    podcast = library.podcast(db, ep["podcast_id"])
+    report = library.report(db, episode_id)
+    job = jobs.latest(db, episode_id)
     data = None
     if report is not None and ep["original_path"] and Path(ep["original_path"]).exists():
         data = {**processing.timeline(db, episode_id, report), "duration": ep["duration"],
@@ -88,8 +81,7 @@ async def save_edits(request: Request, episode_id: int, user=Depends(current_use
         return JSONResponse({"error": f"Nothing saved: {e}."}, status_code=400)
     except (ValueError, TypeError, KeyError, AttributeError):
         return JSONResponse({"error": "Those changes didn't make sense."}, status_code=400)
-    jobs.enqueue(db, "edit", [episode_id], user["id"], skip_ready=False, payload=json.dumps(changes),
-                 note="Saving your changes")
+    processing.queue_edits(db, episode_id, user["id"], changes)
     wake_worker(request)
     flash(request, "Saved. Cutting it again with your changes.")
     return JSONResponse({"ok": True, "changes": changes})
@@ -100,7 +92,7 @@ def episode_row(request: Request, episode_id: int, user=Depends(current_user),
                 db: sqlite3.Connection = Depends(get_db)) -> Response:
     """One row of the episode list, so a row being processed can keep itself up to date."""
     ep = _episode(db, user["id"], episode_id)
-    podcast = db.execute("SELECT * FROM podcasts WHERE id = ?", (ep["podcast_id"],)).fetchone()
+    podcast = library.podcast(db, ep["podcast_id"])
     return page(request, "_episode_row.html", e=ep, podcast=podcast, here=f"/podcasts/{podcast['id']}")
 
 

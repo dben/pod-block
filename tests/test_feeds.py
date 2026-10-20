@@ -233,6 +233,33 @@ def test_the_detector_still_opens_a_store_the_app_has_filled(db, web, tmp_path):
     store.close()
 
 
+def test_a_download_queues_only_the_podcasts_own_episodes(db, web):
+    web.pages[URL] = rss(item(1), item(2))
+    pod = feeds.add_podcast(db, URL).podcast_id
+    web.pages["https://example.org/b.rss"] = rss(item(7, guid="b-7"), title="B")
+    feeds.add_podcast(db, "https://example.org/b.rss")
+    one, two, seven = (db.execute("SELECT id FROM episodes WHERE guid = ?", (g,)).fetchone()[0]
+                       for g in ("ep-1", "ep-2", "b-7"))
+    assert library.download(db, None, pod, [one, two, seven, one]) == ([one, two], 2)
+    assert library.download(db, None, pod, [one]) == ([], 1)  # queued already
+    db.execute("UPDATE jobs SET state = 'done'")
+    db.execute("UPDATE episodes SET state = 'ready'")
+    db.commit()
+    assert library.download(db, None, pod, [one, two]) == ([], 2)  # ready: nothing to download
+    assert library.download(db, None, pod, [one, two], again=True) == ([one, two], 2)
+
+
+def test_podcast_settings_are_checked_and_say_when_the_gap_changed(db, web):
+    web.pages[URL] = rss(item(1))
+    pod = feeds.add_podcast(db, URL).podcast_id
+    with pytest.raises(library.SettingsError):
+        library.save_settings(db, pod, 9999, 60, 4, False, False)
+    assert not library.save_settings(db, pod, 3, 60, 4, True, True)  # 4 seconds is the gap already
+    assert library.save_settings(db, pod, 3, 60, 10, True, True)
+    row = db.execute("SELECT * FROM podcasts WHERE id = ?", (pod,)).fetchone()
+    assert (row["retention_days"], row["fill_gaps"], row["auto_download"], row["sort_oldest"]) == (3, 10, 1, 1)
+
+
 # ---- pages ----------------------------------------------------------------------
 
 @pytest.fixture

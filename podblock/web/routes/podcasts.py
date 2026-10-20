@@ -9,8 +9,7 @@ import segno
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 
-from ...app import directory, feeds, filters, jobs, library, private_feeds, storage
-from ...app.db import transaction
+from ...app import directory, feeds, filters, library, private_feeds, storage
 from ..deps import admin_user, current_user, feed_url, get_db, wake_worker
 from ..templating import flash, page
 
@@ -18,9 +17,6 @@ PAGE_SIZE = 50
 VIEWS = {"active": (False, False), "archived": (True, False), "downloaded": (False, True),  # (archived, downloaded)
          "grabbed": (False, False), "filtered": (False, False)}
 TABS = ("episodes", "feed", "filters", "settings")
-RETENTION_DAYS = (0, 3650)
-REFRESH_MINUTES = (15, 7 * 24 * 60)
-FILL_GAPS = (0, 120)
 
 router = APIRouter()
 
@@ -60,7 +56,7 @@ def _home(request: Request, user, db: sqlite3.Connection, view: str = "mine", st
             context.update(found=[], known={}, error=f"Couldn't search: {e}.")
         context.setdefault("url", search)
     shown = library.podcasts(db, user["id"], mine=view == "mine")
-    everything = db.execute("SELECT COUNT(*) FROM podcasts WHERE followed = 1").fetchone()[0]
+    everything = library.followed_count(db)
     mine = len(shown) if view == "mine" else sum(p["subscribed"] for p in shown)
     expired_total = sum(p["expired_count"] for p in shown if p["subscribed"])
     return page(request, "home.html", status_code=status_code, title="Podcasts", nav="podcasts", user=user,
@@ -147,9 +143,8 @@ def show_podcast(request: Request, podcast_id: int, view: str = "active", q: str
     if tab == "feed":
         context.update(private_addresses=_addresses(request, private_feeds.feed_token(db, user["id"], podcast_id)),
                        private_count=len(private_feeds.published(db, podcast_id, user["id"])))
-    cut_sec = db.execute("SELECT COALESCE(SUM(duration - cut_duration), 0) FROM episodes WHERE podcast_id = ? "
-                         "AND cut_duration IS NOT NULL", (podcast_id,)).fetchone()[0]
-    return page(request, "podcast.html", title=pod["name"], nav="podcasts", user=user, cut_sec=cut_sec,
+    return page(request, "podcast.html", title=pod["name"], nav="podcasts", user=user,
+                cut_sec=library.cut_seconds(db, podcast_id),
                 subscribed=library.subscribed(db, user["id"], podcast_id),
                 filters=filters.for_podcast(db, user["id"], podcast_id),
                 counts=library.counts(db, user["id"], podcast_id), **context)
@@ -160,19 +155,14 @@ def podcast_settings(request: Request, podcast_id: int, retention_days: int = Fo
                      refresh_minutes: int = Form(...), fill_gaps: float = Form(4.0), auto_download: bool = Form(False),
                      sort: str = Form("newest"), user=Depends(current_user),
                      db: sqlite3.Connection = Depends(get_db)) -> Response:
-    pod = _podcast_or_404(db, podcast_id)
-    if not (RETENTION_DAYS[0] <= retention_days <= RETENTION_DAYS[1]
-            and REFRESH_MINUTES[0] <= refresh_minutes <= REFRESH_MINUTES[1]
-            and FILL_GAPS[0] <= fill_gaps <= FILL_GAPS[1]):
-        flash(request, "Those settings are out of range.", "error")
+    _podcast_or_404(db, podcast_id)
+    try:
+        new_gap = library.save_settings(db, podcast_id, retention_days, refresh_minutes, fill_gaps, auto_download,
+                                        oldest_first=sort == "oldest")
+    except library.SettingsError as e:
+        flash(request, str(e), "error")
     else:
-        with transaction(db):
-            db.execute("UPDATE podcasts SET retention_days = ?, refresh_minutes = ?, fill_gaps = ?, "
-                       "auto_download = ?, sort_oldest = ? WHERE id = ?",
-                       (retention_days, refresh_minutes, fill_gaps, int(auto_download), int(sort == "oldest"),
-                        podcast_id))
-        note = " Process episodes again to cut them with the new gap." if fill_gaps != pod["fill_gaps"] else ""
-        flash(request, "Saved." + note)
+        flash(request, "Saved." + (" Process episodes again to cut them with the new gap." if new_gap else ""))
     return RedirectResponse(f"/podcasts/{podcast_id}?tab=settings#tabs", status_code=303)
 
 
@@ -192,8 +182,7 @@ def add_filter(request: Request, podcast_id: int, pattern: str = Form(""), scope
                                 status_code=303)
     if processing:
         wake_worker(request)  # an unlearn job may be waiting
-    here = db.execute("SELECT COUNT(*) FROM episodes WHERE podcast_id = ? AND title REGEXP ?",
-                      (podcast_id, pattern.strip())).fetchone()[0]
+    here = filters.matches(db, podcast_id, pattern)
     who = "everyone" if processing else "you"
     flash(request, f"Filter added. It hides {here:,} {'episode' if here == 1 else 'episodes'} of this podcast "
                    f"from {who}{', and the ones it matches in other podcasts' if everywhere else ''}.")
@@ -242,15 +231,12 @@ def change_episodes(request: Request, podcast_id: int, action: str = Form(...), 
     or every cleaned-up one."""
     _podcast_or_404(db, podcast_id)
     if action in {"download", "reprocess"}:
-        mine = [r["id"] for r in db.execute(
-            f"SELECT id FROM episodes WHERE podcast_id = ? AND id IN ({', '.join('?' * len(ids))})",
-            (podcast_id, *ids))] if ids else []
-        changed = jobs.enqueue(db, "process", mine, user["id"], skip_ready=action == "download")
+        changed, picked = library.download(db, user["id"], podcast_id, ids, again=action == "reprocess")
         if changed:
             wake_worker(request)
         if _wants_json(request):
             return JSONResponse({"action": action, "changed": changed})
-        skipped = len(mine) - len(changed)
+        skipped = picked - len(changed)
         note = f" {skipped:,} already ready or queued." if skipped else ""
         flash(request, f"Queued {len(changed):,} {'episode' if len(changed) == 1 else 'episodes'}.{note}"
               if changed else "Those are already ready or queued.")

@@ -159,6 +159,14 @@ def set_password(db: sqlite3.Connection, user_id: int, password: str) -> None:
                    (hashed, user_id))
 
 
+def change_password(db: sqlite3.Connection, user_id: int, current: str, new: str) -> None:
+    """A user's own change of password, which needs the one they have now. Ends their sessions."""
+    row = user(db, user_id)
+    if row is not None and row["username"] != ADMIN and not check_password(row["password_hash"], current):
+        raise AccountError("That isn't your current password.")
+    set_password(db, user_id, new)
+
+
 def remove_user(db: sqlite3.Connection, user_id: int) -> None:
     """Delete a user with their archived, kept and picked podcasts, and their filters. Jobs and edits they made
     stay, and so do their filters from processing, since those apply to everyone."""
