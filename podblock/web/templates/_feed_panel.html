@@ -18,10 +18,7 @@
       <button class="btn btn-primary" type="button" data-copy="#{{ feed_id }}-{{ a.key }}">Copy</button>
     </div>
     {% endfor %}
-    <p class="hint" x-show="order === 'downloaded'" x-cloak>Podcast apps sort episodes by date, so this address
-      dates each episode by when it was downloaded, not when it came out.</p>
-    <p class="hint">No login is needed to use it, so anyone with the address can listen. It isn't listed
-      anywhere and asks podcast directories not to list it.</p>
+    <p class="hint">Caution: this feed is usable by anyone with the URL.</p>
     <form method="post" action="{{ feed_new }}" data-confirm="{{ feed_confirm }}">
       <button class="btn btn-ghost btn-sm" type="submit">Make a new address</button>
     </form>

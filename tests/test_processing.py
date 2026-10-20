@@ -431,7 +431,6 @@ def test_each_user_has_their_own_feed(env):
     bob.post(f"/podcasts/{env.pod}/episodes", data={"action": "archive", "ids": env.ids["ep-4"]})
     bob.post(f"/podcasts/{env.pod}/filters", data={"pattern": "episode 3"})
     assert guids(his) == ["ep-5", "ep-2"] and guids(mine) == ["ep-5", "ep-4", "ep-3", "ep-2"]
-    assert "2 episodes with the" in bob.get(f"/podcasts/{env.pod}?tab=feed").text
     assert audio_url(env, anon, mine) != audio_url(env, anon, his)  # each says whose feed it came through
 
     env.client.post(f"/podcasts/{env.pod}/filters", data={"pattern": "episode 5", "processing": "true"})
@@ -449,7 +448,7 @@ def test_show_page_offers_the_private_feed(env):
     processed(env)
     token, _ = feed_of(env)
     page = env.client.get(f"/podcasts/{env.pod}?tab=feed").text
-    assert f"http://testserver/p/{token}/feed.xml" in page and "<svg" in page and "4 episodes" in page
+    assert f"http://testserver/p/{token}/feed.xml" in page and "<svg" in page
 
 
 def test_public_url_setting_is_used_for_links(env):
@@ -521,14 +520,14 @@ def test_omni_feed_has_every_downloaded_episode_of_your_podcasts(env):
 
     home = env.client.get("/").text
     token = re.search(r'value="http://testserver/p/([^/"]+)/feed\.xml"', home).group(1)
-    assert "Omni feed" in home and "4 episodes right now" in home  # Show B isn't on the admin's page yet
+    assert "Omni feed" in home
     anon = TestClient(env.client.app)
     channel = omni(env, anon, token)
     assert channel.findtext("title") == "Pod Block Omni Feed"
     assert channel.find(f"{ITUNES}image").get("href") == "http://testserver/static/omni.jpg"
     assert anon.get("/static/omni.jpg").headers["content-type"] == "image/jpeg"
     assert channel.findtext(f"{ITUNES}block") == "Yes"
-    assert [i.findtext("title") for i in channel.findall("item")] == [
+    assert [i.findtext("title") for i in channel.findall("item")] == [  # Show B isn't on the admin's page yet
         f"Example Show: Episode {n}" for n in (5, 4, 3, 2)]
 
     env.client.post(f"/podcasts/{b}/subscribe", data={"on": "true"})

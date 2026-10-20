@@ -18,9 +18,9 @@
   const RULER = 18;     // px under the waveform for times
 
   const VALUES = [["auto", null], ["intro", "Intro: cut it and everything before"], ["outro", "Outro: cut it and everything after"],
-                  ["show", "Show only: this podcast's own"], ["ignored", "Keep: not a repeat"]];
-  const SHORT = { intro: "Intro", outro: "Outro", show: "Show only", ignored: "Keep" };  // for labels on the timeline
-  const BLOCK_TYPES = [["repeated", "Repeat"], ["intro", "Intro"], ["outro", "Outro"], ["show", "Show only"]];
+                  ["show", "Local: this podcast"], ["ignored", "Keep: not a repeat"]];
+  const SHORT = { intro: "Intro", outro: "Outro", show: "Local", ignored: "Keep" };  // for labels on the timeline
+  const BLOCK_TYPES = [["repeated", "Repeat"], ["intro", "Intro"], ["outro", "Outro"], ["show", "Local"]];
 
   const sections = [
     ...data.sections.map((s) => ({ ...s, saved: s.value })),
@@ -90,7 +90,7 @@
   function name(s) {
     if (s.manual) return isNew(s) ? "New section" : "Cut by hand";
     if (s.value === "auto") return s.is_break ? "Ad break" : "Repeat";
-    return { intro: "Intro", outro: "Outro", show: "Show only", ignored: "Kept" }[s.value];
+    return { intro: "Intro", outro: "Outro", show: "Local", ignored: "Kept" }[s.value];
   }
 
   // ---- what has changed -------------------------------------------------------

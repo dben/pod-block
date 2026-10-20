@@ -78,7 +78,7 @@
 </nav>
 {% if tab == 'feed' %}
 {% set feed_title = 'Private feed' %}
-{% set feed_about = "Add this address to any podcast app to get " ~ private_count|plural('episode') ~ " with the repeats cut out. It's your own: it lists the episodes anyone has downloaded, except the ones you've archived or filtered, and new ones appear when they're ready." %}
+{% set feed_about = "Add this feed URL to any podcast app to listen to trimmed episodes. Untrimmed, archived, filtered and cleaned up episodes are not shown in the feed." %}
 {% set feed_addresses, feed_id = private_addresses, 'private-url' %}
 {% set feed_new = '/podcasts/' ~ podcast.id ~ '/feed-token' %}
 {% set feed_confirm = "Make a new address for your feed? Apps using the old one will stop getting episodes until you add the new one. Other people's feeds don't change." %}
@@ -125,8 +125,7 @@
     </label>
     <label class="tl-check filter-check">
       <input type="checkbox" name="processing" value="true">
-      <span>Filter from processing: hide these for everyone, and never use them to find repeats.
-        For compilation and rewind episodes, which replay whole earlier episodes.</span>
+      <span>Filter from processing: hide these for everyone, and never use them to find repeats.</span>
     </label>
     <button class="btn btn-primary btn-sm" type="submit">Add filter</button>
   </form>
@@ -143,7 +142,7 @@
         <input class="input" type="number" name="retention_days" min="0" max="3650" value="{{ podcast.retention_days }}" required>
         <span class="muted">days</span>
       </span>
-      <small class="hint">Counted from when an episode is ready. 0 keeps them for good. Episodes anyone keeps stay.</small>
+      <small class="hint">0 keeps them forever.</small>
     </label>
     <label class="field">
       <span>Check for new episodes every</span>
@@ -157,12 +156,11 @@
       </select>
     </label>
     <label class="field">
-      <span>Also cut new audio between cuts up to</span>
+      <span>Combine repeats less than</span>
       <span class="input-with-unit">
         <input class="input" type="number" name="fill_gaps" min="0" max="120" step="1" value="{{ podcast.fill_gaps|round|int }}" required>
         <span class="muted">seconds apart</span>
       </span>
-      <small class="hint">Catches a new ad that plays between two known ones. Too high and a short bit of the show between two ads goes too.</small>
     </label>
     <label class="field">
       <span>List episodes</span>
@@ -170,7 +168,6 @@
         <option value="newest">Newest first</option>
         <option value="oldest" {% if podcast.sort_oldest %}selected{% endif %}>Oldest first</option>
       </select>
-      <small class="hint">Oldest first suits shows that are best heard in order.</small>
     </label>
     <label class="tl-check settings-check">
       <input type="checkbox" name="auto_download" value="true" {% if podcast.auto_download %}checked{% endif %}>
@@ -185,7 +182,7 @@
   <div>
     <h2>Remove podcast</h2>
     <p class="muted">Stops following it for everyone. Episodes nobody downloaded are deleted; downloaded ones,
-      and the blocks learned from it, stay. Adding the same feed again brings it back.</p>
+      and the blocks learned from it, stay.</p>
   </div>
   <form method="post" action="/podcasts/{{ podcast.id }}/remove"
         data-confirm="Remove {{ podcast.name }}? Episodes you haven't downloaded are deleted. Blocks learned from it stay, since they help find ads in other shows.">
