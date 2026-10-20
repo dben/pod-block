@@ -517,7 +517,7 @@ a.podcast-card:hover { background: var(--surface-2); }
 .ep-head { display: flex; gap: 20px; align-items: center; margin-bottom: 24px; }
 .ep-head-art { flex: none; width: 120px; height: 120px; border-radius: 14px; object-fit: cover; box-shadow: 0 10px 30px rgb(0 0 0 / 0.5); }
 .ep-head-info { display: grid; gap: 8px; min-width: 0; }
-.ep-head-info h1 { font-size: 1.6rem; }
+.ep-head-info h1 { font-size: 1.6rem; overflow-wrap: anywhere; }
 .ep-page { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 360px); gap: 20px; align-items: start; }
 .ep-main { display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; min-width: 0; }
 .ep-main > .card { min-width: 0; }
@@ -544,11 +544,11 @@ a.podcast-card:hover { background: var(--surface-2); }
 .type-outro { background: rgb(95 179 255 / 0.18); color: var(--type-outro); }
 .type-break, .type-repeated { background: var(--accent-soft); color: var(--type-ad); }
 .type-show { background: rgb(61 220 151 / 0.14); color: var(--type-show); }
-.notes p { white-space: pre-line; color: #c9cfda; display: -webkit-box; -webkit-line-clamp: 12; -webkit-box-orient: vertical; overflow: hidden; }
+.notes p { white-space: pre-line; overflow-wrap: anywhere; color: #c9cfda; display: -webkit-box; -webkit-line-clamp: 12; -webkit-box-orient: vertical; overflow: hidden; }
 .notes.open p { display: block; }
 
 @media (max-width: 900px) {
-  .ep-page { grid-template-columns: 1fr; }
+  .ep-page { grid-template-columns: minmax(0, 1fr); }
 }
 @media (max-width: 720px) {
   .ep-head { align-items: flex-start; gap: 14px; }

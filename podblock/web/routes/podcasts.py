@@ -33,7 +33,7 @@ def _podcast_or_404(db: sqlite3.Connection, podcast_id: int) -> sqlite3.Row:
 
 
 def _qr(url: str) -> str:
-    return segno.make(url, error="m").svg_inline(scale=4, border=2, dark="#0d0f13", light="#ffffff")
+    return segno.make(url, error="m").svg_inline(scale=4, border=2, omitsize=True, dark="#0d0f13", light="#ffffff")
 
 
 def _addresses(request: Request, token: str) -> list[dict]:
