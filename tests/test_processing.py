@@ -177,7 +177,7 @@ def test_refresh_keeps_queued_episodes_that_left_the_feed(env):
 
 def test_episode_page_before_and_while_processing(env):
     page = env.client.get(f"/episodes/{env.ids['ep-1']}").text
-    assert "Not downloaded yet" in page and "Notes for episode 1." in page
+    assert f'action="/episodes/{env.ids['ep-1']}/process"' in page and "Notes for episode 1." in page
     jobs.enqueue(env.db, "process", [env.ids["ep-1"]], None)
     page = env.client.get(f"/episodes/{env.ids['ep-1']}").text
     assert "Queued" in page and 'hx-trigger="every 3s"' in page

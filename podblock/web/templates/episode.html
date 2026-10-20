@@ -81,15 +81,10 @@
       </form>
     </section>
     {% else %}
-    <section class="card status-card">
-      <h2>Not downloaded yet</h2>
-      <p class="muted">Download it to find its repeats and make a copy with them cut out.
-        If the show has few episodes downloaded, a few of the episodes after it come along, so
-        there is something to compare with.</p>
-      <form method="post" action="/episodes/{{ e.id }}/process">
-        <button class="btn btn-primary" type="submit">Download and cut</button>
-      </form>
-    </section>
+    <form method="post" action="/episodes/{{ e.id }}/process">
+      <button class="btn btn-primary" type="submit">
+        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11m0 0-4-4m4 4 4-4M5 20h14"/></svg>Download</button>
+    </form>
     {% endif %}
 
     {% if timeline %}
