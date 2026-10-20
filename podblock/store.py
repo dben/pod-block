@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import sqlite3
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -106,6 +108,49 @@ class StoreError(Exception):
     pass
 
 
+class Connection(sqlite3.Connection):
+    """A connection that knows how many `transaction` blocks it is inside."""
+
+    depth = 0
+
+
+@contextmanager
+def transaction(db: Connection) -> Iterator[None]:
+    """Make the writes in the block one transaction, committed at its end or rolled back if it raises.
+
+    A block inside another is a savepoint of that one: a failure rolls back the inner block's writes, and the
+    outermost block commits. So a function that writes wraps its writes in one, and a caller that needs several
+    such functions to land together wraps them all in another.
+
+    The outermost block takes the write lock at once (BEGIN IMMEDIATE), so what it reads can't change before it
+    writes. Other writers, in this process or another, wait while it is open: keep slow work out of it.
+    """
+    outer = db.depth == 0
+    if outer:
+        if db.in_transaction:
+            raise RuntimeError("a write was left uncommitted outside a transaction() block")
+        db.execute("BEGIN IMMEDIATE")
+    else:
+        db.execute("SAVEPOINT nested")
+    db.depth += 1
+    try:
+        yield
+    except BaseException:
+        if outer:
+            db.rollback()
+        elif db.in_transaction:  # some errors end the whole transaction in SQLite
+            db.execute("ROLLBACK TO nested")
+            db.execute("RELEASE nested")
+        raise
+    else:
+        if outer:
+            db.commit()
+        else:
+            db.execute("RELEASE nested")
+    finally:
+        db.depth -= 1
+
+
 class Store:
     def __init__(self, path: Path, config: FingerprintConfig | None = None):
         """Open or create a store.
@@ -114,7 +159,8 @@ class Store:
         new store; for an existing one it must match (or be None).
         """
         path.parent.mkdir(parents=True, exist_ok=True)
-        self.db = sqlite3.connect(path)
+        self.db = sqlite3.connect(path, factory=Connection)
+        self._owned = True
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA foreign_keys = ON")
         tables = {r[0] for r in self.db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
@@ -128,6 +174,16 @@ class Store:
             self.db.execute("ALTER TABLE segments ADD COLUMN confirmed INTEGER NOT NULL DEFAULT 0")
         self.config = self._settle_config(config)
         self._index: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
+
+    @classmethod
+    def on(cls, db: Connection, config: FingerprintConfig | None = None) -> Store:
+        """A store on a connection opened elsewhere, to a database that `Store(path)` has set up. Its writes join
+        that connection's transactions, and closing it leaves the connection open."""
+        store = cls.__new__(cls)
+        store.db, store._owned = db, False
+        store.config = store._settle_config(config)
+        store._index = None
+        return store
 
     def _upgrade_from_2(self) -> None:
         """Move block hashes from one row each into packed columns (schema 2 to 3)."""
@@ -161,9 +217,9 @@ class Store:
         rows = dict(self.db.execute("SELECT key, value FROM settings").fetchall())
         if not rows:
             config = wanted or FingerprintConfig()
-            self.db.executemany("INSERT INTO settings VALUES (?, ?)",
-                                [("schema", SCHEMA_VERSION), ("fingerprint", config.to_json())])
-            self.db.commit()
+            with transaction(self.db):
+                self.db.executemany("INSERT INTO settings VALUES (?, ?)",
+                                    [("schema", SCHEMA_VERSION), ("fingerprint", config.to_json())])
             return config
         if rows.get("schema") != SCHEMA_VERSION:
             raise StoreError("this store was made by another pod-block version; start a new --data-dir")
@@ -174,26 +230,26 @@ class Store:
         return stored
 
     def close(self) -> None:
-        self.db.close()
+        if self._owned:
+            self.db.close()
 
     # --- podcasts -----------------------------------------------------------
 
     def podcast_id(self, name: str | None = None, feed_url: str | None = None) -> int:
         """Find or create a podcast by feed URL, or by name when there is no feed."""
-        if feed_url:
-            row = self.db.execute("SELECT id FROM podcasts WHERE feed_url = ?", (feed_url,)).fetchone()
-        else:
-            row = self.db.execute("SELECT id FROM podcasts WHERE name = ? AND feed_url IS NULL",
-                                  (name,)).fetchone()
-        if row:
-            if name and feed_url:
-                self.db.execute("UPDATE podcasts SET name = ? WHERE id = ?", (name, row["id"]))
-                self.db.commit()
-            return row["id"]
-        cur = self.db.execute("INSERT INTO podcasts (name, feed_url) VALUES (?, ?)",
-                              (name or feed_url, feed_url))
-        self.db.commit()
-        return cur.lastrowid
+        with transaction(self.db):
+            if feed_url:
+                row = self.db.execute("SELECT id FROM podcasts WHERE feed_url = ?", (feed_url,)).fetchone()
+            else:
+                row = self.db.execute("SELECT id FROM podcasts WHERE name = ? AND feed_url IS NULL",
+                                      (name,)).fetchone()
+            if row:
+                if name and feed_url:
+                    self.db.execute("UPDATE podcasts SET name = ? WHERE id = ?", (name, row["id"]))
+                return row["id"]
+            cur = self.db.execute("INSERT INTO podcasts (name, feed_url) VALUES (?, ?)",
+                                  (name or feed_url, feed_url))
+            return cur.lastrowid
 
     def find_podcast(self, key: str) -> int | None:
         """A podcast id from its id, feed URL or name."""
@@ -207,8 +263,8 @@ class Store:
         return self.db.execute("SELECT * FROM podcasts WHERE id = ?", (podcast_id,)).fetchone()
 
     def set_outro_bed(self, podcast_id: int, on: bool) -> None:
-        self.db.execute("UPDATE podcasts SET outro_bed = ? WHERE id = ?", (int(on), podcast_id))
-        self.db.commit()
+        with transaction(self.db):
+            self.db.execute("UPDATE podcasts SET outro_bed = ? WHERE id = ?", (int(on), podcast_id))
 
     def podcasts(self) -> list[sqlite3.Row]:
         return self.db.execute(
@@ -223,21 +279,20 @@ class Store:
     # --- episodes -----------------------------------------------------------
 
     def upsert_episode(self, guid: str, **fields) -> int:
-        row = self.db.execute("SELECT id FROM episodes WHERE guid = ?", (guid,)).fetchone()
-        if row is None:
-            cols = ["guid", "added_at", *fields]
-            vals = [guid, time.time(), *fields.values()]
-            cur = self.db.execute(
-                f"INSERT INTO episodes ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})",
-                vals,
-            )
-            self.db.commit()
-            return cur.lastrowid
-        if fields:
-            sets = ", ".join(f"{k} = ?" for k in fields)
-            self.db.execute(f"UPDATE episodes SET {sets} WHERE id = ?", [*fields.values(), row["id"]])
-            self.db.commit()
-        return row["id"]
+        with transaction(self.db):
+            row = self.db.execute("SELECT id FROM episodes WHERE guid = ?", (guid,)).fetchone()
+            if row is None:
+                cols = ["guid", "added_at", *fields]
+                vals = [guid, time.time(), *fields.values()]
+                cur = self.db.execute(
+                    f"INSERT INTO episodes ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})",
+                    vals,
+                )
+                return cur.lastrowid
+            if fields:
+                sets = ", ".join(f"{k} = ?" for k in fields)
+                self.db.execute(f"UPDATE episodes SET {sets} WHERE id = ?", [*fields.values(), row["id"]])
+            return row["id"]
 
     def episode(self, episode_id: int) -> sqlite3.Row:
         return self.db.execute("SELECT * FROM episodes WHERE id = ?", (episode_id,)).fetchone()
@@ -258,8 +313,8 @@ class Store:
 
     def mark_compared(self, a_id: int, b_id: int) -> None:
         a_id, b_id = sorted((a_id, b_id))
-        self.db.execute("INSERT OR IGNORE INTO compared_pairs VALUES (?, ?)", (a_id, b_id))
-        self.db.commit()
+        with transaction(self.db):
+            self.db.execute("INSERT OR IGNORE INTO compared_pairs VALUES (?, ?)", (a_id, b_id))
 
     # --- segments -----------------------------------------------------------
 
@@ -272,14 +327,14 @@ class Store:
         if source_episode_id is not None:
             podcast_id = self.episode(source_episode_id)["podcast_id"]
         now = time.time()
-        cur = self.db.execute(
-            "INSERT INTO segments (source_episode_id, podcast_id, source_start, source_end, hashes, times, "
-            "created_at, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (source_episode_id, podcast_id, source_start, source_end,
-             _pack(fp.hashes, "<u4"), _pack(fp.times, "<i4"), now, now),
-        )
-        self.db.commit()
-        self._index = None
+        self._index = None  # before writing: a transaction rolled back leaves the blocks it had, read again
+        with transaction(self.db):
+            cur = self.db.execute(
+                "INSERT INTO segments (source_episode_id, podcast_id, source_start, source_end, hashes, times, "
+                "created_at, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (source_episode_id, podcast_id, source_start, source_end,
+                 _pack(fp.hashes, "<u4"), _pack(fp.times, "<i4"), now, now),
+            )
         return cur.lastrowid
 
     def segment_fingerprint(self, segment_id: int) -> Fingerprint:
@@ -290,27 +345,27 @@ class Store:
                            row["source_end"] - row["source_start"], self.config)
 
     def delete_segment(self, segment_id: int) -> None:
-        self.db.execute("DELETE FROM segments WHERE id = ?", (segment_id,))
-        self.db.commit()
         self._index = None
+        with transaction(self.db):
+            self.db.execute("DELETE FROM segments WHERE id = ?", (segment_id,))
 
     def set_label(self, segment_id: int, label: str | None) -> None:
-        self.db.execute("UPDATE segments SET label = ? WHERE id = ?", (label, segment_id))
-        self.db.commit()
+        with transaction(self.db):
+            self.db.execute("UPDATE segments SET label = ? WHERE id = ?", (label, segment_id))
 
     def set_type(self, segment_id: int, block_type: str | None) -> None:
         """Set a block's type by hand, or with None hand it back to automatic tagging."""
-        if block_type is None:
-            self.db.execute("UPDATE segments SET type = ?, type_manual = 0, confirmed = 0 WHERE id = ?",
-                            (REPEATED, segment_id))
-        elif block_type in TYPES:
-            self.db.execute("UPDATE segments SET type = ?, type_manual = 1, confirmed = 0 WHERE id = ?",
-                            (block_type, segment_id))
-            if block_type == IGNORED:  # forget where it played, so breaks and tags drop it
-                self.db.execute("DELETE FROM occurrences WHERE segment_id = ?", (segment_id,))
-        else:
+        if block_type is not None and block_type not in TYPES:
             raise ValueError(f"unknown type {block_type!r}; pick one of {', '.join(TYPES)}")
-        self.db.commit()
+        with transaction(self.db):
+            if block_type is None:
+                self.db.execute("UPDATE segments SET type = ?, type_manual = 0, confirmed = 0 WHERE id = ?",
+                                (REPEATED, segment_id))
+            else:
+                self.db.execute("UPDATE segments SET type = ?, type_manual = 1, confirmed = 0 WHERE id = ?",
+                                (block_type, segment_id))
+                if block_type == IGNORED:  # forget where it played, so breaks and tags drop it
+                    self.db.execute("DELETE FROM occurrences WHERE segment_id = ?", (segment_id,))
 
     def set_auto_types(self, types: dict[int, str], confirm: set[int] = frozenset()) -> None:
         """Retag every block not typed by hand or confirmed: the given type, else `repeated`.
@@ -318,12 +373,12 @@ class Store:
         Blocks in `confirm` keep the type they get here from then on.
         """
         free = "type_manual = 0 AND confirmed = 0"
-        self.db.execute(f"UPDATE segments SET type = ? WHERE {free}", (REPEATED,))
-        self.db.executemany(f"UPDATE segments SET type = ? WHERE id = ? AND {free}",
-                            [(t, seg_id) for seg_id, t in types.items()])
-        self.db.executemany("UPDATE segments SET confirmed = 1 WHERE id = ? AND type_manual = 0",
-                            [(seg_id,) for seg_id in confirm])
-        self.db.commit()
+        with transaction(self.db):
+            self.db.execute(f"UPDATE segments SET type = ? WHERE {free}", (REPEATED,))
+            self.db.executemany(f"UPDATE segments SET type = ? WHERE id = ? AND {free}",
+                                [(t, seg_id) for seg_id, t in types.items()])
+            self.db.executemany("UPDATE segments SET confirmed = 1 WHERE id = ? AND type_manual = 0",
+                                [(seg_id,) for seg_id in confirm])
 
     def hand_typed(self) -> set[int]:
         """Blocks whose type was set by hand."""
@@ -382,21 +437,21 @@ class Store:
 
     def add_occurrences(self, rows: list[tuple[int, SegmentMatch]]) -> None:
         """Add (episode id, match) pairs."""
-        self.db.executemany(
-            "INSERT INTO occurrences (segment_id, episode_id, start, end, segment_start, hits) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            [(m.segment_id, ep, m.start, m.end, m.segment_start, m.hits) for ep, m in rows],
-        )
-        self.db.commit()
+        with transaction(self.db):
+            self.db.executemany(
+                "INSERT INTO occurrences (segment_id, episode_id, start, end, segment_start, hits) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                [(m.segment_id, ep, m.start, m.end, m.segment_start, m.hits) for ep, m in rows],
+            )
 
     def replace_occurrences(self, episode_id: int, matches: list[SegmentMatch]) -> None:
-        self.db.execute("DELETE FROM occurrences WHERE episode_id = ?", (episode_id,))
-        self.db.executemany(
-            "INSERT INTO occurrences (segment_id, episode_id, start, end, segment_start, hits) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            [(m.segment_id, episode_id, m.start, m.end, m.segment_start, m.hits) for m in matches],
-        )
-        self.db.commit()
+        with transaction(self.db):
+            self.db.execute("DELETE FROM occurrences WHERE episode_id = ?", (episode_id,))
+            self.db.executemany(
+                "INSERT INTO occurrences (segment_id, episode_id, start, end, segment_start, hits) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                [(m.segment_id, episode_id, m.start, m.end, m.segment_start, m.hits) for m in matches],
+            )
 
     # --- matching -----------------------------------------------------------
 
@@ -447,7 +502,7 @@ class Store:
         starts = np.concatenate(([0], bounds))
         ends = np.concatenate((bounds, [len(matched_seg)]))
         found: list[SegmentMatch] = []
-        for s, e in zip(starts, ends):
+        for s, e in zip(starts, ends, strict=True):
             for run in find_runs(tq[s:e], tref[s:e], params):
                 found.append(SegmentMatch(
                     segment_id=int(matched_seg[s]),
@@ -463,9 +518,9 @@ class Store:
     def mark_heard(self, segment_ids) -> None:
         ids = sorted(segment_ids)
         if ids:
-            self.db.execute(f"UPDATE segments SET last_seen = ? WHERE id IN ({', '.join('?' * len(ids))})",
-                            (time.time(), *ids))
-            self.db.commit()
+            with transaction(self.db):
+                self.db.execute(f"UPDATE segments SET last_seen = ? WHERE id IN ({', '.join('?' * len(ids))})",
+                                (time.time(), *ids))
 
     def uncovered(self, fp: Fingerprint, params: MatchParams) -> list[tuple[float, float]]:
         """Parts of `fp` (in seconds) that no stored block, of any podcast, already covers."""
@@ -482,8 +537,8 @@ class Store:
     # --- reports and clean-up ----------------------------------------------
 
     def save_report(self, episode_id: int, report: str) -> None:
-        self.db.execute("INSERT OR REPLACE INTO reports VALUES (?, ?, ?)", (episode_id, time.time(), report))
-        self.db.commit()
+        with transaction(self.db):
+            self.db.execute("INSERT OR REPLACE INTO reports VALUES (?, ?, ?)", (episode_id, time.time(), report))
 
     def saved_report(self, episode_id: int) -> str | None:
         row = self.db.execute("SELECT report FROM reports WHERE episode_id = ?", (episode_id,)).fetchone()
@@ -491,9 +546,9 @@ class Store:
 
     def delete_episode(self, episode_id: int) -> None:
         """Forget an episode: its occurrences, report and comparisons go too."""
-        self.db.execute("DELETE FROM compared_pairs WHERE a_id = ? OR b_id = ?", (episode_id, episode_id))
-        self.db.execute("DELETE FROM episodes WHERE id = ?", (episode_id,))
-        self.db.commit()
+        with transaction(self.db):
+            self.db.execute("DELETE FROM compared_pairs WHERE a_id = ? OR b_id = ?", (episode_id, episode_id))
+            self.db.execute("DELETE FROM episodes WHERE id = ?", (episode_id,))
 
 
 def _pack(values: np.ndarray, dtype: str) -> bytes:

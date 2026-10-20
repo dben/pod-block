@@ -9,18 +9,14 @@ import segno
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 
-from . import directory, downloads, feeds, filters, jobs, library, publish
-from .episodes import wake_worker
-from .deps import admin_user, current_user, get_db
-from .templating import flash, page
+from ...app import directory, filters, following, library, private_feeds, storage
+from ..deps import admin_user, current_user, feed_url, get_db, wake_worker
+from ..templating import flash, page, plural
 
 PAGE_SIZE = 50
 VIEWS = {"active": (False, False), "archived": (True, False), "downloaded": (False, True),  # (archived, downloaded)
          "grabbed": (False, False), "filtered": (False, False)}
 TABS = ("episodes", "feed", "filters", "settings")
-RETENTION_DAYS = (0, 3650)
-REFRESH_MINUTES = (15, 7 * 24 * 60)
-FILL_GAPS = (0, 120)
 
 router = APIRouter()
 
@@ -44,7 +40,7 @@ def _addresses(request: Request, token: str) -> list[dict]:
     """A feed's two addresses, newest released first and newest downloaded first, each with its QR code."""
     out = []
     for key, label, by_download in (("released", "By release date", False), ("downloaded", "By download date", True)):
-        url = publish.feed_url(request, token, by_download)
+        url = feed_url(request, token, by_download)
         out.append({"key": key, "label": label, "url": url, "qr": _qr(url)})
     return out
 
@@ -60,14 +56,14 @@ def _home(request: Request, user, db: sqlite3.Connection, view: str = "mine", st
             context.update(found=[], known={}, error=f"Couldn't search: {e}.")
         context.setdefault("url", search)
     shown = library.podcasts(db, user["id"], mine=view == "mine")
-    everything = db.execute("SELECT COUNT(*) FROM podcasts WHERE followed = 1").fetchone()[0]
+    everything = library.followed_count(db)
     mine = len(shown) if view == "mine" else sum(p["subscribed"] for p in shown)
     expired_total = sum(p["expired_count"] for p in shown if p["subscribed"])
     return page(request, "home.html", status_code=status_code, title="Podcasts", nav="podcasts", user=user,
                 podcasts=shown, view=view, mine_count=mine, all_count=everything, expired_total=expired_total,
-                omni_addresses=_addresses(request, publish.omni_token(db, user["id"])),
-                omni_count=len(publish.omni_published(db, user["id"])),
-                space=downloads.space(db, request.app.state.settings.media_dir), search=search, **context)
+                omni_addresses=_addresses(request, private_feeds.omni_token(db, user["id"])),
+                omni_count=len(private_feeds.omni_published(db, user["id"])),
+                space=storage.space(db, request.app.state.settings.media_dir), search=search, **context)
 
 
 @router.get("/")
@@ -90,18 +86,20 @@ def subscribe(request: Request, podcast_id: int, on: bool = Form(...), next: str
 
 
 @router.post("/omni-token")
-def new_omni_address(request: Request, user=Depends(current_user), db: sqlite3.Connection = Depends(get_db)) -> Response:
+def new_omni_address(request: Request, user=Depends(current_user),
+                     db: sqlite3.Connection = Depends(get_db)) -> Response:
     """Give your omni feed a new address."""
-    publish.new_omni_token(db, user["id"])
+    private_feeds.new_omni_token(db, user["id"])
     flash(request, "Your omni feed has a new address. The old one no longer works.")
     return RedirectResponse("/?omni=1", status_code=303)
 
 
 @router.post("/episodes/archive-expired")
-def archive_all_expired(request: Request, user=Depends(current_user), db: sqlite3.Connection = Depends(get_db)) -> Response:
+def archive_all_expired(request: Request, user=Depends(current_user),
+                        db: sqlite3.Connection = Depends(get_db)) -> Response:
     """Archive every cleaned-up episode, of every podcast, for this user."""
     changed = library.archive_expired(db, user["id"])
-    flash(request, f"Archived {len(changed):,} cleaned-up {'episode' if len(changed) == 1 else 'episodes'}.")
+    flash(request, f"Archived {plural(len(changed), 'cleaned-up episode')}.")
     return RedirectResponse("/", status_code=303)
 
 
@@ -113,8 +111,8 @@ def add_podcast(request: Request, url: str = Form(""), user=Depends(current_user
     if address is None:
         return RedirectResponse(f"/?{urlencode({'search': url.strip()})}" if url.strip() else "/", status_code=303)
     try:
-        result = feeds.add_podcast(db, directory.apple_feed(address) or address)
-    except (feeds.RefreshError, directory.DirectoryError) as e:
+        result = following.add_podcast(db, directory.apple_feed(address) or address)
+    except (following.RefreshError, directory.DirectoryError) as e:
         return _home(request, user, db, status_code=422, url=url, error=f"Couldn't add that feed: {e}.")
     library.subscribe(db, user["id"], result.podcast_id)
     flash(request, f"Added, with {result.added:,} episodes." if result.added else "Added.")
@@ -145,11 +143,10 @@ def show_podcast(request: Request, podcast_id: int, view: str = "active", q: str
         if partial:
             return page(request, "_episodes.html", **context)
     if tab == "feed":
-        context.update(private_addresses=_addresses(request, publish.feed_token(db, user["id"], podcast_id)),
-                       private_count=len(publish.published(db, podcast_id, user["id"])))
-    cut_sec = db.execute("SELECT COALESCE(SUM(duration - cut_duration), 0) FROM episodes WHERE podcast_id = ? "
-                         "AND cut_duration IS NOT NULL", (podcast_id,)).fetchone()[0]
-    return page(request, "podcast.html", title=pod["name"], nav="podcasts", user=user, cut_sec=cut_sec,
+        context.update(private_addresses=_addresses(request, private_feeds.feed_token(db, user["id"], podcast_id)),
+                       private_count=len(private_feeds.published(db, podcast_id, user["id"])))
+    return page(request, "podcast.html", title=pod["name"], nav="podcasts", user=user,
+                cut_sec=library.cut_seconds(db, podcast_id),
                 subscribed=library.subscribed(db, user["id"], podcast_id),
                 filters=filters.for_podcast(db, user["id"], podcast_id),
                 counts=library.counts(db, user["id"], podcast_id), **context)
@@ -160,18 +157,14 @@ def podcast_settings(request: Request, podcast_id: int, retention_days: int = Fo
                      refresh_minutes: int = Form(...), fill_gaps: float = Form(4.0), auto_download: bool = Form(False),
                      sort: str = Form("newest"), user=Depends(current_user),
                      db: sqlite3.Connection = Depends(get_db)) -> Response:
-    pod = _podcast_or_404(db, podcast_id)
-    if not (RETENTION_DAYS[0] <= retention_days <= RETENTION_DAYS[1]
-            and REFRESH_MINUTES[0] <= refresh_minutes <= REFRESH_MINUTES[1]
-            and FILL_GAPS[0] <= fill_gaps <= FILL_GAPS[1]):
-        flash(request, "Those settings are out of range.", "error")
+    _podcast_or_404(db, podcast_id)
+    try:
+        new_gap = library.save_settings(db, podcast_id, retention_days, refresh_minutes, fill_gaps, auto_download,
+                                        oldest_first=sort == "oldest")
+    except library.SettingsError as e:
+        flash(request, str(e), "error")
     else:
-        db.execute("UPDATE podcasts SET retention_days = ?, refresh_minutes = ?, fill_gaps = ?, auto_download = ?, "
-                   "sort_oldest = ? WHERE id = ?",
-                   (retention_days, refresh_minutes, fill_gaps, int(auto_download), int(sort == "oldest"), podcast_id))
-        db.commit()
-        note = " Process episodes again to cut them with the new gap." if fill_gaps != pod["fill_gaps"] else ""
-        flash(request, "Saved." + note)
+        flash(request, "Saved." + (" Process episodes again to cut them with the new gap." if new_gap else ""))
     return RedirectResponse(f"/podcasts/{podcast_id}?tab=settings#tabs", status_code=303)
 
 
@@ -191,10 +184,9 @@ def add_filter(request: Request, podcast_id: int, pattern: str = Form(""), scope
                                 status_code=303)
     if processing:
         wake_worker(request)  # an unlearn job may be waiting
-    here = db.execute("SELECT COUNT(*) FROM episodes WHERE podcast_id = ? AND title REGEXP ?",
-                      (podcast_id, pattern.strip())).fetchone()[0]
+    here = filters.matches(db, podcast_id, pattern)
     who = "everyone" if processing else "you"
-    flash(request, f"Filter added. It hides {here:,} {'episode' if here == 1 else 'episodes'} of this podcast "
+    flash(request, f"Filter added. It hides {plural(here, 'episode')} of this podcast "
                    f"from {who}{', and the ones it matches in other podcasts' if everywhere else ''}.")
     return RedirectResponse(f"/podcasts/{podcast_id}?tab=filters#tabs", status_code=303)
 
@@ -217,7 +209,7 @@ def new_feed_address(request: Request, podcast_id: int, user=Depends(current_use
                      db: sqlite3.Connection = Depends(get_db)) -> Response:
     """Give your own private feed of a podcast a new address. Everyone else's stays."""
     _podcast_or_404(db, podcast_id)
-    publish.new_feed_token(db, user["id"], podcast_id)
+    private_feeds.new_feed_token(db, user["id"], podcast_id)
     flash(request, "Your private feed has a new address. The old one no longer works.")
     return RedirectResponse(f"/podcasts/{podcast_id}?tab=feed#tabs", status_code=303)
 
@@ -227,8 +219,8 @@ def refresh_podcast(request: Request, podcast_id: int, user=Depends(current_user
                     db: sqlite3.Connection = Depends(get_db)) -> Response:
     _podcast_or_404(db, podcast_id)
     try:
-        flash(request, feeds.refresh(db, podcast_id, conditional=False).describe())
-    except feeds.RefreshError as e:
+        flash(request, following.refresh(db, podcast_id, conditional=False).describe())
+    except following.RefreshError as e:
         flash(request, f"Refresh failed: {e}.", "error")
     return RedirectResponse(f"/podcasts/{podcast_id}", status_code=303)
 
@@ -241,17 +233,14 @@ def change_episodes(request: Request, podcast_id: int, action: str = Form(...), 
     or every cleaned-up one."""
     _podcast_or_404(db, podcast_id)
     if action in {"download", "reprocess"}:
-        mine = [r["id"] for r in db.execute(
-            f"SELECT id FROM episodes WHERE podcast_id = ? AND id IN ({', '.join('?' * len(ids))})",
-            (podcast_id, *ids))] if ids else []
-        changed = jobs.enqueue(db, "process", mine, user["id"], skip_ready=action == "download")
+        changed, picked = library.download(db, user["id"], podcast_id, ids, again=action == "reprocess")
         if changed:
             wake_worker(request)
         if _wants_json(request):
             return JSONResponse({"action": action, "changed": changed})
-        skipped = len(mine) - len(changed)
+        skipped = picked - len(changed)
         note = f" {skipped:,} already ready or queued." if skipped else ""
-        flash(request, f"Queued {len(changed):,} {'episode' if len(changed) == 1 else 'episodes'}.{note}"
+        flash(request, f"Queued {plural(len(changed), 'episode')}.{note}"
               if changed else "Those are already ready or queued.")
         back = next if next.startswith(f"/podcasts/{podcast_id}") else f"/podcasts/{podcast_id}"
         return RedirectResponse(back, status_code=303)
@@ -271,7 +260,7 @@ def change_episodes(request: Request, podcast_id: int, action: str = Form(...), 
         raise HTTPException(400, "Unknown action")
     if _wants_json(request):
         return JSONResponse({"action": action, "changed": changed})
-    flash(request, f"{verb} {len(changed):,} {'episode' if len(changed) == 1 else 'episodes'}.")
+    flash(request, f"{verb} {plural(len(changed), 'episode')}.")
     back = next if next.startswith(f"/podcasts/{podcast_id}") else f"/podcasts/{podcast_id}"
     return RedirectResponse(back, status_code=303)
 
@@ -280,7 +269,7 @@ def change_episodes(request: Request, podcast_id: int, action: str = Form(...), 
 def remove_podcast(request: Request, podcast_id: int, user=Depends(admin_user),
                    db: sqlite3.Connection = Depends(get_db)) -> Response:
     pod = _podcast_or_404(db, podcast_id)
-    stayed = feeds.remove_podcast(db, podcast_id)
+    stayed = following.remove_podcast(db, podcast_id)
     note = f" Its {stayed:,} downloaded episodes stay." if stayed else ""
     flash(request, f"Removed {pod['name']}.{note}")
     return RedirectResponse("/", status_code=303)

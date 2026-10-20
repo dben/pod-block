@@ -1,0 +1,32 @@
+# Weekly pull requests to update dependencies, each checked by CI before it can merge.
+version: 2
+updates:
+  # uv.lock, and the lower bounds in pyproject.toml: Dependabot's uv support always raises those to what it
+  # locks. CI's `uv sync --locked`, and its Python 3.10 tests, catch an update that no longer fits.
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7  # as exclude-newer in pyproject.toml, which won't lock anything newer
+    groups:
+      python-packages:
+        update-types: [minor, patch]  # one pull request for these; a major version gets its own
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+
+  # The uv image the Dockerfile copies uv from, and the Python base image. Moving to another Python is
+  # left to a person, as CI tests the one the image ships.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    ignore:
+      - dependency-name: python
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]

@@ -19,9 +19,9 @@ from pathlib import Path
 from ..pipeline import prune
 from ..store import Store
 from . import chapters
-from .config import Settings
-from .db import set_setting, setting
-from .processing import _detecting
+from .db import set_setting, setting, transaction
+from .locks import detecting
+from .states import IN_USE, READY, sql
 
 log = logging.getLogger(__name__)
 
@@ -42,17 +42,18 @@ def _unlink(path: str | None) -> None:
 
 def clear(db: sqlite3.Connection, ep: sqlite3.Row, now: float | None = None) -> None:
     """Delete an episode's download, cut file, waveform and transcripts. A ready one becomes `expired`, to be
-    downloaded again and cut the same way; any other keeps its state. The caller commits."""
+    downloaded again and cut the same way; any other keeps its state."""
     for path in (ep["original_path"], ep["cut_path"], ep["peaks_path"]):
         _unlink(path)
     chapters.forget(ep)
     gone = ("original_path = NULL, cut_path = NULL, peaks_path = NULL, cut_spec = NULL, cut_chapters = NULL, "
             "source_chapters = NULL, transcripts = NULL")  # chapters are looked for again on the next download
-    if ep["state"] == "ready":
-        db.execute(f"UPDATE episodes SET state = 'expired', state_note = NULL, {gone}, ready_at = NULL, expired_at = ? "
-                   "WHERE id = ?", (now or time.time(), ep["id"]))
-    else:
-        db.execute(f"UPDATE episodes SET {gone} WHERE id = ?", (ep["id"],))
+    with transaction(db):
+        if ep["state"] == READY:
+            db.execute(f"UPDATE episodes SET state = 'expired', state_note = NULL, {gone}, ready_at = NULL, "
+                       "expired_at = ? WHERE id = ?", (now or time.time(), ep["id"]))
+        else:
+            db.execute(f"UPDATE episodes SET {gone} WHERE id = ?", (ep["id"],))
 
 
 def expire_due(db: sqlite3.Connection, now: float | None = None) -> list[int]:
@@ -62,25 +63,26 @@ def expire_due(db: sqlite3.Connection, now: float | None = None) -> list[int]:
         f"""SELECT e.* FROM episodes e JOIN podcasts p ON p.id = e.podcast_id
             WHERE e.state = 'ready' AND e.ready_at IS NOT NULL AND p.retention_days > 0
               AND e.ready_at + p.retention_days * {DAY} <= ? AND NOT {KEPT}""", (now,)).fetchall()
-    for ep in due:
-        clear(db, ep, now)
+    with transaction(db):
+        for ep in due:
+            clear(db, ep, now)
     # Downloads that never became ready (a failed job, companions of a cancelled one) go on the same clock.
     leftovers = db.execute(
         f"""SELECT e.id, e.original_path, p.retention_days FROM episodes e JOIN podcasts p ON p.id = e.podcast_id
-            WHERE e.original_path IS NOT NULL AND COALESCE(e.state, '') NOT IN ('ready', 'queued', 'running')
+            WHERE e.original_path IS NOT NULL AND COALESCE(e.state, '') NOT IN ({sql(IN_USE)})
               AND p.retention_days > 0 AND NOT {KEPT}""").fetchall()
-    for ep in leftovers:
-        path = Path(ep["original_path"])
-        if not path.exists() or path.stat().st_mtime + ep["retention_days"] * DAY <= now:
-            _unlink(ep["original_path"])
-            db.execute("UPDATE episodes SET original_path = NULL WHERE id = ?", (ep["id"],))
-    db.commit()
+    with transaction(db):
+        for ep in leftovers:
+            path = Path(ep["original_path"])
+            if not path.exists() or path.stat().st_mtime + ep["retention_days"] * DAY <= now:
+                _unlink(ep["original_path"])
+                db.execute("UPDATE episodes SET original_path = NULL WHERE id = ?", (ep["id"],))
     if due:
         log.info("cleaned up %d episode(s)", len(due))
     return [ep["id"] for ep in due]
 
 
-def prune_store(db: sqlite3.Connection, settings: Settings, now: float | None = None) -> dict | None:
+def prune_store(db: sqlite3.Connection, now: float | None = None) -> dict | None:
     """Run the detector's clean-up, at most once a day. Returns what it removed, or None if it wasn't due."""
     now = now or time.time()
     last = float(setting(db, "last_prune") or 0)
@@ -89,18 +91,14 @@ def prune_store(db: sqlite3.Connection, settings: Settings, now: float | None = 
     set_setting(db, "last_prune", str(now))
     # The detector ages fingerprints by file time; ones still in use must not look old to it.
     for r in db.execute(f"""SELECT fingerprint_path FROM episodes e WHERE fingerprint_path IS NOT NULL
-                            AND (state IN ('ready', 'queued', 'running') OR {KEPT})"""):
+                            AND (state IN ({sql(IN_USE)}) OR {KEPT})"""):
         try:
             os.utime(r["fingerprint_path"], (now, now))
         except FileNotFoundError:
             pass
-    store = Store(settings.db_path)
-    try:
-        with _detecting:
-            gone = prune(store, audio_days=NO_AUDIO_PRUNE, fingerprint_days=FINGERPRINT_DAYS,
-                         block_days=BLOCK_DAYS, bumper_days=BUMPER_DAYS)
-    finally:
-        store.close()
+    with detecting:
+        gone = prune(Store.on(db), audio_days=NO_AUDIO_PRUNE, fingerprint_days=FINGERPRINT_DAYS,
+                     block_days=BLOCK_DAYS, bumper_days=BUMPER_DAYS)
     if any(gone.values()):
         log.info("pruned the store: %s", dict(gone))
     return dict(gone)

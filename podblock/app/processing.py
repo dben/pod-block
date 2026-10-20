@@ -10,11 +10,9 @@ cut and made ready too.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import sqlite3
-import threading
 import time
 from pathlib import Path
 
@@ -26,32 +24,22 @@ from ..pipeline import Paths, episode_report, find_common_blocks, load_fingerpri
 from ..store import BUMPER, BUMPER_IN, BUMPER_OUT, IGNORED, INTRO, OUTRO, PODCAST_ONLY, REPEATED, SHOW, Store
 from . import chapters
 from .config import Settings
+from .db import transaction
 from .jobs import Cancelled, Context, enqueue, settle_episode, take_along
+from .locks import detecting
+from .states import ACTIVE, sql
 
 log = logging.getLogger(__name__)
 
 COMPARE_WITH = 4  # fingerprinted episodes a show should have before its repeats are looked for
 FILL_GAPS = 4.0  # default seconds of new audio between two repeats cut with them (podcasts.fill_gaps)
-AUDIO_SUFFIXES = {".mp3", ".m4a", ".mp4", ".aac", ".ogg", ".opus", ".oga", ".wav", ".flac"}
-MIME_SUFFIXES = {"audio/mpeg": ".mp3", "audio/mp3": ".mp3", "audio/mp4": ".m4a", "audio/x-m4a": ".m4a",
-                 "audio/aac": ".aac", "audio/ogg": ".ogg", "audio/opus": ".opus"}
-
-_detecting = threading.Lock()  # the store's blocks change while repeats are found; one group at a time
-
 
 class ProcessError(Exception):
     pass
 
 
-def media_key(guid: str) -> str:
-    return hashlib.sha1(guid.encode()).hexdigest()[:16]
-
-
-def audio_suffix(url: str | None, mime: str | None) -> str:
-    suffix = Path((url or "").split("?", 1)[0]).suffix.lower()
-    if suffix in AUDIO_SUFFIXES:
-        return suffix
-    return MIME_SUFFIXES.get((mime or "").split(";")[0].strip().lower(), ".mp3")
+class Busy(ProcessError):
+    """The episode is queued or being processed, so it can't be changed until that is done."""
 
 
 def _episode(db: sqlite3.Connection, episode_id: int) -> sqlite3.Row:
@@ -66,8 +54,8 @@ def companions(db: sqlite3.Connection, ep: sqlite3.Row, count: int) -> list[sqli
     then the ones before it."""
     if count <= 0 or ep["pub_ts"] is None:
         return []
-    usable = """podcast_id = ? AND id != ? AND fingerprint_path IS NULL AND audio_url IS NOT NULL
-                AND in_feed = 1 AND skip_processing = 0 AND COALESCE(state, '') NOT IN ('queued', 'running')
+    usable = f"""podcast_id = ? AND id != ? AND fingerprint_path IS NULL AND audio_url IS NOT NULL
+                AND in_feed = 1 AND skip_processing = 0 AND COALESCE(state, '') NOT IN ({sql(ACTIVE)})
                 AND held_by IS NULL"""
     after = db.execute(f"SELECT * FROM episodes WHERE {usable} AND pub_ts > ? ORDER BY pub_ts LIMIT ?",
                        (ep["podcast_id"], ep["id"], ep["pub_ts"], count)).fetchall()
@@ -83,17 +71,18 @@ def _fetch(ctx: Context, settings: Settings, store: Store, paths: Paths, episode
     if original is None or not original.exists():
         if not ep["audio_url"]:
             raise ProcessError("the feed gives no audio for it")
-        original = settings.media_dir / "original" / (media_key(ep["guid"]) + audio_suffix(ep["audio_url"], ep["audio_type"]))
+        original = settings.media.original(ep)
         ctx.step("Downloading", episode_id)
         try:
-            download(ep["audio_url"], original, progress=lambda done, total: ctx.progress(done / total if total else None))
+            download(ep["audio_url"], original,
+                     progress=lambda done, total: ctx.progress(done / total if total else None))
         except (Cancelled, ProcessError):
             raise
         except Exception as e:
             raise ProcessError(f"couldn't download it ({type(e).__name__}: {e})") from None
-        ctx.db.execute("UPDATE episodes SET original_path = ?, ever_downloaded = 1 WHERE id = ?",
-                       (str(original), episode_id))
-        ctx.db.commit()
+        with transaction(ctx.db):
+            ctx.db.execute("UPDATE episodes SET original_path = ?, ever_downloaded = 1 WHERE id = ?",
+                           (str(original), episode_id))
     fp_path = Path(ep["fingerprint_path"]) if ep["fingerprint_path"] else None
     if fp_path is None or not fp_path.exists():
         ctx.step("Fingerprinting", episode_id)
@@ -127,31 +116,31 @@ def _render(ctx: Context, settings: Settings, episode_id: int, report: dict) -> 
     spec = json.dumps([[round(a, 2), round(b, 2)] for a, b in keep])
     if ep["source_chapters"] is None:
         ctx.step("Reading chapters", episode_id)
-        chapters.gather(ctx.db, ep, settings.media_dir / "transcripts" / media_key(ep["guid"]))
+        chapters.gather(ctx.db, ep, settings.media.transcripts(ep))
         ep = _episode(ctx.db, episode_id)
     edits = ctx.db.execute("SELECT start, end FROM edits WHERE episode_id = ?", (episode_id,)).fetchall()
     marks = chapters.build(json.loads(spec), chapters.cuts(report, edits), json.loads(ep["source_chapters"]))
     if (spec == ep["cut_spec"] and json.dumps(marks) == ep["cut_chapters"] and ep["cut_path"]
             and Path(ep["cut_path"]).exists()):
-        ctx.db.execute("UPDATE episodes SET state = 'ready', state_note = NULL, ready_at = COALESCE(ready_at, ?) "
-                       "WHERE id = ?", (time.time(), episode_id))
-        ctx.db.commit()  # nothing to cut differently
+        with transaction(ctx.db):  # nothing to cut differently
+            ctx.db.execute("UPDATE episodes SET state = 'ready', state_note = NULL, "
+                           "ready_at = COALESCE(ready_at, ?) WHERE id = ?", (time.time(), episode_id))
         return
     ctx.step("Cutting", episode_id)
     try:
-        out = cut.render(Path(ep["original_path"]), settings.media_dir / "cut" / media_key(ep["guid"]), keep,
+        out = cut.render(Path(ep["original_path"]), settings.media.cut(ep), keep,
                          progress=ctx.progress, chapters=marks)
     except cut.CutError as e:
         raise ProcessError(str(e)) from None
     if ep["cut_path"] and Path(ep["cut_path"]) != out.path:
         Path(ep["cut_path"]).unlink(missing_ok=True)
-    ctx.db.execute(
-        """UPDATE episodes SET state = 'ready', state_note = NULL, cut_path = ?, cut_type = ?, cut_duration = ?,
-                  cut_bytes = ?, cut_spec = ?, cut_chapters = ?, processed_at = ?, ready_at = COALESCE(ready_at, ?),
-                  expired_at = NULL, ever_downloaded = 1 WHERE id = ?""",
-        (str(out.path), out.mime, out.duration, out.size, spec, json.dumps(marks), time.time(), time.time(),
-         episode_id))
-    ctx.db.commit()
+    with transaction(ctx.db):
+        ctx.db.execute(
+            """UPDATE episodes SET state = 'ready', state_note = NULL, cut_path = ?, cut_type = ?, cut_duration = ?,
+                      cut_bytes = ?, cut_spec = ?, cut_chapters = ?, processed_at = ?,
+                      ready_at = COALESCE(ready_at, ?), expired_at = NULL, ever_downloaded = 1 WHERE id = ?""",
+            (str(out.path), out.mime, out.duration, out.size, spec, json.dumps(marks), time.time(), time.time(),
+             episode_id))
 
 
 def ensure_peaks(db: sqlite3.Connection, settings: Settings, episode_id: int) -> Path | None:
@@ -163,20 +152,20 @@ def ensure_peaks(db: sqlite3.Connection, settings: Settings, episode_id: int) ->
         return None
     per_second = 10
     values = cut.peaks(Path(ep["original_path"]), per_second)
-    path = settings.media_dir / "peaks" / f"{media_key(ep['guid'])}.json"
+    path = settings.media.peaks(ep)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".part")
     tmp.write_text(json.dumps({"per_second": per_second, "peaks": values}, separators=(",", ":")))
     tmp.replace(path)
-    db.execute("UPDATE episodes SET peaks_path = ? WHERE id = ?", (str(path), episode_id))
-    db.commit()
+    with transaction(db):
+        db.execute("UPDATE episodes SET peaks_path = ? WHERE id = ?", (str(path), episode_id))
     return path
 
 
 def run(ctx: Context, settings: Settings) -> None:
     episode_id = ctx.job["episode_id"]
     params = MatchParams()
-    store = Store(settings.db_path)
+    store = Store.on(ctx.db)
     paths = Paths(settings.data_dir)
     group = [episode_id]
     try:
@@ -191,11 +180,11 @@ def run(ctx: Context, settings: Settings) -> None:
             _fetch(ctx, settings, store, paths, other)
 
         ctx.step("Finding repeats", episode_id)
-        for other in group[1:]:
-            ctx.db.execute("UPDATE episodes SET state = 'running', state_note = 'Finding repeats' WHERE id = ?",
-                           (other,))
-        ctx.db.commit()
-        with _detecting:
+        with transaction(ctx.db):
+            for other in group[1:]:
+                ctx.db.execute("UPDATE episodes SET state = 'running', state_note = 'Finding repeats' WHERE id = ?",
+                               (other,))
+        with detecting:
             if learn:
                 skip = {r["id"] for r in ctx.db.execute("SELECT id FROM episodes WHERE skip_processing = 1")}
                 added = find_common_blocks(store, group, params, skip=skip)
@@ -209,8 +198,8 @@ def run(ctx: Context, settings: Settings) -> None:
         for ep_id in group:
             ctx.step("Drawing the waveform", ep_id)
             ensure_peaks(ctx.db, settings, ep_id)
-            ctx.db.execute("UPDATE episodes SET state = 'ready', state_note = NULL WHERE id = ?", (ep_id,))
-            ctx.db.commit()
+            with transaction(ctx.db):
+                ctx.db.execute("UPDATE episodes SET state = 'ready', state_note = NULL WHERE id = ?", (ep_id,))
         recut = json.loads(ctx.job["payload"] or "{}").get("recut")
         if added and not recut:  # new repeats may play in the show's other ready episodes; cut those again
             others = [r["id"] for r in ctx.db.execute(  # (a re-cut never sets off more re-cuts)
@@ -224,8 +213,6 @@ def run(ctx: Context, settings: Settings) -> None:
             settle_episode(ctx.db, other)
         settle_episode(ctx.db, episode_id, failed)
         raise
-    finally:
-        store.close()
 
 
 # ---- the `unlearn` job: forget what filtered episodes taught ------------------
@@ -240,35 +227,31 @@ def run_unlearn(ctx: Context, settings: Settings) -> None:
     of comparisons, so they are compared afresh if the filter goes.
     """
     wanted = json.loads(ctx.job["payload"] or "{}").get("episodes", [])
-    store = Store(settings.db_path)
+    store = Store.on(ctx.db)
     touched: set[int] = set()
-    try:
-        ctx.step("Forgetting repeats found in filtered episodes")
-        with _detecting:
-            skip = {r["id"] for r in ctx.db.execute("SELECT id FROM episodes WHERE skip_processing = 1")}
-            eps = [e for e in wanted if e in skip]  # a filter taken away since then leaves the rest be
-            if not eps:
-                return
-            marks = ", ".join("?" * len(eps))
-            blocks = [r["id"] for r in ctx.db.execute(
-                f"""SELECT DISTINCT s.id FROM segments s LEFT JOIN occurrences o ON o.segment_id = s.id
-                    WHERE s.type_manual = 0 AND (o.episode_id IN ({marks}) OR s.source_episode_id IN ({marks}))""",
-                (*eps, *eps))]
-            for block in blocks:
-                plays = {r[0] for r in ctx.db.execute(
-                    "SELECT DISTINCT episode_id FROM occurrences WHERE segment_id = ?", (block,))}
-                if len(plays - skip) < 2:
-                    touched |= plays
-                    store.delete_segment(block)
-            ctx.db.execute(f"DELETE FROM compared_pairs WHERE a_id IN ({marks}) OR b_id IN ({marks})", (*eps, *eps))
-            ctx.db.commit()
-        ready = [r["id"] for r in ctx.db.execute(
-            f"SELECT id FROM episodes WHERE state = 'ready' AND id IN ({', '.join('?' * len(touched))})",
-            tuple(touched))] if touched else []
-        enqueue(ctx.db, "process", ready, ctx.job["requested_by"], skip_ready=False,
-                payload=json.dumps({"recut": True}), note="Waiting to be cut again: a filter changed what repeats")
-    finally:
-        store.close()
+    ctx.step("Forgetting repeats found in filtered episodes")
+    with detecting, transaction(ctx.db):
+        skip = {r["id"] for r in ctx.db.execute("SELECT id FROM episodes WHERE skip_processing = 1")}
+        eps = [e for e in wanted if e in skip]  # a filter taken away since then leaves the rest be
+        if not eps:
+            return
+        marks = ", ".join("?" * len(eps))
+        blocks = [r["id"] for r in ctx.db.execute(
+            f"""SELECT DISTINCT s.id FROM segments s LEFT JOIN occurrences o ON o.segment_id = s.id
+                WHERE s.type_manual = 0 AND (o.episode_id IN ({marks}) OR s.source_episode_id IN ({marks}))""",
+            (*eps, *eps))]
+        for block in blocks:
+            plays = {r[0] for r in ctx.db.execute(
+                "SELECT DISTINCT episode_id FROM occurrences WHERE segment_id = ?", (block,))}
+            if len(plays - skip) < 2:
+                touched |= plays
+                store.delete_segment(block)
+        ctx.db.execute(f"DELETE FROM compared_pairs WHERE a_id IN ({marks}) OR b_id IN ({marks})", (*eps, *eps))
+    ready = [r["id"] for r in ctx.db.execute(
+        f"SELECT id FROM episodes WHERE state = 'ready' AND id IN ({', '.join('?' * len(touched))})",
+        tuple(touched))] if touched else []
+    enqueue(ctx.db, "process", ready, ctx.job["requested_by"], skip_ready=False,
+            payload=json.dumps({"recut": True}), note="Waiting to be cut again: a filter changed what repeats")
 
 
 # ---- the `edit` job: changes saved from the timeline -------------------------
@@ -293,28 +276,37 @@ def _edge_block(plays, blocks: list[int], section: dict, last: bool) -> int:
 
 
 def check_edits(db: sqlite3.Connection, episode_id: int, changes: dict) -> dict:
-    """Keep only well-formed changes that touch this episode. Raises ProcessError when there are none."""
+    """Keep the timeline changes that make sense for this episode: blocks that play in it, types a section can
+    take, stretches long enough to cut, its own hand-made cuts. `changes` is shaped as the timeline sends it:
+
+        {"types": [{"type", "blocks": [ids], "bumpers": [ids], "start", "end"}],
+         "add": [{"start", "end", "as_block", "type"}], "remove": [edit ids]}
+
+    (the web app checks that shape). Raises Busy while the episode is being processed, and ProcessError when
+    no change is left."""
     ep = _episode(db, episode_id)
+    if ep["state"] in ACTIVE:
+        raise Busy("it's being processed; save again when that's done")
     plays = db.execute("SELECT segment_id, start, end FROM occurrences WHERE episode_id = ?", (episode_id,)).fetchall()
     here = {r["segment_id"] for r in plays}
     types = []
     for t in changes.get("types", []):
         value = t.get("type")
-        blocks = [int(b) for b in t.get("blocks", []) if int(b) in here]
-        bumpers = [int(b) for b in t.get("bumpers", []) if int(b) in here]
+        blocks = [b for b in t.get("blocks", []) if b in here]
+        bumpers = [b for b in t.get("bumpers", []) if b in here]
         if value in (INTRO, OUTRO) and blocks:
             blocks = [_edge_block(plays, blocks, t, last=value == INTRO)]
         if value in EDIT_TYPES and (blocks or bumpers):
             types.append({"type": value, "blocks": blocks, "bumpers": bumpers if value == IGNORED else []})
     added = []
     for a in changes.get("add", []):
-        start, end = max(0.0, float(a["start"])), min(float(ep["duration"] or 0), float(a["end"]))
+        start, end = max(0.0, a["start"]), min(ep["duration"] or 0.0, a["end"])
         block_type = a.get("type", "repeated")
         if end - start < MIN_BLOCK_SEC or block_type not in EDIT_TYPES - {IGNORED}:
             continue
         added.append({"start": round(start, 2), "end": round(end, 2), "as_block": bool(a.get("as_block")),
                       "type": block_type})
-    removed = [int(r) for r in changes.get("remove", [])]
+    removed = changes.get("remove", [])
     removed = [r["id"] for r in db.execute(
         f"SELECT id FROM edits WHERE episode_id = ? AND id IN ({', '.join('?' * len(removed))})",
         (episode_id, *removed))] if removed else []
@@ -323,12 +315,18 @@ def check_edits(db: sqlite3.Connection, episode_id: int, changes: dict) -> dict:
     return {"types": types, "add": added, "remove": removed}
 
 
+def queue_edits(db: sqlite3.Connection, episode_id: int, user_id: int | None, changes: dict) -> None:
+    """Queue an `edit` job to apply timeline changes (as `check_edits` returns them) and cut the episode again."""
+    enqueue(db, "edit", [episode_id], user_id, skip_ready=False, payload=json.dumps(changes),
+            note="Saving your changes")
+
+
 def run_edit(ctx: Context, settings: Settings) -> None:
     """Apply saved timeline changes, cut the episode again, and queue the other episodes they touch."""
     episode_id = ctx.job["episode_id"]
     changes = json.loads(ctx.job["payload"] or "{}")
     params = MatchParams()
-    store = Store(settings.db_path)
+    store = Store.on(ctx.db)
     try:
         ctx.step("Saving your changes", episode_id)
         ep = _episode(ctx.db, episode_id)
@@ -338,23 +336,22 @@ def run_edit(ctx: Context, settings: Settings) -> None:
         touched = {r["episode_id"] for r in ctx.db.execute(
             f"SELECT DISTINCT episode_id FROM occurrences WHERE segment_id IN ({', '.join('?' * len(changed_blocks))})",
             tuple(changed_blocks))} if changed_blocks else set()
-        with _detecting:
-            for t in changes["types"]:
-                for block in t["blocks"] + t["bumpers"]:
-                    store.set_type(block, None if t["type"] in ("auto", "repeated") else t["type"])
-            fp = None
-            for a in changes["add"]:
-                if a["as_block"]:
-                    fp = fp or load_fingerprint(store, episode_id)
-                    block = store.add_segment(fp.slice(a["start"], a["end"]), episode_id, a["start"], a["end"])
-                    store.set_type(block, REPEATED if a["type"] == "auto" else a["type"])  # by hand: cut however short
-                else:
-                    ctx.db.execute("INSERT INTO edits (episode_id, start, end, created_by, created_at) "
-                                   "VALUES (?, ?, ?, ?, ?)",
-                                   (episode_id, a["start"], a["end"], ctx.job["requested_by"], time.time()))
-            for edit_id in changes["remove"]:
-                ctx.db.execute("DELETE FROM edits WHERE id = ? AND episode_id = ?", (edit_id, episode_id))
-            ctx.db.commit()
+        with detecting:
+            fp = load_fingerprint(store, episode_id) if any(a["as_block"] for a in changes["add"]) else None
+            with transaction(ctx.db):  # the changes land together, or not at all
+                for t in changes["types"]:
+                    for block in t["blocks"] + t["bumpers"]:
+                        store.set_type(block, None if t["type"] in ("auto", "repeated") else t["type"])
+                for a in changes["add"]:
+                    if a["as_block"]:
+                        block = store.add_segment(fp.slice(a["start"], a["end"]), episode_id, a["start"], a["end"])
+                        store.set_type(block, REPEATED if a["type"] == "auto" else a["type"])  # cut however short
+                    else:
+                        ctx.db.execute("INSERT INTO edits (episode_id, start, end, created_by, created_at) "
+                                       "VALUES (?, ?, ?, ?, ?)",
+                                       (episode_id, a["start"], a["end"], ctx.job["requested_by"], time.time()))
+                for edit_id in changes["remove"]:
+                    ctx.db.execute("DELETE FROM edits WHERE id = ? AND episode_id = ?", (edit_id, episode_id))
             rescan(store, episode_id, params, heard=True)
             report = episode_report(store, episode_id, params, fill_gaps=_fill_gaps(ctx.db, ep["podcast_id"]))
         _render(ctx, settings, episode_id, report)
@@ -371,8 +368,6 @@ def run_edit(ctx: Context, settings: Settings) -> None:
     except BaseException as e:
         settle_episode(ctx.db, episode_id, None if isinstance(e, Cancelled) else str(e))
         raise
-    finally:
-        store.close()
 
 
 def timeline(db: sqlite3.Connection, episode_id: int, report: dict | None) -> dict:

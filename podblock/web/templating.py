@@ -12,9 +12,8 @@ from fastapi import Request
 from fastapi.responses import Response
 from fastapi.templating import Jinja2Templates
 
-from . import jobs
-from .db import connect
-from .feeds import html_to_text
+from ..app import jobs, states
+from ..app.text import html_to_text, plural, web_url
 
 HERE = Path(__file__).parent
 STATIC = HERE / "static"
@@ -60,7 +59,7 @@ def ago(ts: float | None) -> str:
         return f"{int(secs // 3600)} hr ago"
     if secs < 7 * 86400:
         days = int(secs // 86400)
-        return f"{days} {'day' if days == 1 else 'days'} ago"
+        return f"{plural(days, 'day')} ago"
     return day(ts)
 
 
@@ -81,11 +80,6 @@ def duration(secs: float | None) -> str:
     return f"{mins // 60} hr {mins % 60} min" if mins % 60 else f"{mins // 60} hr"
 
 
-def web_url(url: str | None) -> str | None:
-    """Only http(s) links from a feed make it into a page."""
-    return url if url and url.split(":", 1)[0].lower() in {"http", "https"} else None
-
-
 def clock(secs: float | None) -> str:
     secs = int(round(secs or 0))
     h, rem = divmod(secs, 3600)
@@ -94,17 +88,15 @@ def clock(secs: float | None) -> str:
 
 
 def active_jobs(request: Request) -> int:
-    db = connect(request.app.state.settings.db_path)
-    try:
-        return jobs.active_count(db)
-    finally:
-        db.close()
+    """Jobs queued or running, for the nav. Pages with a nav have a connection (`deps.get_db`)."""
+    db = getattr(request.state, "db", None)
+    return jobs.active_count(db) if db is not None else 0
 
 
 def expires(ep, podcast=None) -> float | None:
     """When a ready episode will be cleaned up, or None if it won't (kept, or the podcast keeps everything)."""
     days = podcast["retention_days"] if podcast is not None else ep["retention_days"]
-    if ep["state"] != "ready" or ep["kept_any"] or not days or not ep["ready_at"]:
+    if ep["state"] != states.READY or ep["kept_any"] or not days or not ep["ready_at"]:
         return None
     return ep["ready_at"] + days * 86400
 
@@ -119,7 +111,7 @@ def until(ts: float | None) -> str:
     if secs < 86400:
         return f"in {int(secs // 3600)} hr"
     days = round(secs / 86400)
-    return f"in {days} {'day' if days == 1 else 'days'}"
+    return f"in {plural(days, 'day')}"
 
 
 def filesize(n: int | None) -> str:
@@ -133,10 +125,8 @@ def filesize(n: int | None) -> str:
             return f"{n:.1f} {unit}" if n < 100 else f"{n:,.0f} {unit}"
 
 
-def plural(n: int, one: str, many: str | None = None) -> str:
-    return f"{n:,} {one if n == 1 else (many or one + 's')}"
-
-
-templates.env.globals.update(static=static, flashes=take_flashes, active_jobs=active_jobs, expires=expires)
-templates.env.filters.update(until=until, filesize=filesize, ago=ago, day=day, duration=duration, clock=clock, web_url=web_url, plural=plural,
-                             text=html_to_text, fromjson=lambda text: json.loads(text) if text else [])
+templates.env.globals.update(static=static, flashes=take_flashes, active_jobs=active_jobs, expires=expires,
+                             states=states)
+templates.env.filters.update(until=until, filesize=filesize, ago=ago, day=day, duration=duration, clock=clock,
+                             web_url=web_url, plural=plural, text=html_to_text,
+                             fromjson=lambda text: json.loads(text) if text else [])

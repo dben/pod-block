@@ -16,9 +16,20 @@ from .feed import download, fetch_feed
 from .fingerprint import FingerprintConfig, fingerprint_file
 from .matcher import MatchParams
 from .outro import music_bed_outro
-from .pipeline import (COMPARE_OTHER, COMPARE_SAME, OTHER_WINDOW_DAYS, Paths, episode_report,
-                       find_common_blocks, ingest_episodes, ingest_feed, ingest_file,
-                       neighbours, prune, refingerprint)
+from .pipeline import (
+    COMPARE_OTHER,
+    COMPARE_SAME,
+    OTHER_WINDOW_DAYS,
+    Paths,
+    episode_report,
+    find_common_blocks,
+    ingest_episodes,
+    ingest_feed,
+    ingest_file,
+    neighbours,
+    prune,
+    refingerprint,
+)
 from .report import MIN_SECTION_SEC, build_sections
 from .store import TYPES, Store, StoreError
 
@@ -289,8 +300,8 @@ def cmd_serve(args, store: Store, paths: Paths) -> None:
     try:
         import uvicorn
 
+        from .app.config import Settings
         from .web.app import create_app
-        from .web.config import Settings
     except ImportError:
         sys.exit("podblock: the web app needs its extras: pip install 'pod-block[web]'")
     app = create_app(Settings.from_env(data_dir=paths.root, media_dir=args.media_dir))
@@ -298,11 +309,9 @@ def cmd_serve(args, store: Store, paths: Paths) -> None:
 
 
 def cmd_worker(args, store: Store, paths: Paths) -> None:
-    try:
-        from .web.background import run_worker
-        from .web.config import Settings
-    except ImportError:
-        sys.exit("podblock: the worker needs the web app's extras: pip install 'pod-block[web]'")
+    from .app.config import Settings  # the app needs none of the web app's extras
+    from .app.worker import run_worker
+
     settings = Settings.from_env(data_dir=paths.root, media_dir=args.media_dir)
     if args.workers:
         settings.workers = args.workers
@@ -330,8 +339,8 @@ def cmd_backup(args, store: Store, paths: Paths) -> None:
 
 
 def cmd_api_key(args, store: Store, paths: Paths) -> None:
-    from .web import accounts
-    from .web.db import connect, prepare
+    from .app import accounts
+    from .app.db import connect, prepare
 
     prepare(paths.db)
     db = connect(paths.db)
@@ -491,7 +500,8 @@ def main(argv: list[str] | None = None) -> None:
                                       "itself unless PODBLOCK_JOBS is threads or none")
     p.add_argument("--media-dir", type=Path, default=None,
                    help="where episode audio lives (default: $PODBLOCK_MEDIA_DIR, else DATA_DIR/media)")
-    p.add_argument("--workers", type=int, default=None, help="threads running jobs (default: $PODBLOCK_WORKERS, else 1)")
+    p.add_argument("--workers", type=int, default=None,
+                   help="threads running jobs (default: $PODBLOCK_WORKERS, else 1)")
     p.add_argument("--parent", type=int, default=None, help=argparse.SUPPRESS)  # the web app that started it
     p.add_argument("--ready-fd", type=int, default=None, help=argparse.SUPPRESS)  # where to say it is running
     p.set_defaults(func=cmd_worker)

@@ -9,18 +9,18 @@ import time
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime
+from itertools import pairwise
 from pathlib import Path
 
 import numpy as np
 
 from .breaks import SHORT_BLOCK_SEC, classify_bumpers
 from .feed import Episode, Feed, download, fetch_feed
-from .fingerprint import (Fingerprint, FingerprintConfig, fingerprint_file, frames_to_seconds,
-                          loudness_file)
+from .fingerprint import Fingerprint, FingerprintConfig, fingerprint_file, frames_to_seconds, loudness_file
 from .matcher import MatchParams, common_runs
 from .outro import music_bed_outro
 from .report import MIN_SECTION_SEC, build_sections
-from .store import BUMPER, BUMPER_IN, BUMPER_OUT, SegmentMatch, Store
+from .store import BUMPER, BUMPER_IN, BUMPER_OUT, SegmentMatch, Store, transaction
 
 log = logging.getLogger(__name__)
 
@@ -280,7 +280,7 @@ def drop_nested_blocks(store: Store, share: float = 0.8) -> int:
     inside, total = Counter(), Counter()
     for ep_id in store.episodes_with_occurrences():
         matches = sorted(store.occurrences_for_episode(ep_id), key=lambda m: m.start)
-        for i, m in enumerate(matches):
+        for m in matches:
             total[m.segment_id] += 1
             need = 0.5 * (m.end - m.start)
             for o in matches:
@@ -331,7 +331,7 @@ def split_segments(store: Store, min_length: float = MatchParams.min_length_sec)
         whole = store.segment_fingerprint(seg["id"])
         bounds = [0.0, *cuts, length]
         carried = []
-        for lo, hi in zip(bounds, bounds[1:]):
+        for lo, hi in pairwise(bounds):
             new_id = store.add_segment(whole.slice(lo, hi), seg["source_episode_id"],
                                        seg["source_start"] + lo, seg["source_start"] + hi,
                                        podcast_id=seg["podcast_id"])
@@ -438,12 +438,12 @@ def prune(store: Store, audio_days: float = 0.0, fingerprint_days: float = 30.0,
         (now - block_days * day,)).fetchone()[0]
     gone["old block matches"] += old_matches
     if not dry_run:
-        for seg_id in stale:
-            store.delete_segment(seg_id)
-        store.db.execute("DELETE FROM occurrences WHERE episode_id IN "
-                         "(SELECT id FROM episodes WHERE fingerprint_path IS NULL AND added_at < ?)",
-                         (now - block_days * day,))
-        store.db.commit()
+        with transaction(store.db):
+            for seg_id in stale:
+                store.delete_segment(seg_id)
+            store.db.execute("DELETE FROM occurrences WHERE episode_id IN "
+                             "(SELECT id FROM episodes WHERE fingerprint_path IS NULL AND added_at < ?)",
+                             (now - block_days * day,))
         if stale:
             retag_bumpers(store)
     return gone

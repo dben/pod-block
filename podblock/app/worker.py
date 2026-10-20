@@ -24,9 +24,10 @@ import sys
 import threading
 import time
 
-from . import feeds, jobs, locks, processing, retention
+from . import following, jobs, locks, processing, retention
 from .config import Settings
 from .db import connect, prepare
+from .states import CANCELLED, DONE, FAILED
 
 log = logging.getLogger(__name__)
 
@@ -45,15 +46,15 @@ def run_job(settings: Settings, db, job) -> str:
     try:
         RUNNERS[job["kind"]](ctx, settings)
     except jobs.Cancelled:
-        jobs.finish(db, job["id"], "cancelled")
-        return "cancelled"
+        jobs.finish(db, job["id"], CANCELLED)
+        return CANCELLED
     except Exception as e:
         if not isinstance(e, processing.ProcessError):
             log.exception("job %d (%s) failed", job["id"], job["kind"])
-        jobs.finish(db, job["id"], "failed", str(e)[:500] or type(e).__name__)
-        return "failed"
-    jobs.finish(db, job["id"], "done")
-    return "done"
+        jobs.finish(db, job["id"], FAILED, str(e)[:500] or type(e).__name__)
+        return FAILED
+    jobs.finish(db, job["id"], DONE)
+    return DONE
 
 
 def run_queue(settings: Settings) -> int:
@@ -110,9 +111,9 @@ class Background:
             try:
                 db = connect(self.settings.db_path)
                 try:
-                    feeds.refresh_due(db)
+                    following.refresh_due(db)
                     retention.expire_due(db)
-                    retention.prune_store(db, self.settings)
+                    retention.prune_store(db)
                 finally:
                     db.close()
             except Exception:  # keep going; the next tick may well work

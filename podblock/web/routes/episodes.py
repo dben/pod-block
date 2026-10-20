@@ -1,36 +1,50 @@
-"""Pages for one episode, its audio, and the job queue."""
+"""Pages for one episode, and its audio."""
 
 from __future__ import annotations
 
-import json
 import re
 import sqlite3
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
+from pydantic import BaseModel
 
-from .. import cut
-from . import grabs, jobs, library, processing
-from .deps import current_user, get_db
-from .feeds import show_notes
-from .templating import flash, page
+from ... import cut
+from ...app import grabs, jobs, library, processing, states
+from ...app.text import show_notes
+from ..deps import current_user, get_db, wake_worker
+from ..templating import flash, page
 
 router = APIRouter()
 
 
-def wake_worker(request: Request) -> None:
-    if background := getattr(request.app.state, "background", None):
-        background.wake()
+class TypeChange(BaseModel):
+    """A section of the timeline given a type: the blocks in it, and for an ad break, the bumpers around it."""
+    type: str
+    blocks: list[int] = []
+    bumpers: list[int] = []
+    start: float = 0  # the section, to find the block at its edge (processing.check_edits)
+    end: float = 1e12
+
+
+class Addition(BaseModel):
+    """A stretch cut by hand; with `as_block`, saved as a block, to be looked for in other episodes too."""
+    start: float
+    end: float
+    as_block: bool = False
+    type: str = "repeated"
+
+
+class Edits(BaseModel):
+    """The changes the timeline saves (`changes()` in timeline.js)."""
+    types: list[TypeChange] = []
+    add: list[Addition] = []
+    remove: list[int] = []  # hand-made cuts to undo, by id
 
 
 def _episode(db: sqlite3.Connection, user_id: int, episode_id: int) -> sqlite3.Row:
-    row = db.execute(
-        f"""SELECT e.*, COALESCE(ue.archived, 0) AS archived, COALESCE(ue.kept, 0) AS kept,
-                  {library.KEPT_ANY} AS kept_any, {library.GRABS}, p.retention_days
-           FROM episodes e JOIN podcasts p ON p.id = e.podcast_id AND p.followed = 1
-           LEFT JOIN user_episodes ue ON ue.episode_id = e.id AND ue.user_id = ?
-           WHERE e.id = ?""", (user_id, user_id, user_id, episode_id)).fetchone()
+    row = library.episode(db, user_id, episode_id)
     if row is None:
         raise HTTPException(404, "No such episode")
     return row
@@ -52,14 +66,13 @@ def _audio(path: str | None, title: str | None, download: bool) -> Response:
 def show_episode(request: Request, episode_id: int, user=Depends(current_user),
                  db: sqlite3.Connection = Depends(get_db)) -> Response:
     ep = _episode(db, user["id"], episode_id)
-    podcast = db.execute("SELECT * FROM podcasts WHERE id = ?", (ep["podcast_id"],)).fetchone()
-    saved = db.execute("SELECT report FROM reports WHERE episode_id = ?", (episode_id,)).fetchone()
-    report = json.loads(saved["report"]) if saved else None
-    job = db.execute("SELECT * FROM jobs WHERE episode_id = ? ORDER BY id DESC LIMIT 1", (episode_id,)).fetchone()
+    podcast = library.podcast(db, ep["podcast_id"])
+    report = library.report(db, episode_id)
+    job = jobs.latest(db, episode_id)
     data = None
     if report is not None and ep["original_path"] and Path(ep["original_path"]).exists():
         data = {**processing.timeline(db, episode_id, report), "duration": ep["duration"],
-                "editable": ep["state"] == "ready", "audio": f"/episodes/{episode_id}/original",
+                "editable": ep["state"] == states.READY, "audio": f"/episodes/{episode_id}/original",
                 "peaks": f"/episodes/{episode_id}/peaks", "save": f"/episodes/{episode_id}/edits"}
     return page(request, "episode.html", title=ep["title"], nav="podcasts", user=user, episode=ep,
                 podcast=podcast, report=report, job=job, notes=show_notes(ep["item_xml"]), timeline=data,
@@ -74,27 +87,23 @@ def episode_peaks(request: Request, episode_id: int, user=Depends(current_user),
     try:
         path = processing.ensure_peaks(db, request.app.state.settings, episode_id)
     except cut.CutError as e:
-        raise HTTPException(500, str(e))
+        raise HTTPException(500, str(e)) from e
     if path is None:
         raise HTTPException(404, "No audio to draw")
     return FileResponse(path, media_type="application/json", headers={"Cache-Control": "private, max-age=86400"})
 
 
 @router.post("/episodes/{episode_id}/edits")
-async def save_edits(request: Request, episode_id: int, user=Depends(current_user),
-                     db: sqlite3.Connection = Depends(get_db)) -> Response:
+def save_edits(request: Request, episode_id: int, edits: Edits, user=Depends(current_user),
+               db: sqlite3.Connection = Depends(get_db)) -> Response:
     """Save the changes made on the timeline: queue a job to apply them and cut the episode again."""
-    ep = _episode(db, user["id"], episode_id)
-    if ep["state"] in jobs.ACTIVE:
-        return JSONResponse({"error": "It's being processed; save again when that's done."}, status_code=409)
+    _episode(db, user["id"], episode_id)
     try:
-        changes = processing.check_edits(db, episode_id, await request.json())
+        changes = processing.check_edits(db, episode_id, edits.model_dump())
     except processing.ProcessError as e:
-        return JSONResponse({"error": f"Nothing saved: {e}."}, status_code=400)
-    except (ValueError, TypeError, KeyError, AttributeError):
-        return JSONResponse({"error": "Those changes didn't make sense."}, status_code=400)
-    jobs.enqueue(db, "edit", [episode_id], user["id"], skip_ready=False, payload=json.dumps(changes),
-                 note="Saving your changes")
+        busy = isinstance(e, processing.Busy)
+        return JSONResponse({"error": f"Nothing saved: {e}."}, status_code=409 if busy else 400)
+    processing.queue_edits(db, episode_id, user["id"], changes)
     wake_worker(request)
     flash(request, "Saved. Cutting it again with your changes.")
     return JSONResponse({"ok": True, "changes": changes})
@@ -105,7 +114,7 @@ def episode_row(request: Request, episode_id: int, user=Depends(current_user),
                 db: sqlite3.Connection = Depends(get_db)) -> Response:
     """One row of the episode list, so a row being processed can keep itself up to date."""
     ep = _episode(db, user["id"], episode_id)
-    podcast = db.execute("SELECT * FROM podcasts WHERE id = ?", (ep["podcast_id"],)).fetchone()
+    podcast = library.podcast(db, ep["podcast_id"])
     return page(request, "_episode_row.html", e=ep, podcast=podcast, here=f"/podcasts/{podcast['id']}")
 
 
@@ -114,7 +123,7 @@ def episode_status(request: Request, episode_id: int, user=Depends(current_user)
                    db: sqlite3.Connection = Depends(get_db)) -> Response:
     """The status card of the episode page, polled while it is processed."""
     ep = _episode(db, user["id"], episode_id)
-    if ep["state"] in jobs.ACTIVE:
+    if ep["state"] in states.ACTIVE:
         return page(request, "_episode_status.html", episode=ep)
     return Response(headers={"HX-Refresh": "true"})  # finished: reload for the report and player
 
@@ -159,32 +168,7 @@ def process_episode(request: Request, episode_id: int, user=Depends(current_user
     ep = _episode(db, user["id"], episode_id)
     if jobs.enqueue(db, "process", [episode_id], user["id"], skip_ready=False):
         wake_worker(request)
-        flash(request, "Processing again." if ep["state"] == "ready" else "Queued.")
+        flash(request, "Processing again." if ep["state"] == states.READY else "Queued.")
     else:
         flash(request, "It's already queued.")
     return RedirectResponse(f"/episodes/{episode_id}", status_code=303)
-
-
-@router.get("/jobs")
-def jobs_page(request: Request, user=Depends(current_user), db: sqlite3.Connection = Depends(get_db)) -> Response:
-    background = getattr(request.app.state, "background", None)
-    return page(request, "jobs.html", title="Jobs", nav="jobs", user=user, jobs=jobs.listing(db),
-                worker_down=background is not None and not background.running())
-
-
-@router.post("/jobs/{job_id}/cancel")
-def cancel_job(request: Request, job_id: int, user=Depends(current_user),
-               db: sqlite3.Connection = Depends(get_db)) -> Response:
-    flash(request, "Cancelled." if jobs.cancel(db, job_id) else "That job had already finished.")
-    return RedirectResponse("/jobs", status_code=303)
-
-
-@router.post("/jobs/{job_id}/retry")
-def retry_job(request: Request, job_id: int, user=Depends(current_user),
-              db: sqlite3.Connection = Depends(get_db)) -> Response:
-    if jobs.retry(db, job_id, user["id"]):
-        wake_worker(request)
-        flash(request, "Queued again.")
-    else:
-        flash(request, "That can't be retried; it may be queued already.", "error")
-    return RedirectResponse("/jobs", status_code=303)

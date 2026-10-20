@@ -1,4 +1,4 @@
-"""Locks that hold across processes as well as threads.
+"""Locks: the ones that hold across processes as well as threads, and `detecting`.
 
 The web app and its job process (`podblock worker`) share the database, and
 a few things in it must happen one at a time across both: refreshing a feed
@@ -6,6 +6,10 @@ a few things in it must happen one at a time across both: refreshing a feed
 being the one worker process. Each lock is a file beside the database, held
 with `flock`, which the system lets go of when the process ends, however it
 ends. Where there is no `flock` (Windows), they only hold within a process.
+
+`detecting` holds only within a process. Finding repeats, and anything else
+that changes the detector's blocks, runs only in the worker process, one at
+a time, under it.
 """
 
 from __future__ import annotations
@@ -13,14 +17,16 @@ from __future__ import annotations
 import os
 import sqlite3
 import threading
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator
 
 try:
     import fcntl
 except ImportError:  # pragma: no cover
     fcntl = None
+
+detecting = threading.Lock()  # the store's blocks change while repeats are found; one change at a time
 
 _threads: dict[str, threading.Lock] = {}
 _guard = threading.Lock()

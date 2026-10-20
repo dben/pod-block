@@ -2,8 +2,8 @@
 
 import pytest
 
-from podblock.web import jobs
-from podblock.web.db import connect, prepare
+from podblock.app import jobs
+from podblock.app.db import connect, prepare
 
 
 @pytest.fixture

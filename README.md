@@ -283,9 +283,19 @@ user_episodes(user_id, episode_id, archived, kept)        -- web app, per user
 The web app adds its own columns to `podcasts` and `episodes` (feed metadata,
 raw XML); `WEBAPP.md` lists them.
 
-## Tests
+## Tests and lint
 
 ```sh
-pip install -e '.[test]'
-pytest
+uv sync --all-extras     # or: pip install -e '.[web,test,dev]', unpinned
+uv run pytest -m "not slow"   # about 30 seconds
+uv run pytest                 # everything, about 5 minutes: the slow tests cut real audio and start workers
+uv run ruff check .
 ```
+
+`uv.lock` pins every package to the versions CI tests and the Docker image
+ships, for each Python and platform pod-block supports; `pyproject.toml` keeps
+the ranges it works with. `uv lock --upgrade` updates the pins, to releases at
+least a week old (`exclude-newer` in `pyproject.toml`), and Dependabot opens
+pull requests for the same each week (`.github/dependabot.yml`). Shared test
+helpers are in `tests/fakes.py`, and the fixtures built on them in
+`tests/conftest.py`.

@@ -19,6 +19,8 @@ import re
 import sqlite3
 import time
 
+from .db import transaction
+
 WINDOW = 10 * 60  # seconds: hits closer than this to the last one are the same grab
 APP_MIN_SEC = 5 * 60
 APP_MIN_SHARE = 0.05
@@ -29,15 +31,15 @@ def record(db: sqlite3.Connection, user_id: int, episode_id: int, via: str, resu
            now: float | None = None) -> bool:
     """Count a hit on an episode's audio by a user. Returns whether it started a new grab."""
     now = now or time.time()
-    last = db.execute("SELECT id, last_at FROM grabs WHERE user_id = ? AND episode_id = ? ORDER BY last_at DESC LIMIT 1",
-                      (user_id, episode_id)).fetchone()
-    same = last is not None and (resumed or now - last["last_at"] <= WINDOW)
-    if same:
-        db.execute("UPDATE grabs SET last_at = ?, hits = hits + 1 WHERE id = ?", (now, last["id"]))
-    else:
-        db.execute("INSERT INTO grabs (user_id, episode_id, via, first_at, last_at) VALUES (?, ?, ?, ?, ?)",
-                   (user_id, episode_id, via, now, now))
-    db.commit()
+    with transaction(db):  # apps send a few at once; two must not both start a grab
+        last = db.execute("SELECT id, last_at FROM grabs WHERE user_id = ? AND episode_id = ? "
+                          "ORDER BY last_at DESC LIMIT 1", (user_id, episode_id)).fetchone()
+        same = last is not None and (resumed or now - last["last_at"] <= WINDOW)
+        if same:
+            db.execute("UPDATE grabs SET last_at = ?, hits = hits + 1 WHERE id = ?", (now, last["id"]))
+        else:
+            db.execute("INSERT INTO grabs (user_id, episode_id, via, first_at, last_at) VALUES (?, ?, ?, ?, ?)",
+                       (user_id, episode_id, via, now, now))
     return not same
 
 

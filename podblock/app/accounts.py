@@ -15,7 +15,7 @@ import secrets
 import sqlite3
 import time
 
-from .db import set_setting, setting
+from .db import set_setting, setting, transaction
 
 ADMIN = "admin"
 USERNAME = re.compile(r"[a-z0-9][a-z0-9._-]{0,39}")
@@ -40,9 +40,10 @@ def new_api_key(db: sqlite3.Connection) -> str:
 
 
 def set_api_key(db: sqlite3.Connection, key: str) -> None:
-    if setting(db, "api_key_hash") != _hash(key):
-        set_setting(db, "api_key_hash", _hash(key))
-        set_setting(db, "auth_epoch", str(int(setting(db, "auth_epoch") or 0) + 1))
+    with transaction(db):
+        if setting(db, "api_key_hash") != _hash(key):
+            set_setting(db, "api_key_hash", _hash(key))
+            set_setting(db, "auth_epoch", str(int(setting(db, "auth_epoch") or 0) + 1))
 
 
 def check_api_key(db: sqlite3.Connection, key: str) -> bool:
@@ -57,10 +58,11 @@ def auth_epoch(db: sqlite3.Connection) -> int:
 
 def secret_key(db: sqlite3.Connection) -> str:
     """The key that signs session cookies, made on first use."""
-    key = setting(db, "secret_key")
-    if key is None:
-        key = secrets.token_urlsafe(32)
-        set_setting(db, "secret_key", key)
+    with transaction(db):
+        key = setting(db, "secret_key")
+        if key is None:
+            key = secrets.token_urlsafe(32)
+            set_setting(db, "secret_key", key)
     return key
 
 
@@ -68,12 +70,15 @@ def admin_id(db: sqlite3.Connection) -> int:
     row = db.execute("SELECT id FROM users WHERE username = ?", (ADMIN,)).fetchone()
     if row:
         return row["id"]
-    now = time.time()
-    cur = db.execute("INSERT INTO users (username, is_admin, created_at) VALUES (?, 1, ?)", (ADMIN, now))
-    # podcasts the CLI added before the app first ran start out on the admin's home page
-    db.execute("INSERT INTO user_podcasts (user_id, podcast_id, added_at) SELECT ?, id, ? FROM podcasts "
-               "WHERE followed = 1", (cur.lastrowid, now))
-    db.commit()
+    with transaction(db):
+        row = db.execute("SELECT id FROM users WHERE username = ?", (ADMIN,)).fetchone()
+        if row:  # made since the first look
+            return row["id"]
+        now = time.time()
+        cur = db.execute("INSERT INTO users (username, is_admin, created_at) VALUES (?, 1, ?)", (ADMIN, now))
+        # podcasts the CLI added before the app first ran start out on the admin's home page
+        db.execute("INSERT INTO user_podcasts (user_id, podcast_id, added_at) SELECT ?, id, ? FROM podcasts "
+                   "WHERE followed = 1", (cur.lastrowid, now))
     return cur.lastrowid
 
 
@@ -130,12 +135,13 @@ def create_user(db: sqlite3.Connection, username: str, password: str) -> int:
     if not USERNAME.fullmatch(name):
         raise AccountError("User names are 1 to 40 letters, digits, dots, dashes or underscores.")
     _check_new_password(password)
+    hashed = hash_password(password)
     try:
-        cur = db.execute("INSERT INTO users (username, password_hash, created_at) VALUES (?, ?, ?)",
-                         (name, hash_password(password), time.time()))
+        with transaction(db):
+            cur = db.execute("INSERT INTO users (username, password_hash, created_at) VALUES (?, ?, ?)",
+                             (name, hashed, time.time()))
     except sqlite3.IntegrityError:
         raise AccountError(f"There is already a user called {name}.") from None
-    db.commit()
     return cur.lastrowid
 
 
@@ -147,9 +153,18 @@ def set_password(db: sqlite3.Connection, user_id: int, password: str) -> None:
     if row["username"] == ADMIN:
         raise AccountError("The admin logs in with the API key; `podblock api-key` makes a new one.")
     _check_new_password(password)
-    db.execute("UPDATE users SET password_hash = ?, session_version = session_version + 1 WHERE id = ?",
-               (hash_password(password), user_id))
-    db.commit()
+    hashed = hash_password(password)
+    with transaction(db):
+        db.execute("UPDATE users SET password_hash = ?, session_version = session_version + 1 WHERE id = ?",
+                   (hashed, user_id))
+
+
+def change_password(db: sqlite3.Connection, user_id: int, current: str, new: str) -> None:
+    """A user's own change of password, which needs the one they have now. Ends their sessions."""
+    row = user(db, user_id)
+    if row is not None and row["username"] != ADMIN and not check_password(row["password_hash"], current):
+        raise AccountError("That isn't your current password.")
+    set_password(db, user_id, new)
 
 
 def remove_user(db: sqlite3.Connection, user_id: int) -> None:
@@ -160,9 +175,9 @@ def remove_user(db: sqlite3.Connection, user_id: int) -> None:
         raise AccountError("There is no such user.")
     if row["username"] == ADMIN:
         raise AccountError("The admin can't be removed.")
-    db.execute("DELETE FROM episode_filters WHERE user_id = ? AND processing = 0", (user_id,))
-    db.execute("DELETE FROM users WHERE id = ?", (user_id,))
-    db.commit()
+    with transaction(db):
+        db.execute("DELETE FROM episode_filters WHERE user_id = ? AND processing = 0", (user_id,))
+        db.execute("DELETE FROM users WHERE id = ?", (user_id,))
 
 
 def log_in(db: sqlite3.Connection, username: str, password: str) -> sqlite3.Row | None:
@@ -178,5 +193,5 @@ def log_in(db: sqlite3.Connection, username: str, password: str) -> sqlite3.Row 
 
 
 def logged_in(db: sqlite3.Connection, user_id: int) -> None:
-    db.execute("UPDATE users SET last_login_at = ? WHERE id = ?", (time.time(), user_id))
-    db.commit()
+    with transaction(db):
+        db.execute("UPDATE users SET last_login_at = ? WHERE id = ?", (time.time(), user_id))

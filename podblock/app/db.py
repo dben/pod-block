@@ -5,6 +5,15 @@ tables. The app adds its own tables, and its own columns on `podcasts` and
 `episodes`, through the numbered steps in MIGRATIONS: SQL scripts, or
 functions given the connection. The last step applied is kept in
 `settings` under `app_schema`.
+
+Each side changes its tables on its own, so neither may name a table, a
+column or a `settings` key the other has. A step, once shipped, never
+changes: a database that ran it won't run it again, so a change is a new
+step at the end. `tests/test_schema.py` checks all of this.
+
+Writes go in `transaction` blocks (from the detector's store): a function that
+writes wraps its own writes in one, and a caller that needs several of them to
+land together wraps the lot in another; only the outermost block commits.
 """
 
 from __future__ import annotations
@@ -16,7 +25,7 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
-from ..store import Store
+from ..store import Connection, Store, transaction
 from . import locks
 
 MAX_TITLE = 500  # characters of a title that filters look at
@@ -147,7 +156,8 @@ MIGRATIONS = [
     """,
     # 9: password logins, and the podcasts each user picked for their home page
     """
-    ALTER TABLE users ADD COLUMN session_version INTEGER NOT NULL DEFAULT 0;  -- goes up on a password change, ending other sessions
+    -- session_version goes up on a password change, ending the user's other sessions
+    ALTER TABLE users ADD COLUMN session_version INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE users ADD COLUMN last_login_at REAL;
     CREATE TABLE user_podcasts (
         user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -199,8 +209,8 @@ MIGRATIONS = [
     # 14: chapters and transcripts, shifted to fit the cut audio; and each time a user grabs an episode,
     # through their feed or in the app
     """
-    ALTER TABLE episodes ADD COLUMN source_chapters TEXT;  -- JSON list, from the feed or the file; NULL until looked for
-    ALTER TABLE episodes ADD COLUMN transcripts TEXT;  -- JSON list of the source's transcripts saved under the media folder
+    ALTER TABLE episodes ADD COLUMN source_chapters TEXT;  -- JSON list, from the feed or file; NULL until looked for
+    ALTER TABLE episodes ADD COLUMN transcripts TEXT;  -- JSON list of the source's transcripts, saved as files
     ALTER TABLE episodes ADD COLUMN cut_chapters TEXT;  -- JSON list of the chapters written into the cut file
     CREATE TABLE grabs (
         id INTEGER PRIMARY KEY,
@@ -246,13 +256,20 @@ def _regexp(pattern: str | None, text: str | None) -> bool:
         return False
 
 
-def connect(path: Path) -> sqlite3.Connection:
+def connect(path: Path) -> Connection:
     """A connection for one request or job. Safe to hand between threads, not to share."""
-    db = sqlite3.connect(path, timeout=30, check_same_thread=False)
+    db = sqlite3.connect(path, timeout=30, check_same_thread=False, factory=Connection)
     db.row_factory = sqlite3.Row
     db.execute("PRAGMA foreign_keys = ON")
     db.create_function("regexp", 2, _regexp, deterministic=True)
     return db
+
+
+def in_list(name: str, values) -> tuple[str, dict]:
+    """Named parameters for `IN (...)`, for queries that take named ones: the placeholders (`:name0, :name1`,
+    and so on) and their values."""
+    args = {f"{name}{i}": value for i, value in enumerate(values)}
+    return ", ".join(f":{key}" for key in args), args
 
 
 def setting(db: sqlite3.Connection, key: str) -> str | None:
@@ -261,8 +278,8 @@ def setting(db: sqlite3.Connection, key: str) -> str | None:
 
 
 def set_setting(db: sqlite3.Connection, key: str, value: str) -> None:
-    db.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, value))
-    db.commit()
+    with transaction(db):
+        db.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, value))
 
 
 def prepare(path: Path) -> None:
@@ -280,9 +297,9 @@ def _prepare(path: Path) -> None:
         for step, change in enumerate(MIGRATIONS[done:], start=done + 1):
             mark = f"INSERT OR REPLACE INTO settings VALUES ('app_schema', '{step}');"
             if callable(change):
-                change(db)
-                db.execute(mark)
-                db.commit()
+                with transaction(db):
+                    change(db)
+                    db.execute(mark)
             else:
                 db.executescript(f"BEGIN; {change}; {mark} COMMIT;")
     finally:

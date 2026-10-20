@@ -36,6 +36,8 @@ import requests
 
 from .. import cut
 from ..feed import PODCAST, PSC, USER_AGENT
+from .db import transaction
+from .text import web_url
 
 log = logging.getLogger(__name__)
 
@@ -58,11 +60,6 @@ def get(url: str) -> bytes:
             if len(body) > MAX_BYTES:
                 raise ValueError(f"over {MAX_BYTES >> 20} MB")
         return bytes(body)
-
-
-def _web(url: str | None) -> str | None:
-    url = (url or "").strip()
-    return url if url.split(":", 1)[0].lower() in {"http", "https"} else None
 
 
 def _clock(text: str | None) -> float | None:
@@ -97,7 +94,7 @@ class Shift:
     def joins(self) -> list[tuple[float, float, float]]:
         """Each cut that has kept audio after it: where it is in the cut audio, and what it took out."""
         found, prev = [], 0.0
-        for (a, b), at in zip(self.keep, self.offsets):
+        for (a, b), at in zip(self.keep, self.offsets[:-1], strict=True):  # each kept stretch, and where it starts
             if a - prev > 0.01:
                 found.append((at, prev, a))
             prev = b
@@ -117,7 +114,7 @@ def _json_chapters(body: bytes) -> list[dict]:
         if isinstance(c.get("endTime"), (int, float)):
             ch["end"] = float(c["endTime"])
         for key in ("img", "url"):
-            if isinstance(c.get(key), str) and _web(c[key]):
+            if isinstance(c.get(key), str) and web_url(c[key]):
                 ch[key] = c[key].strip()
         if c.get("toc") is False:
             ch["toc"] = False
@@ -133,9 +130,9 @@ def _psc_chapters(item: ET.Element) -> list[dict]:
         if start is None:
             continue
         ch = {"start": start, "title": (c.get("title") or "").strip()}
-        if url := _web(c.get("href")):
+        if url := web_url(c.get("href")):
             ch["url"] = url
-        if img := _web(c.get("image")):
+        if img := web_url(c.get("image")):
             ch["img"] = img
         found.append(ch)
     return sorted(found, key=lambda c: c["start"])
@@ -168,7 +165,7 @@ def gather(db: sqlite3.Connection, ep: sqlite3.Row, stem: Path) -> None:
         pass
     chapters, transcripts = [], []
     for el in item.findall(f"{PODCAST}chapters") if item is not None else []:
-        if url := _web(el.get("url")):
+        if url := web_url(el.get("url")):
             try:
                 chapters = _json_chapters(get(url))
             except Exception as e:
@@ -184,7 +181,7 @@ def gather(db: sqlite3.Connection, ep: sqlite3.Row, stem: Path) -> None:
             pass
     for el in item.findall(f"{PODCAST}transcript") if item is not None else []:
         fmt = FORMATS.get((el.get("type") or "").split(";")[0].strip().lower())
-        url = _web(el.get("url"))
+        url = web_url(el.get("url"))
         if not fmt or not url or any(t["format"] == fmt for t in transcripts):
             continue
         try:
@@ -201,9 +198,9 @@ def gather(db: sqlite3.Connection, ep: sqlite3.Row, stem: Path) -> None:
         tmp.replace(path)
         transcripts.append({"format": fmt, "path": str(path),
                             **{k: el.get(k) for k in ("language", "rel") if el.get(k)}})
-    db.execute("UPDATE episodes SET source_chapters = ?, transcripts = ? WHERE id = ?",
-               (json.dumps(chapters), json.dumps(transcripts), ep["id"]))
-    db.commit()
+    with transaction(db):
+        db.execute("UPDATE episodes SET source_chapters = ?, transcripts = ? WHERE id = ?",
+                   (json.dumps(chapters), json.dumps(transcripts), ep["id"]))
 
 
 def forget(ep: sqlite3.Row) -> None:
@@ -343,7 +340,8 @@ def _shift_json(text: str, shift: Shift) -> str:
         end = shift(seg["endTime"]) if isinstance(seg.get("endTime"), (int, float)) else None
         if end is not None and end - start < 0.01:
             continue
-        segments.append({**seg, "startTime": round(start, 3), **({"endTime": round(end, 3)} if end is not None else {})})
+        ends = {"endTime": round(end, 3)} if end is not None else {}
+        segments.append({**seg, "startTime": round(start, 3), **ends})
     return json.dumps({**doc, "segments": segments}, ensure_ascii=False)
 
 

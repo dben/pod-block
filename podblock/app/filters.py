@@ -24,13 +24,13 @@ import sqlite3
 import time
 
 from . import jobs
-from .db import title_pattern
+from .db import title_pattern, transaction
 
 MAX_PATTERN = 200
 
-# An episode is hidden from the user whose id is this fragment's one parameter.
+# An episode is hidden from the user `:user_id` (a named parameter; see library.py).
 HIDDEN = """(e.skip_processing = 1 OR EXISTS (
-    SELECT 1 FROM episode_filters f WHERE f.user_id = ? AND (f.podcast_id IS NULL OR f.podcast_id = e.podcast_id)
+    SELECT 1 FROM episode_filters f WHERE f.user_id = :user_id AND (f.podcast_id IS NULL OR f.podcast_id = e.podcast_id)
     AND e.title REGEXP f.pattern))"""
 _PROCESSING = """EXISTS (
     SELECT 1 FROM episode_filters f WHERE f.processing = 1
@@ -58,12 +58,18 @@ def check(pattern: str) -> str:
 
 def add(db: sqlite3.Connection, user_id: int, podcast_id: int | None, pattern: str, processing: bool) -> int:
     pattern = check(pattern)
-    cur = db.execute("INSERT INTO episode_filters (user_id, podcast_id, pattern, processing, created_at) "
-                     "VALUES (?, ?, ?, ?, ?)", (user_id, podcast_id, pattern, int(processing), time.time()))
-    db.commit()
-    if processing:
-        mark(db, podcast_id)
+    with transaction(db):
+        cur = db.execute("INSERT INTO episode_filters (user_id, podcast_id, pattern, processing, created_at) "
+                         "VALUES (?, ?, ?, ?, ?)", (user_id, podcast_id, pattern, int(processing), time.time()))
+        if processing:
+            mark(db, podcast_id)
     return cur.lastrowid
+
+
+def matches(db: sqlite3.Connection, podcast_id: int, pattern: str) -> int:
+    """How many of a podcast's episodes a pattern matches."""
+    return db.execute("SELECT COUNT(*) FROM episodes WHERE podcast_id = ? AND title REGEXP ?",
+                      (podcast_id, pattern.strip())).fetchone()[0]
 
 
 def get(db: sqlite3.Connection, filter_id: int) -> sqlite3.Row | None:
@@ -71,13 +77,13 @@ def get(db: sqlite3.Connection, filter_id: int) -> sqlite3.Row | None:
 
 
 def remove(db: sqlite3.Connection, filter_id: int) -> None:
-    row = get(db, filter_id)
-    if row is None:
-        return
-    db.execute("DELETE FROM episode_filters WHERE id = ?", (filter_id,))
-    db.commit()
-    if row["processing"]:
-        mark(db, row["podcast_id"])
+    with transaction(db):
+        row = get(db, filter_id)
+        if row is None:
+            return
+        db.execute("DELETE FROM episode_filters WHERE id = ?", (filter_id,))
+        if row["processing"]:
+            mark(db, row["podcast_id"])
 
 
 def may_remove(user: sqlite3.Row, row: sqlite3.Row) -> bool:
@@ -102,16 +108,16 @@ def mark(db: sqlite3.Connection, podcast_id: int | None = None) -> list[int]:
     from are handed to an `unlearn` job.
     """
     scope, args = ("AND podcast_id = ?", [podcast_id]) if podcast_id is not None else ("", [])
-    newly = [r["id"] for r in db.execute(
-        f"SELECT id FROM episodes WHERE skip_processing = 0 AND {_PROCESSING} {scope}", args)]
-    db.execute(f"UPDATE episodes SET skip_processing = {_PROCESSING} WHERE 1 {scope}", args)
-    db.commit()
-    if newly:
-        marks = ", ".join("?" * len(newly))
-        learned = [r["id"] for r in db.execute(
-            f"""SELECT id FROM episodes WHERE id IN ({marks}) AND (fingerprint_path IS NOT NULL
-                OR id IN (SELECT episode_id FROM occurrences) OR id IN (SELECT source_episode_id FROM segments))""",
-            newly)]
-        if learned:
-            jobs.enqueue_task(db, "unlearn", None, json.dumps({"episodes": learned}))
+    with transaction(db):
+        newly = [r["id"] for r in db.execute(
+            f"SELECT id FROM episodes WHERE skip_processing = 0 AND {_PROCESSING} {scope}", args)]
+        db.execute(f"UPDATE episodes SET skip_processing = {_PROCESSING} WHERE 1 {scope}", args)
+        if newly:
+            marks = ", ".join("?" * len(newly))
+            learned = [r["id"] for r in db.execute(
+                f"""SELECT id FROM episodes WHERE id IN ({marks}) AND (fingerprint_path IS NOT NULL
+                    OR id IN (SELECT episode_id FROM occurrences) OR id IN (SELECT source_episode_id FROM segments))""",
+                newly)]
+            if learned:
+                jobs.enqueue_task(db, "unlearn", None, json.dumps({"episodes": learned}))
     return newly

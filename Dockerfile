@@ -8,10 +8,15 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
+# uv only exports the versions uv.lock pins, for pip to install; the image doesn't keep it.
+COPY --from=ghcr.io/astral-sh/uv:0.11.32 /uv /usr/local/bin/uv
+
 WORKDIR /app
-COPY pyproject.toml README.md LICENSE ./
+COPY pyproject.toml uv.lock README.md LICENSE ./
 COPY podblock ./podblock
-RUN pip install --no-cache-dir '.[web]'
+RUN uv export --frozen --extra web --no-emit-project --no-hashes --quiet -o /tmp/pins.txt \
+    && pip install --no-cache-dir -c /tmp/pins.txt '.[web]' \
+    && rm /tmp/pins.txt /usr/local/bin/uv
 
 RUN groupadd --system --gid 1000 podblock \
     && useradd --system --uid 1000 --gid 1000 --home /data podblock \

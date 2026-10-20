@@ -1,4 +1,4 @@
-"""Settings for the web app, read from environment variables."""
+"""Settings for the web app and the worker, read from environment variables."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from .media import Media
 
 JOBS = ("process", "threads", "none")
 
@@ -38,8 +39,13 @@ class Settings:
     def db_path(self) -> Path:
         return self.data_dir / "podblock.sqlite"
 
+    @property
+    def media(self) -> Media:
+        """Where each episode's files go under `media_dir`."""
+        return Media(self.media_dir)
+
     @classmethod
-    def from_env(cls, data_dir: Path | None = None, media_dir: Path | None = None) -> "Settings":
+    def from_env(cls, data_dir: Path | None = None, media_dir: Path | None = None) -> Settings:
         data_dir = data_dir or Path(os.environ.get("PODBLOCK_DATA_DIR", "podblock-data"))
         media_dir = media_dir or Path(os.environ.get("PODBLOCK_MEDIA_DIR") or data_dir / "media")
         return cls(

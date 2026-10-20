@@ -36,25 +36,20 @@ there each item's `pubDate` is when its episode was downloaded and cut.
 
 from __future__ import annotations
 
-import hashlib
 import io
-import re
 import sqlite3
 import time
 import xml.etree.ElementTree as ET
-from email.utils import format_datetime
 from datetime import datetime, timezone
+from email.utils import format_datetime
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, Request
-from fastapi.responses import FileResponse, PlainTextResponse, Response
-
 from ..feed import ITUNES, PODCAST, PSC
-from . import chapters, grabs
-from .db import new_token
-from .deps import get_db
+from . import chapters, media
+from .db import new_token, transaction
 from .filters import HIDDEN
-from .processing import media_key
+from .library import USER_JOIN
+from .text import web_url
 
 ATOM = "{http://www.w3.org/2005/Atom}"
 PREFIXES = {"itunes": ITUNES[1:-1], "atom": ATOM[1:-1], "podcast": PODCAST[1:-1],
@@ -78,8 +73,6 @@ def _uncut_audio(el: ET.Element) -> bool:
         return False
     kind = (el.get("type") or "").lower()
     return el.get("medium") == "audio" or kind.startswith("audio/") or (not kind and not el.get("medium"))
-
-router = APIRouter()
 
 
 def _register(xml: str | None) -> None:
@@ -106,10 +99,10 @@ def feed_token(db: sqlite3.Connection, user_id: int, podcast_id: int) -> str:
 def new_feed_token(db: sqlite3.Connection, user_id: int, podcast_id: int) -> str:
     """Give a user's feed of a podcast a new address; the old one stops working at once. Audio links stay."""
     token = new_token()
-    db.execute("""INSERT INTO user_feeds (user_id, podcast_id, token, created_at) VALUES (?, ?, ?, ?)
-                  ON CONFLICT (user_id, podcast_id) DO UPDATE SET token = excluded.token""",
-               (user_id, podcast_id, token, time.time()))
-    db.commit()
+    with transaction(db):
+        db.execute("""INSERT INTO user_feeds (user_id, podcast_id, token, created_at) VALUES (?, ?, ?, ?)
+                      ON CONFLICT (user_id, podcast_id) DO UPDATE SET token = excluded.token""",
+                   (user_id, podcast_id, token, time.time()))
     return token
 
 
@@ -122,17 +115,9 @@ def omni_token(db: sqlite3.Connection, user_id: int) -> str:
 def new_omni_token(db: sqlite3.Connection, user_id: int) -> str:
     """Give a user's omni feed a new address; the old one stops working at once."""
     token = new_token()
-    db.execute("UPDATE users SET omni_token = ? WHERE id = ?", (token, user_id))
-    db.commit()
+    with transaction(db):
+        db.execute("UPDATE users SET omni_token = ? WHERE id = ?", (token, user_id))
     return token
-
-
-def base_url(request: Request) -> str:
-    return request.app.state.settings.public_url or str(request.base_url).rstrip("/")
-
-
-def feed_url(request: Request, token: str, by_download: bool = False) -> str:
-    return f"{base_url(request)}/p/{token}/{FEED_FILES[by_download]}"
 
 
 def _order(by_download: bool) -> str:
@@ -153,10 +138,10 @@ def published(db: sqlite3.Connection, podcast_id: int, user_id: int | None = Non
     (or downloaded) first. With a user, the ones in their feed: not archived by them, nor hidden by a filter."""
     mine = f"AND COALESCE(ue.archived, 0) = 0 AND NOT {HIDDEN}" if user_id is not None else ""
     rows = db.execute(
-        f"""SELECT e.* FROM episodes e LEFT JOIN user_episodes ue ON ue.episode_id = e.id AND ue.user_id = ?
-            WHERE e.podcast_id = ? AND e.state = 'ready' AND e.cut_path IS NOT NULL {mine}
+        f"""SELECT e.* FROM episodes e {USER_JOIN}
+            WHERE e.podcast_id = :podcast_id AND e.state = 'ready' AND e.cut_path IS NOT NULL {mine}
             ORDER BY {_order(by_download)}""",
-        (user_id, podcast_id, *([user_id] if user_id is not None else []))).fetchall()
+        {"user_id": user_id, "podcast_id": podcast_id}).fetchall()
     return [r for r in rows if Path(r["cut_path"]).exists()]
 
 
@@ -168,21 +153,21 @@ def omni_published(db: sqlite3.Connection, user_id: int, by_download: bool = Fal
         f"""SELECT e.*, p.name AS podcast_name, p.author AS podcast_author, p.image_url AS podcast_image,
                    p.explicit AS podcast_explicit
             FROM episodes e JOIN podcasts p ON p.id = e.podcast_id AND p.followed = 1
-            JOIN user_podcasts up ON up.podcast_id = p.id AND up.user_id = ?
-            LEFT JOIN user_episodes ue ON ue.episode_id = e.id AND ue.user_id = ?
+            JOIN user_podcasts up ON up.podcast_id = p.id AND up.user_id = :user_id
+            {USER_JOIN}
             WHERE e.state = 'ready' AND e.cut_path IS NOT NULL AND COALESCE(ue.archived, 0) = 0 AND NOT {HIDDEN}
-            ORDER BY {_order(by_download)}""", (user_id, user_id, user_id)).fetchall()
+            ORDER BY {_order(by_download)}""", {"user_id": user_id}).fetchall()
     return [r for r in rows if Path(r["cut_path"]).exists()]
 
 
-def _podcast_by_token(db: sqlite3.Connection, token: str) -> sqlite3.Row | None:
+def podcast_by_token(db: sqlite3.Connection, token: str) -> sqlite3.Row | None:
     """The podcast whose audio links carry this token."""
     if not token or len(token) > 64:
         return None
     return db.execute("SELECT * FROM podcasts WHERE public_token = ? AND followed = 1", (token,)).fetchone()
 
 
-def _feed_by_token(db: sqlite3.Connection, token: str) -> sqlite3.Row | None:
+def feed_by_token(db: sqlite3.Connection, token: str) -> sqlite3.Row | None:
     """The user and podcast whose feed this is: the podcast's row, with `user_id` and `feed_token`."""
     if not token or len(token) > 64:
         return None
@@ -191,7 +176,7 @@ def _feed_by_token(db: sqlite3.Connection, token: str) -> sqlite3.Row | None:
                       (token,)).fetchone()
 
 
-def _omni_by_token(db: sqlite3.Connection, token: str) -> sqlite3.Row | None:
+def omni_by_token(db: sqlite3.Connection, token: str) -> sqlite3.Row | None:
     """The user whose omni feed this is."""
     if not token or len(token) > 64:
         return None
@@ -214,10 +199,6 @@ def _set(parent: ET.Element, tag: str, text: str, attrib: dict | None = None) ->
 
 def _rfc822(ts: float) -> str:
     return format_datetime(datetime.fromtimestamp(ts, timezone.utc))
-
-
-def _web(url: str | None) -> str | None:
-    return url if url and url.split(":", 1)[0].lower() in {"http", "https"} else None
 
 
 def _item(ep: sqlite3.Row, link: str, art: str | None = None, by_download: bool = False) -> ET.Element:
@@ -253,7 +234,7 @@ def _item(ep: sqlite3.Row, link: str, art: str | None = None, by_download: bool 
         ET.SubElement(item, f"{PODCAST}transcript", url=f"{link}.transcript.{t['format']}",
                       type=chapters.MIME[t["format"]], **{k: t[k] for k in ("language", "rel") if t.get(k)})
     own = item.find(f"{ITUNES}image")
-    if (own is None or not _web(own.get("href"))) and (image := _web(ep["image_url"]) or _web(art)):
+    if (own is None or not web_url(own.get("href"))) and (image := web_url(ep["image_url"]) or web_url(art)):
         _set(item, f"{ITUNES}image", "", {"href": image})
     if by_download and (when := _downloaded_at(ep)):
         _set(item, "pubDate", _rfc822(when))
@@ -306,7 +287,7 @@ def build_feed(db: sqlite3.Connection, pod: sqlite3.Row, base: str, user_id: int
 
 def _link(base: str, token: str, ep: sqlite3.Row) -> str:
     """Where an episode's files are, through the feed whose address holds `token`, less the suffix."""
-    return f"{base}/p/{token}/{media_key(ep['guid'])}"
+    return f"{base}/p/{token}/{media.key(ep['guid'])}"
 
 
 def build_omni(db: sqlite3.Connection, user_id: int, base: str, token: str, by_download: bool = False) -> bytes:
@@ -329,7 +310,8 @@ def build_omni(db: sqlite3.Connection, user_id: int, base: str, token: str, by_d
     ET.SubElement(channel, f"{ITUNES}author").text = "pod-block"
     ET.SubElement(channel, f"{ITUNES}summary").text = OMNI_ABOUT
     ET.SubElement(channel, f"{ITUNES}type").text = "episodic"
-    ET.SubElement(channel, f"{ITUNES}explicit").text = "true" if any(ep["podcast_explicit"] for ep in episodes) else "false"
+    explicit = any(ep["podcast_explicit"] for ep in episodes)
+    ET.SubElement(channel, f"{ITUNES}explicit").text = "true" if explicit else "false"
     ET.SubElement(channel, f"{ITUNES}block").text = "Yes"
     ET.SubElement(channel, f"{PODCAST}locked").text = "yes"
     for ep in episodes:
@@ -346,79 +328,10 @@ def build_omni(db: sqlite3.Connection, user_id: int, base: str, token: str, by_d
     return _rss(channel)
 
 
-NOT_FOUND = PlainTextResponse("Not found", status_code=404)
-
-
-@router.api_route("/p/{token}/feed.xml", methods=["GET", "HEAD"], include_in_schema=False)
-def private_feed(request: Request, token: str, db: sqlite3.Connection = Depends(get_db)) -> Response:
-    """A user's feed of one podcast, or their omni feed of all of them, newest released first."""
-    return _serve_feed(request, token, db, by_download=False)
-
-
-@router.api_route("/p/{token}/downloaded.xml", methods=["GET", "HEAD"], include_in_schema=False)
-def private_feed_by_download(request: Request, token: str, db: sqlite3.Connection = Depends(get_db)) -> Response:
-    """The same feed, newest downloaded first."""
-    return _serve_feed(request, token, db, by_download=True)
-
-
-def _serve_feed(request: Request, token: str, db: sqlite3.Connection, by_download: bool) -> Response:
-    if (pod := _feed_by_token(db, token)) is not None:
-        body = build_feed(db, pod, base_url(request), pod["user_id"], token, by_download)
-    elif (user := _omni_by_token(db, token)) is not None:
-        body = build_omni(db, user["id"], base_url(request), token, by_download)
-    else:
-        return NOT_FOUND
-    etag = '"' + hashlib.sha1(body).hexdigest()[:20] + '"'
-    headers = {"ETag": etag, "Cache-Control": "private, max-age=300", "X-Robots-Tag": "noindex"}
-    if etag in request.headers.get("if-none-match", ""):
-        return Response(status_code=304, headers=headers)
-    return Response(body if request.method == "GET" else b"", media_type="application/rss+xml; charset=utf-8",
-                    headers=headers)
-
-
-FILE_NAME = re.compile(r"([0-9a-f]{16})\.(chapters\.json|transcript\.(?:vtt|srt|json)|[a-z0-9]{1,5})")
-
-
-def _ready(db: sqlite3.Connection, key: str, podcast_id: int | None = None) -> sqlite3.Row | None:
+def ready_episode(db: sqlite3.Connection, key: str, podcast_id: int | None = None) -> sqlite3.Row | None:
     """The ready episode, with its cut file on disk, whose files are named `key`: of one podcast, or of any."""
     rows = db.execute(
         f"""SELECT e.* FROM episodes e JOIN podcasts p ON p.id = e.podcast_id AND p.followed = 1
             WHERE e.state = 'ready' AND instr(e.cut_path, ?) > 0 {'AND e.podcast_id = ?' if podcast_id else ''}""",
         (key, *([podcast_id] if podcast_id else []))).fetchall()
-    return next((r for r in rows if media_key(r["guid"]) == key and Path(r["cut_path"]).exists()), None)
-
-
-@router.api_route("/p/{token}/{name}", methods=["GET", "HEAD"], include_in_schema=False)
-def private_file(request: Request, token: str, name: str, db: sqlite3.Connection = Depends(get_db)) -> Response:
-    """An episode's cut audio, chapters or transcript, through a user's feed or omni feed. Each GET of the audio
-    counts toward a grab by that user. Audio links from before feeds carried their own token still work."""
-    m = FILE_NAME.fullmatch(name)
-    if not m:
-        return NOT_FOUND
-    key, what = m[1], m[2]
-    if (pod := _feed_by_token(db, token)) is not None:
-        ep, user_id, via = _ready(db, key, pod["id"]), pod["user_id"], "feed"
-    elif (user := _omni_by_token(db, token)) is not None:
-        ep, user_id, via = _ready(db, key), user["id"], "omni"
-    elif (pod := _podcast_by_token(db, token)) is not None and "." not in what:
-        ep, user_id, via = _ready(db, key, pod["id"]), None, None
-    else:
-        return NOT_FOUND
-    if ep is None:
-        return NOT_FOUND
-    headers = {"Cache-Control": "private, max-age=3600", "X-Robots-Tag": "noindex"}
-    if what == "chapters.json":
-        return Response(chapters.chapters_json(chapters.for_episode(db, ep)) if request.method == "GET" else b"",
-                        media_type="application/json", headers=headers)
-    if what.startswith("transcript."):
-        fmt = what.split(".", 1)[1]
-        text = chapters.transcript(ep, fmt)
-        if text is None:
-            return NOT_FOUND
-        return Response(text.encode() if request.method == "GET" else b"",
-                        media_type=f"{chapters.MIME[fmt]}; charset=utf-8", headers=headers)
-    if Path(ep["cut_path"]).suffix != f".{what}":
-        return NOT_FOUND
-    if user_id is not None and request.method == "GET":
-        grabs.record(db, user_id, ep["id"], via, resumed=grabs.resumed(request.headers.get("range")))
-    return FileResponse(ep["cut_path"], media_type=ep["cut_type"] or "audio/mpeg", headers=headers)
+    return next((r for r in rows if media.key(r["guid"]) == key and Path(r["cut_path"]).exists()), None)

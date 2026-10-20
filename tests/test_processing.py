@@ -8,49 +8,17 @@ import numpy as np
 import pytest
 
 pytest.importorskip("fastapi")
-pytestmark = pytest.mark.skipif(not shutil.which("ffmpeg"), reason="needs ffmpeg")
+pytestmark = [pytest.mark.slow, pytest.mark.skipif(not shutil.which("ffmpeg"), reason="needs ffmpeg")]
 
 from fastapi.testclient import TestClient
-from test_feeds import FakeWeb, rss
 
+from fakes import AD, FILLER, JINGLE, SR, URL, FakeWeb, fake_audio, rss
+from podblock.app import accounts, chapters, following, jobs, library, media, private_feeds, processing, worker
+from podblock.app.config import Settings
+from podblock.app.db import connect
 from podblock.cut import probe
-from podblock.web import accounts, background, chapters, feeds, jobs, library, processing, publish
+from podblock.store import Store
 from podblock.web.app import create_app
-from podblock.web.config import Settings
-from podblock.web.db import connect
-
-URL = "https://example.com/show.rss"
-SR = 16000
-JINGLE, AD, FILLER = 20.0, 18.0, 30.0
-
-
-def fake_audio(seconds, seed):
-    """Noise plus a random melody, which gives the fingerprinter plenty to grab."""
-    rng = np.random.default_rng(seed)
-    n = int(seconds * SR)
-    out = rng.normal(0, 0.02, n)
-    note = int(0.12 * SR)
-    t = np.arange(note) / SR
-    for start in range(0, n - note, note):
-        for freq in rng.uniform(150, 3500, size=3):
-            out[start:start + note] += 0.1 * np.sin(2 * np.pi * freq * t) * np.hanning(note)
-    return out
-
-
-@pytest.fixture(scope="module")
-def audio_files(tmp_path_factory):
-    """Five episodes: a shared jingle, then show, a shared ad, more show."""
-    root = tmp_path_factory.mktemp("cdn")
-    jingle, ad = fake_audio(JINGLE, 99), fake_audio(AD, 98)
-    files = {}
-    for n in range(1, 6):
-        samples = np.concatenate([jingle, fake_audio(FILLER, n), ad, fake_audio(FILLER, 100 + n)])
-        pcm = (np.clip(samples, -1, 1) * 32767).astype("<i2").tobytes()
-        path = root / f"{n}.mp3"
-        subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "s16le", "-ar", str(SR), "-ac", "1", "-i", "pipe:0",
-                        "-c:a", "libmp3lame", "-b:a", "64k", str(path)], input=pcm, check=True)
-        files[f"https://cdn.example.com/{n}.mp3"] = path
-    return files
 
 
 def item(n):
@@ -94,7 +62,7 @@ def env(tmp_path, monkeypatch, audio_files):
     client = TestClient(app, follow_redirects=False)
     client.post("/login", data={"key": "k"})
     db = connect(settings.db_path)
-    pod = feeds.add_podcast(db, URL).podcast_id
+    pod = following.add_podcast(db, URL).podcast_id
     library.subscribe(db, accounts.admin_id(db), pod)
     ids = {r["guid"]: r["id"] for r in db.execute("SELECT id, guid FROM episodes")}
     yield type("Env", (), dict(settings=settings, client=client, db=db, pod=pod, ids=ids, cdn=cdn, web=web,
@@ -112,7 +80,7 @@ def test_download_finds_repeats_and_cuts_them(env):
     assert episode(env, "ep-2")["state"] == "queued"
     assert "Jobs <span class=\"nav-count\">1</span>" in env.client.get("/jobs").text
 
-    assert background.run_queue(env.settings) == 1
+    assert worker.run_queue(env.settings) == 1
 
     # The show had nothing fingerprinted, so the three episodes after it came along.
     assert sorted(env.cdn.fetched) == [f"https://cdn.example.com/{n}.mp3" for n in (2, 3, 4, 5)]
@@ -132,7 +100,7 @@ def test_download_finds_repeats_and_cuts_them(env):
 
 def test_cut_audio_streams_with_ranges(env):
     jobs.enqueue(env.db, "process", [env.ids["ep-5"]], None)
-    background.run_queue(env.settings)
+    worker.run_queue(env.settings)
     audio = env.client.get(f"/episodes/{env.ids['ep-5']}/audio", headers={"range": "bytes=0-99"})
     assert audio.status_code == 206 and len(audio.content) == 100
     assert audio.headers["content-type"] == "audio/mpeg"
@@ -144,11 +112,11 @@ def test_cut_audio_streams_with_ranges(env):
 
 def test_processing_again_reuses_the_download(env):
     jobs.enqueue(env.db, "process", [env.ids["ep-3"]], None)
-    background.run_queue(env.settings)
+    worker.run_queue(env.settings)
     fetched = len(env.cdn.fetched)
     assert jobs.enqueue(env.db, "process", [env.ids["ep-3"]], None) == []  # ready: a plain download skips it
     env.client.post(f"/episodes/{env.ids['ep-3']}/process")
-    background.run_queue(env.settings)
+    worker.run_queue(env.settings)
     assert len(env.cdn.fetched) == fetched
     assert episode(env, "ep-3")["state"] == "ready"
 
@@ -156,7 +124,7 @@ def test_processing_again_reuses_the_download(env):
 def test_a_failed_download_can_be_retried(env):
     env.cdn.fail.add("https://cdn.example.com/1.mp3")
     jobs.enqueue(env.db, "process", [env.ids["ep-1"]], None)
-    background.run_queue(env.settings)
+    worker.run_queue(env.settings)
     ep = episode(env, "ep-1")
     assert ep["state"] == "failed" and "the CDN is down" in ep["state_note"]
     job = env.db.execute("SELECT * FROM jobs").fetchone()
@@ -167,7 +135,7 @@ def test_a_failed_download_can_be_retried(env):
 
     env.cdn.fail.clear()
     env.client.post(f"/jobs/{job['id']}/retry")
-    background.run_queue(env.settings)
+    worker.run_queue(env.settings)
     assert episode(env, "ep-1")["state"] == "ready"
 
 
@@ -184,8 +152,8 @@ def test_cancelling(env, monkeypatch):
         ctx._last = 0
         ctx.progress(0.6)
 
-    monkeypatch.setitem(background.RUNNERS, "process", cancel_midway)
-    background.run_queue(env.settings)
+    monkeypatch.setitem(worker.RUNNERS, "process", cancel_midway)
+    worker.run_queue(env.settings)
     states = {r["id"]: r["state"] for r in env.db.execute("SELECT id, state FROM jobs")}
     assert states == {first: "cancelled", second: "cancelled"}
 
@@ -203,7 +171,7 @@ def test_jobs_cut_short_by_a_restart_run_again(env):
 def test_refresh_keeps_queued_episodes_that_left_the_feed(env):
     jobs.enqueue(env.db, "process", [env.ids["ep-1"]], None)
     env.web.pages[URL] = rss(*(item(n) for n in range(2, 6)))
-    assert feeds.refresh(env.db, env.pod).gone == 1
+    assert following.refresh(env.db, env.pod).gone == 1
     assert episode(env, "ep-1") is not None
 
 
@@ -233,7 +201,7 @@ def test_steps_on_companions_name_them(env):
 
 def processed(env):
     jobs.enqueue(env.db, "process", [env.ids["ep-2"]], None)
-    background.run_queue(env.settings)
+    worker.run_queue(env.settings)
     return env.db.execute("SELECT * FROM jobs WHERE kind = 'process'").fetchone()
 
 
@@ -265,7 +233,7 @@ def test_marking_a_block_changes_it_everywhere_and_recuts(env):
     assert episode(env, "ep-3")["state"] == "queued"
     assert env.client.post(f"/episodes/{env.ids['ep-3']}/edits", json={"types": []}).status_code == 409  # busy
 
-    background.run_queue(env.settings)
+    worker.run_queue(env.settings)
     types = dict(env.db.execute("SELECT id, type FROM segments").fetchall())
     assert all(types[b] == "ignored" for b in first["blocks"])
     for guid in ("ep-2", "ep-3", "ep-4", "ep-5"):
@@ -282,7 +250,7 @@ def test_cutting_a_stretch_by_hand(env):
     full = episode(env, "ep-4")["cut_duration"]
     res = env.client.post(f"/episodes/{ep_id}/edits", json={"add": [{"start": 20, "end": 30, "as_block": False}]})
     assert res.status_code == 200
-    background.run_queue(env.settings)
+    worker.run_queue(env.settings)
     assert episode(env, "ep-4")["cut_duration"] == pytest.approx(full - 10, abs=0.5)
     edit = env.db.execute("SELECT * FROM edits").fetchone()
     assert (edit["start"], edit["end"]) == (20, 30)
@@ -291,8 +259,28 @@ def test_cutting_a_stretch_by_hand(env):
     page = env.client.get(f"/episodes/{ep_id}").text
     assert f'"edit": {edit["id"]}' in page or f'"edit":{edit["id"]}' in page
     env.client.post(f"/episodes/{ep_id}/edits", json={"remove": [edit["id"]]})
-    background.run_queue(env.settings)
+    worker.run_queue(env.settings)
     assert episode(env, "ep-4")["cut_duration"] == pytest.approx(full, abs=0.5)
+
+
+def test_changes_that_fail_partway_land_none_of_them(env, monkeypatch):
+    processed(env)
+    first = report_of(env, "ep-4")["sections"][0]
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(Store, "add_segment", broken)  # the last of the changes fails
+    env.client.post(f"/episodes/{env.ids['ep-4']}/edits", json={
+        "types": [{"type": "ignored", "blocks": first["blocks"], "bumpers": []}],
+        "add": [{"start": 20, "end": 30, "as_block": False}, {"start": 40, "end": 50, "as_block": True}]})
+    worker.run_queue(env.settings)
+    job = env.db.execute("SELECT * FROM jobs WHERE kind = 'edit'").fetchone()
+    assert job["state"] == "failed" and "disk full" in job["error"]
+    types = dict(env.db.execute("SELECT id, type FROM segments").fetchall())
+    assert not any(types[b] == "ignored" for b in first["blocks"])
+    assert env.db.execute("SELECT COUNT(*) FROM edits").fetchone()[0] == 0
+    assert episode(env, "ep-4")["state"] == "ready"  # its cut from before stays
 
 
 def test_a_section_saved_as_a_block_is_found_in_other_episodes(env, tmp_path):
@@ -301,7 +289,7 @@ def test_a_section_saved_as_a_block_is_found_in_other_episodes(env, tmp_path):
     # a stretch of episode 4's own show audio: unique, so nothing else has it
     env.client.post(f"/episodes/{env.ids['ep-4']}/edits",
                     json={"add": [{"start": 20, "end": 35, "as_block": True, "type": "outro"}]})
-    background.run_queue(env.settings)
+    worker.run_queue(env.settings)
     assert env.db.execute("SELECT COUNT(*) FROM segments").fetchone()[0] == blocks + 1
     new = env.db.execute("SELECT * FROM segments ORDER BY id DESC LIMIT 1").fetchone()
     assert new["type"] == "outro" and new["type_manual"] == 1
@@ -317,13 +305,17 @@ def test_edits_that_make_no_sense_are_refused(env):
                  {"types": [{"type": "bogus", "blocks": report_of(env, "ep-3")["sections"][0]["blocks"]}]},
                  {"remove": [123]}):
         assert env.client.post(f"/episodes/{ep_id}/edits", json=body).status_code == 400, body
-    assert env.client.post(f"/episodes/{ep_id}/edits", content=b"not json",
-                           headers={"content-type": "application/json"}).status_code == 400
+    # not shaped as the timeline sends them: refused before they are looked at
+    for body in ({"add": [{"start": "soon", "end": 30}]}, {"types": [{"blocks": [1]}]}, {"remove": "all"}):
+        res = env.client.post(f"/episodes/{ep_id}/edits", json=body)
+        assert res.status_code == 422 and res.json()["error"].startswith("That request didn't make sense"), body
+    res = env.client.post(f"/episodes/{ep_id}/edits", content=b"not json", headers={"content-type": "application/json"})
+    assert res.status_code == 422 and "JSON" in res.json()["error"]
     assert episode(env, "ep-3")["state"] == "ready"
 
 
 def test_intro_marks_only_the_block_that_ends_the_section(env):
-    from podblock.web.processing import check_edits
+    from podblock.app.processing import check_edits
     processed(env)
     ep_id = env.ids["ep-3"]
     plays = env.db.execute("SELECT segment_id, start, end FROM occurrences WHERE episode_id = ? ORDER BY start",
@@ -341,7 +333,7 @@ def test_intro_marks_only_the_block_that_ends_the_section(env):
 
 def feed_of(env, user=None):
     """The token of a user's feed (the admin's by default), and a client with no login."""
-    token = publish.feed_token(env.db, user or accounts.admin_id(env.db), env.pod)
+    token = private_feeds.feed_token(env.db, user or accounts.admin_id(env.db), env.pod)
     return token, TestClient(env.client.app)
 
 
@@ -350,15 +342,17 @@ def audio_token(env):
 
 
 def test_private_feed_lists_ready_episodes_with_cut_audio(env):
-    from podblock.feed import parse_feed
     import xml.etree.ElementTree as ET
+
+    from podblock.feed import parse_feed
     env.web.pages[URL] = env.web.pages[URL].replace(
         b"<description>Notes for episode 3.</description>",
         b'<description>Notes for episode 3.</description><podcast:chapters url="https://example.com/c.json" '
         b'type="application/json+chapters"/><media:content xmlns:media="http://search.yahoo.com/mrss/" '
-        b'url="https://cdn.example.com/3.mp3" type="audio/mpeg"/><media:content xmlns:media="http://search.yahoo.com/mrss/" '
+        b'url="https://cdn.example.com/3.mp3" type="audio/mpeg"/>'
+        b'<media:content xmlns:media="http://search.yahoo.com/mrss/" '
         b'url="https://example.com/3.jpg" medium="image"/>')
-    feeds.refresh(env.db, env.pod, conditional=False)
+    following.refresh(env.db, env.pod, conditional=False)
     processed(env)
     token, anon = feed_of(env)
     res = anon.get(f"/p/{token}/feed.xml")
@@ -366,7 +360,7 @@ def test_private_feed_lists_ready_episodes_with_cut_audio(env):
     body = res.content
     assert b"ns0:" not in body and b"<itunes:block>Yes</itunes:block>" in body
     assert b"https://example.com/c.json" not in body  # the source's chapters no longer fit
-    assert f'/p/{token}/{processing.media_key("ep-3")}.chapters.json'.encode() in body  # ours do
+    assert f'/p/{token}/{media.key("ep-3")}.chapters.json'.encode() in body  # ours do
     assert b"https://cdn.example.com/" not in body  # nothing points at the uncut audio
     assert b"https://example.com/3.jpg" in body  # images stay
     assert f'/p/{token}/feed.xml'.encode() in body  # its own self link
@@ -415,7 +409,8 @@ def test_private_feed_is_hidden_behind_its_token(env):
 def audio_url(env, anon, token):
     """The newest episode's audio link in a feed, as a path."""
     from podblock.feed import parse_feed
-    return parse_feed(anon.get(f"/p/{token}/feed.xml").content, "x").episodes[0].audio_url.replace("http://testserver", "")
+    feed = parse_feed(anon.get(f"/p/{token}/feed.xml").content, "x")
+    return feed.episodes[0].audio_url.replace("http://testserver", "")
 
 
 def test_each_user_has_their_own_feed(env):
@@ -441,7 +436,7 @@ def test_each_user_has_their_own_feed(env):
 
     env.client.post(f"/podcasts/{env.pod}/filters", data={"pattern": "episode 5", "processing": "true"})
     assert guids(his) == ["ep-2"] and guids(mine) == ["ep-4", "ep-3", "ep-2"]
-    assert anon.head(f"/p/{audio_token(env)}/{processing.media_key('ep-5')}.mp3").status_code == 200
+    assert anon.head(f"/p/{audio_token(env)}/{media.key('ep-5')}.mp3").status_code == 200
 
     bob.post(f"/podcasts/{env.pod}/feed-token")  # a new address for bob leaves the admin's alone
     assert anon.get(f"/p/{his}/feed.xml").status_code == 404 and anon.get(f"/p/{mine}/feed.xml").status_code == 200
@@ -475,6 +470,7 @@ def test_feed_items_get_the_shows_artwork_and_a_build_date(env):
 def test_feeds_also_come_newest_downloaded_first(env):
     import xml.etree.ElementTree as ET
     from email.utils import parsedate_to_datetime
+
     from podblock.feed import parse_feed
     processed(env)
     for n, guid in enumerate(["ep-5", "ep-3", "ep-4", "ep-2"]):  # downloaded in this order, an hour apart
@@ -495,7 +491,7 @@ def test_feeds_also_come_newest_downloaded_first(env):
     assert f"http://testserver/p/{token}/feed.xml" in page and f"http://testserver/p/{token}/downloaded.xml" in page
     assert page.count("<svg") >= 2 and "By download date" in page
 
-    omni_token = publish.omni_token(env.db, accounts.admin_id(env.db))
+    omni_token = private_feeds.omni_token(env.db, accounts.admin_id(env.db))
     assert f"http://testserver/p/{omni_token}/downloaded.xml" in env.client.get("/").text
     feed = parse_feed(anon.get(f"/p/{omni_token}/downloaded.xml").content, "x")
     assert [e.guid for e in feed.episodes] == ["ep-2", "ep-4", "ep-3", "ep-5"]
@@ -517,10 +513,10 @@ def test_omni_feed_has_every_downloaded_episode_of_your_podcasts(env):
     env.web.pages["https://example.org/b.rss"] = rss(
         item(6).replace("Episode 6", "B one").replace("ep-6", "b-1").replace("6.mp3", "1.mp3").replace(
             "</item>", '<itunes:title> B one </itunes:title><itunes:image href=""/></item>'), title="Show B")
-    b = feeds.add_podcast(env.db, "https://example.org/b.rss").podcast_id
+    b = following.add_podcast(env.db, "https://example.org/b.rss").podcast_id
     b1 = env.db.execute("SELECT id FROM episodes WHERE guid = 'b-1'").fetchone()[0]
     jobs.enqueue(env.db, "process", [b1], None)
-    background.run_queue(env.settings)
+    worker.run_queue(env.settings)
     assert episode(env, "b-1")["state"] == "ready"
 
     home = env.client.get("/").text
@@ -559,7 +555,7 @@ def test_each_user_has_their_own_omni_feed(env):
     env.client.post("/users", data={"username": "bob", "password": "password1"})
     bob_id = env.db.execute("SELECT id FROM users WHERE username = 'bob'").fetchone()[0]
     anon = TestClient(env.client.app)
-    his = publish.omni_token(env.db, bob_id)
+    his = private_feeds.omni_token(env.db, bob_id)
     assert omni(env, anon, his).findall("item") == []  # no podcasts on his page yet
     library.subscribe(env.db, bob_id, env.pod)
     assert len(omni(env, anon, his).findall("item")) == 4
@@ -603,7 +599,7 @@ def age(env, guid, days):
 
 
 def test_downloads_are_cleaned_up_after_the_retention_period(env):
-    from podblock.web import retention
+    from podblock.app import retention
     processed(env)
     ep = episode(env, "ep-3")
     files = [Path(ep[k]) for k in ("original_path", "cut_path", "peaks_path")]
@@ -614,7 +610,8 @@ def test_downloads_are_cleaned_up_after_the_retention_period(env):
     assert retention.expire_due(env.db) == [env.ids["ep-3"]]
     ep = episode(env, "ep-3")
     assert ep["state"] == "expired" and ep["expired_at"] and not any(f.exists() for f in files)
-    assert ep["cut_path"] is None and env.db.execute("SELECT 1 FROM reports WHERE episode_id = ?", (ep["id"],)).fetchone()
+    assert ep["cut_path"] is None
+    assert env.db.execute("SELECT 1 FROM reports WHERE episode_id = ?", (ep["id"],)).fetchone()
 
     token, anon = feed_of(env)
     assert b"Episode 3" not in anon.get(f"/p/{token}/feed.xml").content
@@ -624,7 +621,7 @@ def test_downloads_are_cleaned_up_after_the_retention_period(env):
 
 
 def test_kept_episodes_and_keep_forever_podcasts_stay(env):
-    from podblock.web import library, retention
+    from podblock.app import library, retention
     processed(env)
     for guid in ("ep-2", "ep-3", "ep-4"):
         age(env, guid, 30)
@@ -656,25 +653,25 @@ def test_processing_again_doesnt_restart_the_clock(env):
     age(env, "ep-3", 3)
     before = episode(env, "ep-3")["ready_at"]
     env.client.post(f"/episodes/{env.ids['ep-3']}/process")
-    background.run_queue(env.settings)
+    worker.run_queue(env.settings)
     assert episode(env, "ep-3")["ready_at"] == before
 
 
 def test_a_cleaned_up_episode_downloads_again(env):
-    from podblock.web import retention
+    from podblock.app import retention
     processed(env)
     age(env, "ep-3", 8)
     retention.expire_due(env.db)
     fetched = len(env.cdn.fetched)
     env.client.post(f"/podcasts/{env.pod}/episodes", data={"action": "download", "ids": env.ids["ep-3"]})
-    background.run_queue(env.settings)
+    worker.run_queue(env.settings)
     ep = episode(env, "ep-3")
     assert ep["state"] == "ready" and Path(ep["cut_path"]).exists() and ep["expired_at"] is None
     assert len(env.cdn.fetched) == fetched + 1 and ep["ready_at"] > 0
 
 
 def test_archiving_everything_cleaned_up(env):
-    from podblock.web import retention
+    from podblock.app import retention
     processed(env)
     for guid in ("ep-2", "ep-3"):
         age(env, guid, 8)
@@ -696,10 +693,11 @@ def test_archiving_everything_cleaned_up(env):
 
 def test_leftover_downloads_of_failed_jobs_go_too(env):
     import os
-    from podblock.web import retention
+
+    from podblock.app import retention
     env.cdn.fail.add("https://cdn.example.com/2.mp3")  # a companion fails after the chosen one downloaded
     jobs.enqueue(env.db, "process", [env.ids["ep-1"]], None)
-    background.run_queue(env.settings)
+    worker.run_queue(env.settings)
     ep = episode(env, "ep-1")
     assert ep["state"] == "failed" and Path(ep["original_path"]).exists()
     old = Path(ep["original_path"]).stat().st_mtime - 8 * 86400
@@ -710,14 +708,15 @@ def test_leftover_downloads_of_failed_jobs_go_too(env):
 
 def test_daily_prune_spares_fingerprints_in_use(env):
     import os
-    from podblock.web import retention
+
+    from podblock.app import retention
     processed(env)
     fp = Path(episode(env, "ep-3")["fingerprint_path"])
     old = fp.stat().st_mtime - 90 * 86400
     os.utime(fp, (old, old))
-    assert retention.prune_store(env.db, env.settings) is not None
+    assert retention.prune_store(env.db) is not None
     assert fp.exists()
-    assert retention.prune_store(env.db, env.settings) is None  # once a day
+    assert retention.prune_store(env.db) is None  # once a day
 
 
 
@@ -738,7 +737,7 @@ def test_new_repeats_recut_the_shows_other_ready_episodes(env, monkeypatch):
     processed(env)
     jobs.enqueue(env.db, "process", [env.ids["ep-1"]], None)
     monkeypatch.setattr(processing, "find_common_blocks", lambda *a, **k: 1)  # as if it found one new block
-    background.run_queue(env.settings)
+    worker.run_queue(env.settings)
     recut = [r["episode_id"] for r in env.db.execute(
         "SELECT episode_id FROM jobs WHERE kind = 'process' AND state = 'done' ORDER BY id")][2:]
     assert sorted(recut) == sorted(env.ids[g] for g in ("ep-2", "ep-3", "ep-4", "ep-5"))
@@ -770,14 +769,14 @@ def test_a_processing_filter_keeps_an_episode_out_of_finding_repeats(rewind):
     env = rewind
     env.client.post(f"/podcasts/{env.pod}/filters", data={"pattern": "^episode 5$", "processing": "true"})
     jobs.enqueue(env.db, "process", [env.ids["ep-2"]], None)
-    background.run_queue(env.settings)
+    worker.run_queue(env.settings)
     assert "https://cdn.example.com/5.mp3" not in env.cdn.fetched  # never taken along to compare with
     assert episode(env, "ep-5")["state"] is None
     assert episode(env, "ep-2")["cut_duration"] == pytest.approx(2 * FILLER, abs=3)  # only the jingle and the ad
 
     known = blocks(env)
     env.client.post(f"/podcasts/{env.pod}/episodes", data={"action": "download", "ids": env.ids["ep-5"]})
-    background.run_queue(env.settings)
+    worker.run_queue(env.settings)
     ep = episode(env, "ep-5")
     assert ep["state"] == "ready" and ep["cut_duration"] == pytest.approx(2 * FILLER, abs=3)  # the jingle is cut
     assert blocks(env) == known  # and nothing was learned from it
@@ -787,15 +786,16 @@ def test_a_processing_filter_keeps_an_episode_out_of_finding_repeats(rewind):
 def test_filtering_an_episode_forgets_what_it_taught(rewind):
     env = rewind
     jobs.enqueue(env.db, "process", [env.ids["ep-2"]], None)
-    background.run_queue(env.settings)
+    worker.run_queue(env.settings)
     assert episode(env, "ep-5")["state"] == "ready"
-    assert episode(env, "ep-2")["cut_duration"] == pytest.approx(FILLER, abs=3)  # the rewind made its first half a repeat
+    # the rewind made its first half a repeat
+    assert episode(env, "ep-2")["cut_duration"] == pytest.approx(FILLER, abs=3)
 
     env.client.post(f"/podcasts/{env.pod}/filters", data={"pattern": "^episode 5$", "processing": "true"})
     job = env.db.execute("SELECT * FROM jobs WHERE kind = 'unlearn'").fetchone()
     assert json.loads(job["payload"]) == {"episodes": [env.ids["ep-5"]]}
     assert "Forget repeats found in filtered episodes" in env.client.get("/jobs").text
-    background.run_queue(env.settings)
+    worker.run_queue(env.settings)
 
     assert episode(env, "ep-2")["cut_duration"] == pytest.approx(2 * FILLER, abs=3)  # its first half is back
     assert episode(env, "ep-5")["cut_duration"] == pytest.approx(2 * FILLER, abs=3)  # still loses the jingle
@@ -823,11 +823,12 @@ def with_extras(env):
         b'<podcast:transcript url="https://example.com/3.vtt" type="text/vtt" language="en" rel="captions"/>'
         b'<podcast:transcript url="https://example.com/3.html" type="text/html"/>'
         b'<podcast:transcript url="https://example.com/missing.srt" type="application/x-subrip"/>')
-    feeds.refresh(env.db, env.pod, conditional=False)
+    following.refresh(env.db, env.pod, conditional=False)
 
 
 def test_chapters_and_transcripts_fit_the_cut_audio(env):
     import xml.etree.ElementTree as ET
+
     from podblock.cut import chapters as file_chapters
     from podblock.feed import PODCAST
     with_extras(env)
@@ -879,12 +880,12 @@ def test_episodes_cut_before_chapters_get_them_when_cut_again(env):
     env.db.commit()
     two = episode(env, "ep-2")
     token, anon = feed_of(env)
-    name = audio_url(env, anon, token).rsplit("/", 1)[1].replace(processing.media_key("ep-5"),
-                                                                   processing.media_key("ep-2"))
+    name = audio_url(env, anon, token).rsplit("/", 1)[1].replace(media.key("ep-5"),
+                                                                   media.key("ep-2"))
     served = anon.get(f"/p/{token}/{name[:-4]}.chapters.json").json()["chapters"]  # worked out from the report
     assert len(served) == 2 and served[1]["title"].endswith("repeat cut")
     jobs.enqueue(env.db, "process", [two["id"]], None, skip_ready=False)
-    background.run_queue(env.settings)
+    worker.run_queue(env.settings)
     two = episode(env, "ep-2")
     assert [c["title"] for c in json.loads(two["cut_chapters"])] == [c["title"] for c in served]
     assert len(probe_chapters(two)) == 2
@@ -925,7 +926,7 @@ def test_fetching_through_a_feed_counts_as_a_grab(env):
     anon.get(f"/p/{audio_token(env)}/{audio.rsplit('/', 1)[1]}")  # links from before then say nothing of whose
     assert len(grab_rows(env)) == 2
 
-    omni_token = publish.omni_token(env.db, admin)
+    omni_token = private_feeds.omni_token(env.db, admin)
     from podblock.feed import parse_feed
     omni_audio = parse_feed(anon.get(f"/p/{omni_token}/feed.xml").content, "x").episodes[-1].audio_url
     assert f"/p/{omni_token}/" in omni_audio

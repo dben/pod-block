@@ -2,8 +2,8 @@ import json
 
 import pytest
 
-from podblock.web import chapters, grabs
-from podblock.web.chapters import Shift, build
+from podblock.app import chapters, grabs
+from podblock.app.chapters import Shift, build
 
 KEEP = [(0, 10), (20, 30), (40, 50)]  # cuts at 10-20 and 30-40, and after 50
 
@@ -114,7 +114,7 @@ Near the end
 
 @pytest.fixture
 def db(tmp_path):
-    from podblock.web.db import connect, prepare
+    from podblock.app.db import connect, prepare
     prepare(tmp_path / "podblock.sqlite")
     conn = connect(tmp_path / "podblock.sqlite")
     conn.execute("INSERT INTO users (id, username, is_admin, created_at) VALUES (1, 'admin', 1, 0)")
