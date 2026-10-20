@@ -7,7 +7,7 @@ import sqlite3
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import RedirectResponse, Response
 
-from ...app import jobs, storage
+from ...app import storage
 from ..deps import admin_user, get_db
 from ..templating import filesize, flash, page, plural
 
@@ -23,8 +23,7 @@ def downloads_page(request: Request, sort: str = "size", user=Depends(admin_user
     items = storage.on_disk(db, sort)
     return page(request, "downloads.html", title="Downloads", nav="downloads", user=user, items=items, sort=sort,
                 sorts=SORTS, total=sum(d["total"] for d in items), originals=sum(d["original"] for d in items),
-                cuts=sum(d["cut"] for d in items), disk=storage.disk(request.app.state.settings.media_dir),
-                busy=jobs.ACTIVE)
+                cuts=sum(d["cut"] for d in items), disk=storage.disk(request.app.state.settings.media_dir))
 
 
 @router.post("/downloads/delete")

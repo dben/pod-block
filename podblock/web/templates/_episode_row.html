@@ -1,5 +1,5 @@
 {% set art = e.image_url|web_url or podcast.image_url|web_url %}
-{% set busy = e.state in ('queued', 'running') %}
+{% set busy = e.state in states.ACTIVE %}
 <li class="ep{% if not e.in_feed %} ep-gone{% endif %}{% if e.state == 'expired' %} ep-expired{% endif %}" data-id="{{ e.id }}"
     {% if busy %}hx-get="/episodes/{{ e.id }}/row" hx-trigger="every 3s" hx-swap="outerHTML"{% endif %}>
   <label class="ep-select">

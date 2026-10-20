@@ -11,7 +11,7 @@ from fastapi.responses import JSONResponse, RedirectResponse, Response
 
 from ...app import directory, filters, following, library, private_feeds, storage
 from ..deps import admin_user, current_user, feed_url, get_db, wake_worker
-from ..templating import flash, page
+from ..templating import flash, page, plural
 
 PAGE_SIZE = 50
 VIEWS = {"active": (False, False), "archived": (True, False), "downloaded": (False, True),  # (archived, downloaded)
@@ -99,7 +99,7 @@ def archive_all_expired(request: Request, user=Depends(current_user),
                         db: sqlite3.Connection = Depends(get_db)) -> Response:
     """Archive every cleaned-up episode, of every podcast, for this user."""
     changed = library.archive_expired(db, user["id"])
-    flash(request, f"Archived {len(changed):,} cleaned-up {'episode' if len(changed) == 1 else 'episodes'}.")
+    flash(request, f"Archived {plural(len(changed), 'cleaned-up episode')}.")
     return RedirectResponse("/", status_code=303)
 
 
@@ -186,7 +186,7 @@ def add_filter(request: Request, podcast_id: int, pattern: str = Form(""), scope
         wake_worker(request)  # an unlearn job may be waiting
     here = filters.matches(db, podcast_id, pattern)
     who = "everyone" if processing else "you"
-    flash(request, f"Filter added. It hides {here:,} {'episode' if here == 1 else 'episodes'} of this podcast "
+    flash(request, f"Filter added. It hides {plural(here, 'episode')} of this podcast "
                    f"from {who}{', and the ones it matches in other podcasts' if everywhere else ''}.")
     return RedirectResponse(f"/podcasts/{podcast_id}?tab=filters#tabs", status_code=303)
 
@@ -240,7 +240,7 @@ def change_episodes(request: Request, podcast_id: int, action: str = Form(...), 
             return JSONResponse({"action": action, "changed": changed})
         skipped = picked - len(changed)
         note = f" {skipped:,} already ready or queued." if skipped else ""
-        flash(request, f"Queued {len(changed):,} {'episode' if len(changed) == 1 else 'episodes'}.{note}"
+        flash(request, f"Queued {plural(len(changed), 'episode')}.{note}"
               if changed else "Those are already ready or queued.")
         back = next if next.startswith(f"/podcasts/{podcast_id}") else f"/podcasts/{podcast_id}"
         return RedirectResponse(back, status_code=303)
@@ -260,7 +260,7 @@ def change_episodes(request: Request, podcast_id: int, action: str = Form(...), 
         raise HTTPException(400, "Unknown action")
     if _wants_json(request):
         return JSONResponse({"action": action, "changed": changed})
-    flash(request, f"{verb} {len(changed):,} {'episode' if len(changed) == 1 else 'episodes'}.")
+    flash(request, f"{verb} {plural(len(changed), 'episode')}.")
     back = next if next.startswith(f"/podcasts/{podcast_id}") else f"/podcasts/{podcast_id}"
     return RedirectResponse(back, status_code=303)
 

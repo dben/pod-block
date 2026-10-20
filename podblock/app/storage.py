@@ -8,9 +8,10 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import jobs, retention
+from . import retention
 from .db import transaction
 from .library import MAX_IDS
+from .states import ACTIVE
 
 
 def size(path: str | None) -> int:
@@ -67,7 +68,7 @@ def delete(db: sqlite3.Connection, ids: list[int]) -> Deleted:
     done, now = Deleted(), time.time()
     with transaction(db):
         for ep in rows:
-            if ep["state"] in jobs.ACTIVE:
+            if ep["state"] in ACTIVE:
                 done.skipped += 1
                 continue
             done.freed += sum(size(ep[k]) for k in ("original_path", "cut_path", "peaks_path"))

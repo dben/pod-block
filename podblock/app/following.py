@@ -19,7 +19,8 @@ import requests
 from ..feed import Feed, FeedError, get_feed, parse_feed
 from . import filters, jobs, locks
 from .db import new_token, transaction
-from .text import html_to_text
+from .states import ACTIVE, sql
+from .text import html_to_text, plural
 
 log = logging.getLogger(__name__)
 
@@ -54,11 +55,11 @@ class Refreshed:
             return "No new episodes." + (" The feed has moved; following it." if self.moved_to else "")
         parts = []
         if self.added:
-            parts.append(f"{self.added} new {'episode' if self.added == 1 else 'episodes'}")
+            parts.append(plural(self.added, "new episode"))
         if self.removed:
             parts.append(f"{self.removed} no longer in the feed removed")
         if self.gone:
-            parts.append(f"{self.gone} downloaded {'one' if self.gone == 1 else 'ones'} left the feed and kept")
+            parts.append(f"{plural(self.gone, 'downloaded one')} left the feed and kept")
         if self.queued:
             parts.append(f"{self.queued} queued to download")
         return ", ".join(parts).capitalize() + "." + (" The feed has moved; following it." if self.moved_to else "")
@@ -234,7 +235,7 @@ def _known_to_detector(db: sqlite3.Connection) -> set[int]:
 def _downloaded(row: sqlite3.Row, known: set[int]) -> bool:
     """Whether an episode is ours to keep: downloaded, being downloaded, or used by the detector."""
     return bool(row["ever_downloaded"] or row["fingerprint_path"] or row["id"] in known
-                or row["state"] in jobs.ACTIVE)
+                or row["state"] in ACTIVE)
 
 
 def remove_podcast(db: sqlite3.Connection, podcast_id: int) -> int:
@@ -245,8 +246,8 @@ def remove_podcast(db: sqlite3.Connection, podcast_id: int) -> int:
     learned from it: those blocks may be ads shared with other shows.
     """
     with transaction(db):
-        for job in db.execute("""SELECT j.id FROM jobs j JOIN episodes e ON e.id = j.episode_id
-                                 WHERE e.podcast_id = ? AND j.state IN ('queued', 'running')""",
+        for job in db.execute(f"""SELECT j.id FROM jobs j JOIN episodes e ON e.id = j.episode_id
+                                 WHERE e.podcast_id = ? AND j.state IN ({sql(ACTIVE)})""",
                               (podcast_id,)).fetchall():
             jobs.cancel(db, job["id"])
         stayed = 0

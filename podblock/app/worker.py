@@ -27,6 +27,7 @@ import time
 from . import following, jobs, locks, processing, retention
 from .config import Settings
 from .db import connect, prepare
+from .states import CANCELLED, DONE, FAILED
 
 log = logging.getLogger(__name__)
 
@@ -45,15 +46,15 @@ def run_job(settings: Settings, db, job) -> str:
     try:
         RUNNERS[job["kind"]](ctx, settings)
     except jobs.Cancelled:
-        jobs.finish(db, job["id"], "cancelled")
-        return "cancelled"
+        jobs.finish(db, job["id"], CANCELLED)
+        return CANCELLED
     except Exception as e:
         if not isinstance(e, processing.ProcessError):
             log.exception("job %d (%s) failed", job["id"], job["kind"])
-        jobs.finish(db, job["id"], "failed", str(e)[:500] or type(e).__name__)
-        return "failed"
-    jobs.finish(db, job["id"], "done")
-    return "done"
+        jobs.finish(db, job["id"], FAILED, str(e)[:500] or type(e).__name__)
+        return FAILED
+    jobs.finish(db, job["id"], DONE)
+    return DONE
 
 
 def run_queue(settings: Settings) -> int:

@@ -90,7 +90,7 @@ Three layers, each importing only the ones below it
 | Layer | Where | What |
 | --- | --- | --- |
 | Web app | `podblock/web/` | `app.py` puts the FastAPI app together; `routes/` has one module per part of the site, each parsing a request, calling the app and rendering; `deps.py` is what routes ask for (the database, the user); `templating.py`, `templates/` and `static/` are the pages |
-| App | `podblock/app/` | everything else the app does, with no HTTP in it: following feeds (`following.py`), the job queue (`jobs.py`) and what the jobs do (`processing.py`), the worker process that runs them (`worker.py`), private feeds (`private_feeds.py`), users, filters, grabs, retention, and the database's tables and transactions (`db.py`) |
+| App | `podblock/app/` | everything else the app does, with no HTTP in it: following feeds (`following.py`), the job queue (`jobs.py`) and what the jobs do (`processing.py`), the states episodes and jobs move through (`states.py`), the worker process that runs them (`worker.py`), private feeds (`private_feeds.py`), users, filters, grabs, retention, and the database's tables and transactions (`db.py`) |
 | Detector | `podblock/*.py` | fingerprinting, matching, the block store, reports and cutting; the command line (`cli.py`) starts all three |
 
 The worker process imports only the app and the detector, so it runs

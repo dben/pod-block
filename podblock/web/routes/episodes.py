@@ -11,7 +11,7 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Resp
 from pydantic import BaseModel
 
 from ... import cut
-from ...app import grabs, jobs, library, processing
+from ...app import grabs, jobs, library, processing, states
 from ...app.text import show_notes
 from ..deps import current_user, get_db, wake_worker
 from ..templating import flash, page
@@ -72,7 +72,7 @@ def show_episode(request: Request, episode_id: int, user=Depends(current_user),
     data = None
     if report is not None and ep["original_path"] and Path(ep["original_path"]).exists():
         data = {**processing.timeline(db, episode_id, report), "duration": ep["duration"],
-                "editable": ep["state"] == "ready", "audio": f"/episodes/{episode_id}/original",
+                "editable": ep["state"] == states.READY, "audio": f"/episodes/{episode_id}/original",
                 "peaks": f"/episodes/{episode_id}/peaks", "save": f"/episodes/{episode_id}/edits"}
     return page(request, "episode.html", title=ep["title"], nav="podcasts", user=user, episode=ep,
                 podcast=podcast, report=report, job=job, notes=show_notes(ep["item_xml"]), timeline=data,
@@ -123,7 +123,7 @@ def episode_status(request: Request, episode_id: int, user=Depends(current_user)
                    db: sqlite3.Connection = Depends(get_db)) -> Response:
     """The status card of the episode page, polled while it is processed."""
     ep = _episode(db, user["id"], episode_id)
-    if ep["state"] in jobs.ACTIVE:
+    if ep["state"] in states.ACTIVE:
         return page(request, "_episode_status.html", episode=ep)
     return Response(headers={"HX-Refresh": "true"})  # finished: reload for the report and player
 
@@ -168,7 +168,7 @@ def process_episode(request: Request, episode_id: int, user=Depends(current_user
     ep = _episode(db, user["id"], episode_id)
     if jobs.enqueue(db, "process", [episode_id], user["id"], skip_ready=False):
         wake_worker(request)
-        flash(request, "Processing again." if ep["state"] == "ready" else "Queued.")
+        flash(request, "Processing again." if ep["state"] == states.READY else "Queued.")
     else:
         flash(request, "It's already queued.")
     return RedirectResponse(f"/episodes/{episode_id}", status_code=303)

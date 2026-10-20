@@ -1,4 +1,5 @@
-"""Text from feeds, made safe to show: show notes as plain text, and links that are only ever web links."""
+"""Text: from feeds, made safe to show (show notes as plain text, links that are only ever web links), and
+counts in words."""
 
 from __future__ import annotations
 
@@ -40,6 +41,11 @@ def html_to_text(html: str | None) -> str:
             break
     lines = (re.sub(r"[ \t\r\f\v ]+", " ", line).strip() for line in html.split("\n"))
     return "\n".join(line for line in lines if line)
+
+
+def plural(n: int, one: str, many: str | None = None) -> str:
+    """A count and what it counts: "1 episode", "2 episodes", "3 downloaded ones"."""
+    return f"{n:,} {one if n == 1 else (many or one + 's')}"
 
 
 def web_url(url: str | None) -> str | None:

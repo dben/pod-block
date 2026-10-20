@@ -18,9 +18,8 @@ import time
 from pathlib import Path
 
 from .db import transaction
+from .states import ACTIVE, CANCELLED, FAILED, FINISHED, QUEUED, READY, RETRYABLE, sql
 
-ACTIVE = ("queued", "running")
-FINISHED = ("done", "failed", "cancelled")
 PROGRESS_EVERY = 1.0  # seconds between progress writes
 
 
@@ -48,7 +47,7 @@ def enqueue(db: sqlite3.Connection, kind: str, episode_ids: list[int], user_id: 
         found = {r["id"]: r for r in rows}
         for ep_id in ids:
             r = found.get(ep_id)
-            if r is None or r["waiting"] or (skip_ready and (r["held"] or r["state"] in (*ACTIVE, "ready"))):
+            if r is None or r["waiting"] or (skip_ready and (r["held"] or r["state"] in (*ACTIVE, READY))):
                 continue
             db.execute("INSERT INTO jobs (kind, episode_id, requested_by, created_at, payload) VALUES (?, ?, ?, ?, ?)",
                        (kind, ep_id, user_id, now, payload))
@@ -66,7 +65,7 @@ def take_along(db: sqlite3.Connection, job_id: int, episode_ids: list[int], note
     with transaction(db):
         taken = [r["id"] for r in db.execute(
             f"""SELECT e.id FROM episodes e WHERE e.id IN ({', '.join('?' * len(episode_ids))})
-                AND NOT {HELD} AND NOT {WAITING} AND COALESCE(e.state, '') NOT IN ('queued', 'running')""",
+                AND NOT {HELD} AND NOT {WAITING} AND COALESCE(e.state, '') NOT IN ({sql(ACTIVE)})""",
             episode_ids)]
         taken.sort(key=episode_ids.index)
         db.executemany("UPDATE episodes SET held_by = ?, state = 'queued', state_note = ? WHERE id = ?",
@@ -123,9 +122,9 @@ def settle_episode(db: sqlite3.Connection, episode_id: int, failed: str | None =
         if row is None:
             return
         if row["cut_path"] and Path(row["cut_path"]).exists():
-            state, note = "ready", (f"Processing again failed: {failed}" if failed else None)
+            state, note = READY, (f"Processing again failed: {failed}" if failed else None)
         else:
-            state, note = ("failed", failed) if failed else (None, None)
+            state, note = (FAILED, failed) if failed else (None, None)
         db.execute("UPDATE episodes SET state = ?, state_note = ? WHERE id = ?", (state, note, episode_id))
 
 
@@ -135,8 +134,8 @@ def cancel(db: sqlite3.Connection, job_id: int) -> bool:
         job = db.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
         if job is None or job["state"] not in ACTIVE:
             return False
-        if job["state"] == "queued":
-            finish(db, job_id, "cancelled")
+        if job["state"] == QUEUED:
+            finish(db, job_id, CANCELLED)
             held = db.execute(f"SELECT {HELD} FROM episodes e WHERE e.id = ?", (job["episode_id"],)).fetchone()
             if job["episode_id"] and not (held and held[0]):  # a held one is its job's to settle
                 settle_episode(db, job["episode_id"])
@@ -147,7 +146,7 @@ def cancel(db: sqlite3.Connection, job_id: int) -> bool:
 
 def retry(db: sqlite3.Connection, job_id: int, user_id: int | None) -> bool:
     job = db.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
-    if job is None or job["state"] not in ("failed", "cancelled"):
+    if job is None or job["state"] not in RETRYABLE:
         return False
     if not job["episode_id"]:
         return bool(enqueue_task(db, job["kind"], user_id, job["payload"]))
@@ -159,12 +158,12 @@ def recover(db: sqlite3.Connection) -> int:
     with transaction(db):
         stopping = [r["id"] for r in db.execute("SELECT id FROM jobs WHERE state = 'running' AND cancel_requested = 1")]
         for job_id in stopping:
-            finish(db, job_id, "cancelled")
+            finish(db, job_id, CANCELLED)
         cur = db.execute("UPDATE jobs SET state = 'queued', step = NULL, progress = NULL WHERE state = 'running'")
         db.execute("UPDATE episodes SET held_by = NULL WHERE held_by IS NOT NULL")
         db.execute("""UPDATE episodes SET state = 'queued', state_note = NULL
                       WHERE state = 'running' AND id IN (SELECT episode_id FROM jobs WHERE state = 'queued')""")
-        for r in db.execute("SELECT id FROM episodes WHERE state IN ('queued', 'running') AND id NOT IN "
+        for r in db.execute(f"SELECT id FROM episodes WHERE state IN ({sql(ACTIVE)}) AND id NOT IN "
                             "(SELECT episode_id FROM jobs WHERE state = 'queued')").fetchall():
             settle_episode(db, r["id"])  # companions of a job that went back in the queue
     return cur.rowcount
@@ -176,7 +175,7 @@ def latest(db: sqlite3.Connection, episode_id: int) -> sqlite3.Row | None:
 
 
 def active_count(db: sqlite3.Connection) -> int:
-    return db.execute("SELECT COUNT(*) FROM jobs WHERE state IN ('queued', 'running')").fetchone()[0]
+    return db.execute(f"SELECT COUNT(*) FROM jobs WHERE state IN ({sql(ACTIVE)})").fetchone()[0]
 
 
 def listing(db: sqlite3.Connection, recent: int = 30) -> dict[str, list[sqlite3.Row]]:
@@ -185,7 +184,7 @@ def listing(db: sqlite3.Connection, recent: int = 30) -> dict[str, list[sqlite3.
     return {
         "running": db.execute(f"{base} WHERE j.state = 'running' ORDER BY j.id").fetchall(),
         "queued": db.execute(f"{base} WHERE j.state = 'queued' ORDER BY j.id").fetchall(),
-        "finished": db.execute(f"{base} WHERE j.state IN ('done', 'failed', 'cancelled') "
+        "finished": db.execute(f"{base} WHERE j.state IN ({sql(FINISHED)}) "
                                "ORDER BY j.finished_at DESC LIMIT ?", (recent,)).fetchall(),
     }
 

@@ -10,12 +10,13 @@ import time
 from . import jobs
 from .db import in_list, transaction
 from .filters import HIDDEN
+from .states import DOWNLOADED, sql
 
 # Fragments of the queries below. Those for one user name them `:user_id`, so a query using them takes
 # named parameters, and passes the user once however many fragments it uses.
 ARCHIVED = "COALESCE(ue.archived, 0)"
 KEPT_ANY = "EXISTS (SELECT 1 FROM user_episodes k WHERE k.episode_id = e.id AND k.kept = 1)"
-DOWNLOADED = "e.state IN ('queued', 'running', 'ready', 'failed', 'expired')"
+WAS_DOWNLOADED = f"e.state IN ({sql(DOWNLOADED)})"
 USER_JOIN = "LEFT JOIN user_episodes ue ON ue.episode_id = e.id AND ue.user_id = :user_id"
 GRABBED = "EXISTS (SELECT 1 FROM grabs g WHERE g.episode_id = e.id AND g.user_id = :user_id)"
 GRABS = ("(SELECT COUNT(*) FROM grabs g WHERE g.episode_id = e.id AND g.user_id = :user_id) AS grabs, "
@@ -157,7 +158,7 @@ def episodes(db: sqlite3.Connection, user_id: int, podcast_id: int, archived: bo
     else:
         where = f"e.podcast_id = :podcast_id AND {ARCHIVED} = :archived AND NOT {HIDDEN}"
         if downloaded:
-            where += f" AND {DOWNLOADED}"
+            where += f" AND {WAS_DOWNLOADED}"
         if grabbed:
             where += f" AND {GRABBED}"
     if q.strip():
@@ -180,7 +181,7 @@ def counts(db: sqlite3.Connection, user_id: int, podcast_id: int) -> dict[str, i
                    COALESCE(SUM(h = 0 AND d AND a = 0), 0) AS downloaded,
                    COALESCE(SUM(h = 0 AND x AND a = 0), 0) AS expired, COALESCE(SUM(h), 0) AS filtered,
                    COALESCE(SUM(h = 0 AND g AND a = 0), 0) AS grabbed
-            FROM (SELECT {ARCHIVED} AS a, {DOWNLOADED} AS d, e.state = 'expired' AS x, {HIDDEN} AS h, {GRABBED} AS g
+            FROM (SELECT {ARCHIVED} AS a, {WAS_DOWNLOADED} AS d, e.state = 'expired' AS x, {HIDDEN} AS h, {GRABBED} AS g
                   FROM episodes e {USER_JOIN} WHERE e.podcast_id = :podcast_id)""",
         {"user_id": user_id, "podcast_id": podcast_id}).fetchone()
     return {"active": row["everything"] - row["archived"], "archived": row["archived"],

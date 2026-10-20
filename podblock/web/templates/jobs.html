@@ -39,12 +39,12 @@
         {% if j.error %}<p class="text-error job-error">{{ j.error }}</p>{% endif %}
       </div>
       <div class="job-actions">
-        {% if j.state in ('queued', 'running') %}
+        {% if j.state in states.ACTIVE %}
         <form method="post" action="/jobs/{{ j.id }}/cancel">
           <button class="btn btn-ghost btn-sm" type="submit" {% if j.cancel_requested %}disabled{% endif %}>
             {{ 'Stopping' if j.cancel_requested else 'Cancel' }}</button>
         </form>
-        {% elif j.state in ('failed', 'cancelled') %}
+        {% elif j.state in states.RETRYABLE %}
         <form method="post" action="/jobs/{{ j.id }}/retry">
           <button class="btn btn-ghost btn-sm" type="submit">Retry</button>
         </form>

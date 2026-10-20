@@ -21,6 +21,7 @@ from ..store import Store
 from . import chapters
 from .db import set_setting, setting, transaction
 from .locks import detecting
+from .states import IN_USE, READY, sql
 
 log = logging.getLogger(__name__)
 
@@ -48,7 +49,7 @@ def clear(db: sqlite3.Connection, ep: sqlite3.Row, now: float | None = None) -> 
     gone = ("original_path = NULL, cut_path = NULL, peaks_path = NULL, cut_spec = NULL, cut_chapters = NULL, "
             "source_chapters = NULL, transcripts = NULL")  # chapters are looked for again on the next download
     with transaction(db):
-        if ep["state"] == "ready":
+        if ep["state"] == READY:
             db.execute(f"UPDATE episodes SET state = 'expired', state_note = NULL, {gone}, ready_at = NULL, "
                        "expired_at = ? WHERE id = ?", (now or time.time(), ep["id"]))
         else:
@@ -68,7 +69,7 @@ def expire_due(db: sqlite3.Connection, now: float | None = None) -> list[int]:
     # Downloads that never became ready (a failed job, companions of a cancelled one) go on the same clock.
     leftovers = db.execute(
         f"""SELECT e.id, e.original_path, p.retention_days FROM episodes e JOIN podcasts p ON p.id = e.podcast_id
-            WHERE e.original_path IS NOT NULL AND COALESCE(e.state, '') NOT IN ('ready', 'queued', 'running')
+            WHERE e.original_path IS NOT NULL AND COALESCE(e.state, '') NOT IN ({sql(IN_USE)})
               AND p.retention_days > 0 AND NOT {KEPT}""").fetchall()
     with transaction(db):
         for ep in leftovers:
@@ -90,7 +91,7 @@ def prune_store(db: sqlite3.Connection, now: float | None = None) -> dict | None
     set_setting(db, "last_prune", str(now))
     # The detector ages fingerprints by file time; ones still in use must not look old to it.
     for r in db.execute(f"""SELECT fingerprint_path FROM episodes e WHERE fingerprint_path IS NOT NULL
-                            AND (state IN ('ready', 'queued', 'running') OR {KEPT})"""):
+                            AND (state IN ({sql(IN_USE)}) OR {KEPT})"""):
         try:
             os.utime(r["fingerprint_path"], (now, now))
         except FileNotFoundError:

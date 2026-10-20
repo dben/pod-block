@@ -25,8 +25,9 @@ from ..store import BUMPER, BUMPER_IN, BUMPER_OUT, IGNORED, INTRO, OUTRO, PODCAS
 from . import chapters
 from .config import Settings
 from .db import transaction
-from .jobs import ACTIVE, Cancelled, Context, enqueue, settle_episode, take_along
+from .jobs import Cancelled, Context, enqueue, settle_episode, take_along
 from .locks import detecting
+from .states import ACTIVE, sql
 
 log = logging.getLogger(__name__)
 
@@ -53,8 +54,8 @@ def companions(db: sqlite3.Connection, ep: sqlite3.Row, count: int) -> list[sqli
     then the ones before it."""
     if count <= 0 or ep["pub_ts"] is None:
         return []
-    usable = """podcast_id = ? AND id != ? AND fingerprint_path IS NULL AND audio_url IS NOT NULL
-                AND in_feed = 1 AND skip_processing = 0 AND COALESCE(state, '') NOT IN ('queued', 'running')
+    usable = f"""podcast_id = ? AND id != ? AND fingerprint_path IS NULL AND audio_url IS NOT NULL
+                AND in_feed = 1 AND skip_processing = 0 AND COALESCE(state, '') NOT IN ({sql(ACTIVE)})
                 AND held_by IS NULL"""
     after = db.execute(f"SELECT * FROM episodes WHERE {usable} AND pub_ts > ? ORDER BY pub_ts LIMIT ?",
                        (ep["podcast_id"], ep["id"], ep["pub_ts"], count)).fetchall()
