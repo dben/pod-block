@@ -464,6 +464,38 @@ def test_feed_items_get_the_shows_artwork_and_a_build_date(env):
     assert b"<generator>pod-block</generator>" in body and b"<lastBuildDate>" in body
 
 
+def test_feeds_also_come_newest_downloaded_first(env):
+    import xml.etree.ElementTree as ET
+    from email.utils import parsedate_to_datetime
+    from podblock.feed import parse_feed
+    processed(env)
+    for n, guid in enumerate(["ep-5", "ep-3", "ep-4", "ep-2"]):  # downloaded in this order, an hour apart
+        env.db.execute("UPDATE episodes SET ready_at = ? WHERE guid = ?", (1_700_000_000 + n * 3600, guid))
+    env.db.commit()
+    token, anon = feed_of(env)
+    released = anon.get(f"/p/{token}/feed.xml").content
+    res = anon.get(f"/p/{token}/downloaded.xml")
+    assert res.status_code == 200 and res.headers["content-type"].startswith("application/rss+xml")
+    assert f"/p/{token}/downloaded.xml".encode() in res.content  # its own self link
+    feed = parse_feed(res.content, "x")
+    assert [e.guid for e in feed.episodes] == ["ep-2", "ep-4", "ep-3", "ep-5"]
+    dates = [ET.fromstring(e.xml).findtext("pubDate") for e in feed.episodes]
+    assert [parsedate_to_datetime(d).timestamp() for d in dates] == [1_700_000_000 + n * 3600 for n in (3, 2, 1, 0)]
+    assert [e.guid for e in parse_feed(released, "x").episodes] == ["ep-5", "ep-4", "ep-3", "ep-2"]  # unchanged
+
+    page = env.client.get(f"/podcasts/{env.pod}?tab=feed").text
+    assert f"http://testserver/p/{token}/feed.xml" in page and f"http://testserver/p/{token}/downloaded.xml" in page
+    assert page.count("<svg") >= 2 and "By download date" in page
+
+    omni_token = publish.omni_token(env.db, accounts.admin_id(env.db))
+    assert f"http://testserver/p/{omni_token}/downloaded.xml" in env.client.get("/").text
+    feed = parse_feed(anon.get(f"/p/{omni_token}/downloaded.xml").content, "x")
+    assert [e.guid for e in feed.episodes] == ["ep-2", "ep-4", "ep-3", "ep-5"]
+
+    env.client.post(f"/podcasts/{env.pod}/feed-token")  # a new address replaces both
+    assert anon.get(f"/p/{token}/downloaded.xml").status_code == 404
+
+
 def omni(env, anon, token):
     import xml.etree.ElementTree as ET
     res = anon.get(f"/p/{token}/feed.xml")

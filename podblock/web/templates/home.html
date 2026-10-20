@@ -24,8 +24,8 @@
 
 <div class="omni-panel" x-show="omni" {% if not request.query_params.get('omni') %}x-cloak{% endif %} x-transition.opacity>
 {% set feed_title = 'Omni feed' %}
-{% set feed_about = "One feed for any podcast app with every downloaded episode of the podcasts on your home page, " ~ omni_count|plural('episode') ~ " right now, newest first and with the repeats cut out. Episodes you've archived or filtered stay out." %}
-{% set feed_url, feed_qr, feed_id = omni_url, omni_qr, 'omni-url' %}
+{% set feed_about = "One feed for any podcast app with every downloaded episode of the podcasts on your home page, " ~ omni_count|plural('episode') ~ " right now, with the repeats cut out. Episodes you've archived or filtered stay out." %}
+{% set feed_addresses, feed_id = omni_addresses, 'omni-url' %}
 {% set feed_new = '/omni-token' %}
 {% set feed_confirm = "Make a new address for your omni feed? Apps using the old one will stop getting episodes until you add the new one." %}
 {% include "_feed_panel.html" %}

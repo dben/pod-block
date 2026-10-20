@@ -79,7 +79,7 @@
 {% if tab == 'feed' %}
 {% set feed_title = 'Private feed' %}
 {% set feed_about = "Add this address to any podcast app to get " ~ private_count|plural('episode') ~ " with the repeats cut out. It's your own: it lists the episodes anyone has downloaded, except the ones you've archived or filtered, and new ones appear when they're ready." %}
-{% set feed_url, feed_qr, feed_id = private_url, private_qr, 'private-url' %}
+{% set feed_addresses, feed_id = private_addresses, 'private-url' %}
 {% set feed_new = '/podcasts/' ~ podcast.id ~ '/feed-token' %}
 {% set feed_confirm = "Make a new address for your feed? Apps using the old one will stop getting episodes until you add the new one. Other people's feeds don't change." %}
 {% include "_feed_panel.html" %}

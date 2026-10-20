@@ -40,6 +40,15 @@ def _qr(url: str) -> str:
     return segno.make(url, error="m").svg_inline(scale=4, border=2, dark="#0d0f13", light="#ffffff")
 
 
+def _addresses(request: Request, token: str) -> list[dict]:
+    """A feed's two addresses, newest released first and newest downloaded first, each with its QR code."""
+    out = []
+    for key, label, by_download in (("released", "By release date", False), ("downloaded", "By download date", True)):
+        url = publish.feed_url(request, token, by_download)
+        out.append({"key": key, "label": label, "url": url, "qr": _qr(url)})
+    return out
+
+
 def _home(request: Request, user, db: sqlite3.Connection, view: str = "mine", status_code: int = 200,
           search: str = "", **context) -> Response:
     view = view if view in {"mine", "all"} else "mine"
@@ -54,10 +63,10 @@ def _home(request: Request, user, db: sqlite3.Connection, view: str = "mine", st
     everything = db.execute("SELECT COUNT(*) FROM podcasts WHERE followed = 1").fetchone()[0]
     mine = len(shown) if view == "mine" else sum(p["subscribed"] for p in shown)
     expired_total = sum(p["expired_count"] for p in shown if p["subscribed"])
-    omni = publish.feed_url(request, publish.omni_token(db, user["id"]))
     return page(request, "home.html", status_code=status_code, title="Podcasts", nav="podcasts", user=user,
                 podcasts=shown, view=view, mine_count=mine, all_count=everything, expired_total=expired_total,
-                omni_url=omni, omni_qr=_qr(omni), omni_count=len(publish.omni_published(db, user["id"])),
+                omni_addresses=_addresses(request, publish.omni_token(db, user["id"])),
+                omni_count=len(publish.omni_published(db, user["id"])),
                 search=search, **context)
 
 
@@ -136,8 +145,7 @@ def show_podcast(request: Request, podcast_id: int, view: str = "active", q: str
             return page(request, "_episodes.html", **context)
     publish.ensure_token(db, podcast_id)  # for the audio links
     if tab == "feed":
-        private = publish.feed_url(request, publish.feed_token(db, user["id"], podcast_id))
-        context.update(private_url=private, private_qr=_qr(private),
+        context.update(private_addresses=_addresses(request, publish.feed_token(db, user["id"], podcast_id)),
                        private_count=len(publish.published(db, podcast_id, user["id"])))
     cut_sec = db.execute("SELECT COALESCE(SUM(duration - cut_duration), 0) FROM episodes WHERE podcast_id = ? "
                          "AND cut_duration IS NOT NULL", (podcast_id,)).fetchone()[0]
