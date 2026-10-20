@@ -10,7 +10,7 @@ pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient
 
 from podblock.store import Store
-from podblock.web import feeds, library
+from podblock.web import directory, feeds, library
 from podblock.web.app import create_app
 from podblock.web.config import Settings
 from podblock.web.db import connect, prepare
@@ -604,3 +604,78 @@ def test_only_the_admin_sees_downloads(client, web):
     assert bob.get("/downloads", headers=HTML).status_code == 403
     assert bob.post("/downloads/delete", data={"ids": 1}).status_code == 403
     assert 'href="/downloads"' not in bob.get("/", headers=HTML).text
+
+
+# ---- finding podcasts by name ------------------------------------------------------
+
+def test_what_reads_as_an_address():
+    assert directory.as_address(" https://example.com/show.rss ") == "https://example.com/show.rss"
+    assert directory.as_address("feed://example.com/show.rss") == "https://example.com/show.rss"
+    assert directory.as_address("feeds.example.com/show") == "https://feeds.example.com/show"
+    for text in ("radiolab", "this american life", "mr.robot", "99.9 percent invisible", ""):
+        assert directory.as_address(text) is None
+
+
+class FakeDirectory:
+    """Stands in for Apple's search and lookup."""
+
+    def __init__(self, monkeypatch):
+        self.shows: list[dict] = []
+        self.calls: list[tuple] = []
+        monkeypatch.setattr(directory, "_get", self.get)
+
+    def get(self, url, **params):
+        self.calls.append((url, params))
+        if url == directory.LOOKUP_URL:
+            return [s for s in self.shows if str(s["collectionId"]) == params["id"]]
+        return self.shows
+
+    def show(self, n, feed_url, **kw):
+        self.shows.append({"collectionId": n, "collectionName": f"Found {n}", "artistName": "Someone",
+                           "feedUrl": feed_url, "artworkUrl600": f"https://img.example.com/{n}.jpg",
+                           "primaryGenreName": "Comedy", "trackCount": 12, **kw})
+
+
+@pytest.fixture
+def apple(monkeypatch):
+    return FakeDirectory(monkeypatch)
+
+
+def test_a_name_searches_the_directory(client, web, apple):
+    pod = add(client, web, item(1))
+    apple.show(1, URL)
+    apple.show(2, "https://example.org/b.rss")
+    apple.shows.append({"collectionId": 3, "collectionName": "No feed"})
+
+    res = client.post("/podcasts", data={"url": " found shows "})
+    assert res.status_code == 303 and res.headers["location"] == "/?search=found+shows"
+    page = client.get(res.headers["location"], headers=HTML).text
+    assert apple.calls[-1][1]["term"] == "found shows"
+    assert "2 shows for “found shows”" in page and "No feed" not in page
+    assert f'href="/podcasts/{pod}">Open<' in page  # already on your home page
+    assert 'name="url" value="https://example.org/b.rss"' in page and "Found 2" in page
+    assert 'value="found shows"' in page  # the box keeps what was typed
+
+    web.pages["https://example.org/b.rss"] = rss(item(1)).replace(b"Example Show", b"Found 2")
+    res = client.post("/podcasts", data={"url": "https://example.org/b.rss"})
+    assert res.status_code == 303 and "Found 2" in client.get("/", headers=HTML).text
+
+
+def test_a_search_with_nothing_found_or_no_answer(client, web, apple, monkeypatch):
+    assert "Nothing in Apple" in client.get("/?search=zzz", headers=HTML).text
+
+    def down(*a, **kw):
+        raise directory.DirectoryError("couldn't reach the podcast directory (ConnectionError)")
+    monkeypatch.setattr(directory, "search", down)
+    assert "Couldn&#39;t search: couldn&#39;t reach the podcast directory" in client.get("/?search=zzz", headers=HTML).text
+    assert client.post("/podcasts", data={"url": "  "}).headers["location"] == "/"
+
+
+def test_an_apple_podcasts_link_follows_its_feed(client, web, apple):
+    web.pages[URL] = rss(item(1))
+    apple.show(152249110, URL)
+    res = client.post("/podcasts", data={"url": "https://podcasts.apple.com/us/podcast/example/id152249110?i=1"})
+    assert res.status_code == 303 and res.headers["location"].startswith("/podcasts/")
+    assert apple.calls == [(directory.LOOKUP_URL, {"id": "152249110", "entity": "podcast"})]
+    res = client.post("/podcasts", data={"url": "https://podcasts.apple.com/us/podcast/gone/id999"})
+    assert "Couldn&#39;t add that feed: Apple Podcasts has no feed for that show." in res.text

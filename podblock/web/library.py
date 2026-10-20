@@ -33,6 +33,19 @@ def podcasts(db: sqlite3.Connection, user_id: int, mine: bool = True) -> list[sq
     ).fetchall()
 
 
+def by_feed(db: sqlite3.Connection, user_id: int, feed_urls: list[str]) -> dict[str, sqlite3.Row]:
+    """The followed podcasts at these feed addresses, by address; `subscribed` says which are the user's."""
+    if not feed_urls:
+        return {}
+    rows = db.execute(
+        f"""
+        SELECT p.id, p.feed_url, up.user_id IS NOT NULL AS subscribed FROM podcasts p
+        LEFT JOIN user_podcasts up ON up.podcast_id = p.id AND up.user_id = ?
+        WHERE p.followed = 1 AND p.feed_url IN ({', '.join('?' * len(feed_urls))})
+        """, (user_id, *feed_urls)).fetchall()
+    return {r["feed_url"]: r for r in rows}
+
+
 def subscribed(db: sqlite3.Connection, user_id: int, podcast_id: int) -> bool:
     return db.execute("SELECT 1 FROM user_podcasts WHERE user_id = ? AND podcast_id = ?",
                       (user_id, podcast_id)).fetchone() is not None

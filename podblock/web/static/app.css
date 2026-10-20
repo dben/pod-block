@@ -251,6 +251,10 @@ a.podcast-card:hover { background: var(--surface-2); }
   padding: 8px 14px; border-top: 1px solid var(--border); font-size: 0.85rem;
 }
 .home-tabs { width: fit-content; margin: 0 0 16px; }
+.search-results { display: grid; gap: 12px; margin-bottom: 28px; }
+.search-results-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.search-results-head h2 { font-size: 1.05rem; }
+.search-results .podcast-pick > .truncate { min-width: 0; }
 
 /* ---- menus ---------------------------------------------------------------- */
 
