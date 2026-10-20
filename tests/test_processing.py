@@ -475,7 +475,8 @@ def test_omni_feed_has_every_downloaded_episode_of_your_podcasts(env):
     from podblock.feed import ITUNES, parse_feed
     processed(env)
     env.web.pages["https://example.org/b.rss"] = rss(
-        item(6).replace("Episode 6", "B one").replace("ep-6", "b-1").replace("6.mp3", "1.mp3"), title="Show B")
+        item(6).replace("Episode 6", "B one").replace("ep-6", "b-1").replace("6.mp3", "1.mp3").replace(
+            "</item>", '<itunes:title> B one </itunes:title><itunes:image href=""/></item>'), title="Show B")
     b = feeds.add_podcast(env.db, "https://example.org/b.rss").podcast_id
     b1 = env.db.execute("SELECT id FROM episodes WHERE guid = 'b-1'").fetchone()[0]
     jobs.enqueue(env.db, "process", [b1], None)
@@ -499,6 +500,10 @@ def test_omni_feed_has_every_downloaded_episode_of_your_podcasts(env):
     feed = parse_feed(anon.get(f"/p/{token}/feed.xml").content, "x")
     assert [e.guid for e in feed.episodes] == ["b-1", "ep-5", "ep-3", "ep-2"]
     assert feed.episodes[0].title == "Show B: B one" and feed.episodes[0].audio_type == "audio/mpeg"
+    items = omni(env, anon, token).findall("item")
+    assert [i.findtext(f"{ITUNES}title") for i in items] == [
+        "Show B: B one", *(f"Example Show: Episode {n}" for n in (5, 3, 2))]  # apps show this one first
+    assert [i.find(f"{ITUNES}image").get("href") for i in items] == ["https://example.com/art.jpg"] * 4
     audio = feed.episodes[0].audio_url.replace("http://testserver", "")
     assert anon.get(audio, headers={"range": "bytes=0-9"}).status_code == 206
     assert channel.find("item").findtext(f"{ITUNES}author") == "Example Network"

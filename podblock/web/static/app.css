@@ -331,7 +331,12 @@ a.podcast-card:hover { background: var(--surface-2); }
 .section-tabs a:hover { color: var(--text); }
 .section-tabs a[aria-current="page"] { color: var(--text); border-bottom-color: var(--accent); }
 .section-tabs a[aria-current="page"] .icon { color: var(--accent); }
-.section-tabs .count { color: var(--faint); font-variant-numeric: tabular-nums; }
+.section-tabs .tab-label { display: inline-flex; align-items: center; gap: 6px; }
+.section-tabs .count {
+  display: inline-grid; place-items: center; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px;
+  background: var(--surface-3); color: var(--muted); font-size: 0.72rem; font-weight: 700; font-variant-numeric: tabular-nums;
+}
+.section-tabs a[aria-current="page"] .count { background: var(--accent-soft); color: var(--accent); }
 @media (max-width: 720px) {
   .section-tabs { gap: 0; }
   .section-tabs a {
