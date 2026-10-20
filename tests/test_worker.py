@@ -13,15 +13,15 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 import pytest
 
 pytest.importorskip("fastapi")
+pytestmark = pytest.mark.slow  # starts worker processes
 
 from fastapi.testclient import TestClient
-from test_feeds import rss
-from test_processing import audio_files  # noqa: F401  (a fixture)
 
+from fakes import rss
 from podblock.app import locks, worker
-from podblock.web.app import create_app
 from podblock.app.config import Settings
 from podblock.app.db import connect
+from podblock.web.app import create_app
 
 HOLD = """
 import sys, time
@@ -44,8 +44,8 @@ def test_a_lock_holds_across_processes(tmp_path):
     assert waited > 0.8  # it waited for the other process to let go
 
     assert (held := locks.hold(path)) is not None
-    taken = subprocess.run([sys.executable, "-c", "import sys; from pathlib import Path; from podblock.app import locks; "
-                            "print(locks.hold(Path(sys.argv[1])))", str(path)], capture_output=True, text=True)
+    code = "import sys; from pathlib import Path; from podblock.app import locks; print(locks.hold(Path(sys.argv[1])))"
+    taken = subprocess.run([sys.executable, "-c", code, str(path)], capture_output=True, text=True)
     assert taken.stdout.strip() == "None"
     os.close(held)
 

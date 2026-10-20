@@ -8,50 +8,17 @@ import numpy as np
 import pytest
 
 pytest.importorskip("fastapi")
-pytestmark = pytest.mark.skipif(not shutil.which("ffmpeg"), reason="needs ffmpeg")
+pytestmark = [pytest.mark.slow, pytest.mark.skipif(not shutil.which("ffmpeg"), reason="needs ffmpeg")]
 
 from fastapi.testclient import TestClient
-from test_feeds import FakeWeb, rss
 
-from podblock.cut import probe
-from podblock.store import Store
+from fakes import AD, FILLER, JINGLE, SR, URL, FakeWeb, fake_audio, rss
 from podblock.app import accounts, chapters, following, jobs, library, media, private_feeds, processing, worker
-from podblock.web.app import create_app
 from podblock.app.config import Settings
 from podblock.app.db import connect
-
-URL = "https://example.com/show.rss"
-SR = 16000
-JINGLE, AD, FILLER = 20.0, 18.0, 30.0
-
-
-def fake_audio(seconds, seed):
-    """Noise plus a random melody, which gives the fingerprinter plenty to grab."""
-    rng = np.random.default_rng(seed)
-    n = int(seconds * SR)
-    out = rng.normal(0, 0.02, n)
-    note = int(0.12 * SR)
-    t = np.arange(note) / SR
-    for start in range(0, n - note, note):
-        for freq in rng.uniform(150, 3500, size=3):
-            out[start:start + note] += 0.1 * np.sin(2 * np.pi * freq * t) * np.hanning(note)
-    return out
-
-
-@pytest.fixture(scope="module")
-def audio_files(tmp_path_factory):
-    """Five episodes: a shared jingle, then show, a shared ad, more show."""
-    root = tmp_path_factory.mktemp("cdn")
-    jingle, ad = fake_audio(JINGLE, 99), fake_audio(AD, 98)
-    files = {}
-    for n in range(1, 6):
-        samples = np.concatenate([jingle, fake_audio(FILLER, n), ad, fake_audio(FILLER, 100 + n)])
-        pcm = (np.clip(samples, -1, 1) * 32767).astype("<i2").tobytes()
-        path = root / f"{n}.mp3"
-        subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "s16le", "-ar", str(SR), "-ac", "1", "-i", "pipe:0",
-                        "-c:a", "libmp3lame", "-b:a", "64k", str(path)], input=pcm, check=True)
-        files[f"https://cdn.example.com/{n}.mp3"] = path
-    return files
+from podblock.cut import probe
+from podblock.store import Store
+from podblock.web.app import create_app
 
 
 def item(n):
@@ -375,13 +342,15 @@ def audio_token(env):
 
 
 def test_private_feed_lists_ready_episodes_with_cut_audio(env):
-    from podblock.feed import parse_feed
     import xml.etree.ElementTree as ET
+
+    from podblock.feed import parse_feed
     env.web.pages[URL] = env.web.pages[URL].replace(
         b"<description>Notes for episode 3.</description>",
         b'<description>Notes for episode 3.</description><podcast:chapters url="https://example.com/c.json" '
         b'type="application/json+chapters"/><media:content xmlns:media="http://search.yahoo.com/mrss/" '
-        b'url="https://cdn.example.com/3.mp3" type="audio/mpeg"/><media:content xmlns:media="http://search.yahoo.com/mrss/" '
+        b'url="https://cdn.example.com/3.mp3" type="audio/mpeg"/>'
+        b'<media:content xmlns:media="http://search.yahoo.com/mrss/" '
         b'url="https://example.com/3.jpg" medium="image"/>')
     following.refresh(env.db, env.pod, conditional=False)
     processed(env)
@@ -440,7 +409,8 @@ def test_private_feed_is_hidden_behind_its_token(env):
 def audio_url(env, anon, token):
     """The newest episode's audio link in a feed, as a path."""
     from podblock.feed import parse_feed
-    return parse_feed(anon.get(f"/p/{token}/feed.xml").content, "x").episodes[0].audio_url.replace("http://testserver", "")
+    feed = parse_feed(anon.get(f"/p/{token}/feed.xml").content, "x")
+    return feed.episodes[0].audio_url.replace("http://testserver", "")
 
 
 def test_each_user_has_their_own_feed(env):
@@ -500,6 +470,7 @@ def test_feed_items_get_the_shows_artwork_and_a_build_date(env):
 def test_feeds_also_come_newest_downloaded_first(env):
     import xml.etree.ElementTree as ET
     from email.utils import parsedate_to_datetime
+
     from podblock.feed import parse_feed
     processed(env)
     for n, guid in enumerate(["ep-5", "ep-3", "ep-4", "ep-2"]):  # downloaded in this order, an hour apart
@@ -639,7 +610,8 @@ def test_downloads_are_cleaned_up_after_the_retention_period(env):
     assert retention.expire_due(env.db) == [env.ids["ep-3"]]
     ep = episode(env, "ep-3")
     assert ep["state"] == "expired" and ep["expired_at"] and not any(f.exists() for f in files)
-    assert ep["cut_path"] is None and env.db.execute("SELECT 1 FROM reports WHERE episode_id = ?", (ep["id"],)).fetchone()
+    assert ep["cut_path"] is None
+    assert env.db.execute("SELECT 1 FROM reports WHERE episode_id = ?", (ep["id"],)).fetchone()
 
     token, anon = feed_of(env)
     assert b"Episode 3" not in anon.get(f"/p/{token}/feed.xml").content
@@ -721,6 +693,7 @@ def test_archiving_everything_cleaned_up(env):
 
 def test_leftover_downloads_of_failed_jobs_go_too(env):
     import os
+
     from podblock.app import retention
     env.cdn.fail.add("https://cdn.example.com/2.mp3")  # a companion fails after the chosen one downloaded
     jobs.enqueue(env.db, "process", [env.ids["ep-1"]], None)
@@ -735,6 +708,7 @@ def test_leftover_downloads_of_failed_jobs_go_too(env):
 
 def test_daily_prune_spares_fingerprints_in_use(env):
     import os
+
     from podblock.app import retention
     processed(env)
     fp = Path(episode(env, "ep-3")["fingerprint_path"])
@@ -814,7 +788,8 @@ def test_filtering_an_episode_forgets_what_it_taught(rewind):
     jobs.enqueue(env.db, "process", [env.ids["ep-2"]], None)
     worker.run_queue(env.settings)
     assert episode(env, "ep-5")["state"] == "ready"
-    assert episode(env, "ep-2")["cut_duration"] == pytest.approx(FILLER, abs=3)  # the rewind made its first half a repeat
+    # the rewind made its first half a repeat
+    assert episode(env, "ep-2")["cut_duration"] == pytest.approx(FILLER, abs=3)
 
     env.client.post(f"/podcasts/{env.pod}/filters", data={"pattern": "^episode 5$", "processing": "true"})
     job = env.db.execute("SELECT * FROM jobs WHERE kind = 'unlearn'").fetchone()
@@ -853,6 +828,7 @@ def with_extras(env):
 
 def test_chapters_and_transcripts_fit_the_cut_audio(env):
     import xml.etree.ElementTree as ET
+
     from podblock.cut import chapters as file_chapters
     from podblock.feed import PODCAST
     with_extras(env)

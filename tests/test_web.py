@@ -4,14 +4,13 @@ pytest.importorskip("fastapi")
 
 from fastapi.testclient import TestClient
 
-from podblock.store import Store
+from fakes import HTML
 from podblock.app import accounts
-from podblock.web.app import create_app
-from podblock.web.routes.auth import safe_next
 from podblock.app.config import Settings
 from podblock.app.db import MIGRATIONS, connect, setting
-
-HTML = {"accept": "text/html"}
+from podblock.store import Store
+from podblock.web.app import create_app
+from podblock.web.routes.auth import safe_next
 
 
 def settings(tmp_path, **kw):
@@ -111,6 +110,7 @@ def test_static_files_carry_a_version(tmp_path):
 
 def test_backup_copies_the_database(tmp_path):
     import sqlite3
+
     from podblock.cli import main
     data = tmp_path / "data"
     store = Store(data / "podblock.sqlite")
