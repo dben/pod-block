@@ -2,9 +2,7 @@
 {% block content %}
 <div class="page-head">
   <div>
-    <h1>Users</h1>
-    <p class="muted">{{ users|length|plural('user') }}. Podcasts and downloads are shared; each user picks the
-      podcasts on their home page, and has their own archived and kept episodes.</p>
+    <h1>Users <span class="badge">{{ users|length|plural('user') }}</span></h1>
   </div>
 </div>
 
@@ -24,7 +22,7 @@
     </label>
     <button class="btn btn-primary" type="submit">Add</button>
   </div>
-  <p class="hint">At least {{ min_password }} characters. They can change it on their Account page.</p>
+  <p class="hint">Password must be at least {{ min_password }} characters. Users can change it on their Account page.</p>
 </form>
 
 <ul class="user-list">

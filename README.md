@@ -136,7 +136,7 @@ Some outros are read over a music bed, and the bed rarely matches between
 episodes. pod-block can find these from the sound alone (see "Outros read
 over music").
 
-### Show only
+### Local
 
 Cut where it plays, like a repeated block, but looked for in its own show
 only. Use it for audio this show plays that other shows might play and

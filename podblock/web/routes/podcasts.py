@@ -62,7 +62,6 @@ def _home(request: Request, user, db: sqlite3.Connection, view: str = "mine", st
     return page(request, "home.html", status_code=status_code, title="Podcasts", nav="podcasts", user=user,
                 podcasts=shown, view=view, mine_count=mine, all_count=everything, expired_total=expired_total,
                 omni_addresses=_addresses(request, private_feeds.omni_token(db, user["id"])),
-                omni_count=len(private_feeds.omni_published(db, user["id"])),
                 space=storage.space(db, request.app.state.settings.media_dir), search=search, **context)
 
 
@@ -143,8 +142,7 @@ def show_podcast(request: Request, podcast_id: int, view: str = "active", q: str
         if partial:
             return page(request, "_episodes.html", **context)
     if tab == "feed":
-        context.update(private_addresses=_addresses(request, private_feeds.feed_token(db, user["id"], podcast_id)),
-                       private_count=len(private_feeds.published(db, podcast_id, user["id"])))
+        context.update(private_addresses=_addresses(request, private_feeds.feed_token(db, user["id"], podcast_id)))
     return page(request, "podcast.html", title=pod["name"], nav="podcasts", user=user,
                 cut_sec=library.cut_seconds(db, podcast_id),
                 subscribed=library.subscribed(db, user["id"], podcast_id),

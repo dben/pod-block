@@ -18,7 +18,7 @@ built, and what could come next.
 | Users | Built for a few users. The admin logs in with the API key and adds the others, with user names and passwords. Feeds, downloads, processing, blocks and podcast settings are shared, and any user can add a feed, download and edit timelines. Removing a podcast is the admin's, since it changes things for everyone. Archived, kept, filters, which podcasts are on the home page, and private feeds are per user. |
 | Downloads | By hand, apart from the comparison episodes above and podcasts set to download new episodes on their own. |
 | Short repeats | Sections under 15 seconds aren't cut (`report.MIN_SECTION_SEC`; the CLI's `--min-section`), unless they are ad breaks, intros, outros, show blocks or blocks typed by hand. Short blocks are still stored, since bumpers are short and are how breaks are found. |
-| Intro and outro marks | Marking a section Intro types only its last block, and Outro only its first: the report runs those to the ends anyway, and a section's other blocks are often ads that also play in mid-roll breaks. Keep and Show only type every block in the section. |
+| Intro and outro marks | Marking a section Intro types only its last block, and Outro only its first: the report runs those to the ends anyway, and a section's other blocks are often ads that also play in mid-roll breaks. Keep and Local type every block in the section. |
 | Grabs | A grab is a user getting an episode: through their private feed or omni feed, by playing it in its page's player (not the timeline's), or with its Download button. Hits within 10 minutes of the last one, or starting partway into the file, are the same grab, since apps stream and download at once and seek with byte ranges. A play on the page counts after the longer of 5 minutes and 5% of the episode (90% of one shorter than that). |
 | Keeping it generic | No real feed URLs, show names or audio in the repo, its history or its tests. Real feeds for trying things by hand live in the environment variable `PODBLOCK_TEST_FEEDS` (space-separated), set in the cloud environment's settings. |
 
@@ -265,7 +265,7 @@ on Kubernetes, with backups and upgrades, see `deployment/README.md`.
   play button to play from two seconds before it. "Skip cuts" jumps over
   everything that would be cut, unsaved changes included, to hear the
   joins.
-- Set a section to Intro, Outro, Show only, Keep, or back to how it was
+- Set a section to Intro, Outro, Local, Keep, or back to how it was
   found. This changes its blocks everywhere (see Decisions for which
   blocks), so other ready episodes they play in are cut again. Keep on an
   ad break also marks its bumpers as false hits, so the break stays.
