@@ -11,8 +11,10 @@
     <div class="show-cover cover-blank" aria-hidden="true">{{ (podcast.name or '?')[:1]|upper }}</div>
     {% endif %}
     <div class="show-info">
-      {% if podcast.author %}<p class="eyebrow">{{ podcast.author }}</p>{% endif %}
-      <h1>{{ podcast.name }}</h1>
+      <div class="show-title">
+        {% if podcast.author %}<p class="eyebrow">{{ podcast.author }}</p>{% endif %}
+        <h1>{{ podcast.name }}</h1>
+      </div>
       <p class="stats">
         <span class="badge">{{ (counts.active + counts.archived)|plural('episode') }}</span>
         {% for c in (podcast.categories|fromjson)[:3] %}<span class="badge">{{ c }}</span>{% endfor %}
@@ -69,7 +71,7 @@
     Private feed</a>
   <a href="/podcasts/{{ podcast.id }}?tab=filters#tabs" {% if tab == 'filters' %}aria-current="page"{% endif %}>
     <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16l-6 7.5V19l-4-2v-4.5z"/></svg>
-    Filters{% if filters %} <span class="count">{{ filters|length }}</span>{% endif %}</a>
+    <span class="tab-label">Filters{% if filters %} <span class="count">{{ filters|length }}</span>{% endif %}</span></a>
   <a href="/podcasts/{{ podcast.id }}?tab=settings#tabs" {% if tab == 'settings' %}aria-current="page"{% endif %}>
     <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 2v3m0 14v3M4.9 4.9 7 7m10 10 2.1 2.1M2 12h3m14 0h3M4.9 19.1 7 17m10-10 2.1-2.1"/></svg>
     Settings</a>

@@ -16,13 +16,15 @@ changes:
 - `itunes:new-feed-url` goes (it would send apps back to the source), the
   `atom:link rel="self"` points here, and `itunes:block` keeps the feed out
   of directories;
-- an item with no artwork of its own gets the show's, and the channel says
-  what made it (`generator`) and when it last changed (`lastBuildDate`).
+- an item with no artwork of its own at a web address gets the show's, and
+  the channel says what made it (`generator`) and when it last changed
+  (`lastBuildDate`).
 
 Each user also has an omni feed (`users.omni_token`, at the same kind of
 address): every downloaded episode of the podcasts on their home page, newest
 first, under pod-block's own channel. Its items are built as above, with the
-show's name before each title and the show as each item's author.
+show's name before each title (`itunes:title` too, which apps show first) and
+the show as each item's author.
 """
 
 from __future__ import annotations
@@ -234,8 +236,9 @@ def _item(ep: sqlite3.Row, audio_url: str, art: str | None = None) -> ET.Element
     enclosure.attrib.clear()
     enclosure.attrib.update(url=audio_url, length=str(ep["cut_bytes"] or 0), type=ep["cut_type"] or "audio/mpeg")
     _set(item, f"{ITUNES}duration", _hms(ep["cut_duration"]))
-    if item.find(f"{ITUNES}image") is None and (image := _web(ep["image_url"]) or _web(art)):
-        ET.SubElement(item, f"{ITUNES}image", href=image)
+    own = item.find(f"{ITUNES}image")
+    if (own is None or not _web(own.get("href"))) and (image := _web(ep["image_url"]) or _web(art)):
+        _set(item, f"{ITUNES}image", "", {"href": image})
     return item
 
 
@@ -312,7 +315,10 @@ def build_omni(db: sqlite3.Connection, user_id: int, base: str, token: str) -> b
         _register(ep["item_xml"])
         item = _item(ep, _audio_url(base, ep["public_token"], ep), ep["podcast_image"])
         show = ep["podcast_name"] or "Untitled"
-        _set(item, "title", f"{show}: {item.findtext('title') or ep['title'] or 'Untitled'}")
+        title = (item.findtext("title") or "").strip() or ep["title"] or "Untitled"
+        _set(item, "title", f"{show}: {title}")
+        own = (item.findtext(f"{ITUNES}title") or "").strip() or title
+        _set(item, f"{ITUNES}title", f"{show}: {own}")  # apps show it before <title>
         _set(item, f"{ITUNES}author", ep["podcast_author"] or show)
         _set(item, "guid", ep["guid"], {"isPermaLink": "false"})  # unique across shows, as the store keeps them
         channel.append(item)

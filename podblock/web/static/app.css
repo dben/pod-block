@@ -300,7 +300,8 @@ a.podcast-card:hover { background: var(--surface-2); }
 }
 .show-info { display: grid; gap: 10px; min-width: 0; }
 .eyebrow { color: var(--accent); font-weight: 600; font-size: 0.9rem; }
-.show-info h1 { font-size: 2rem; }
+.show-title { display: grid; gap: 4px; }
+.show-info h1 { font-size: 2rem; overflow-wrap: anywhere; }
 .show-about p {
   color: #c9cfda; white-space: pre-line; max-width: 72ch;
   display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
@@ -313,8 +314,11 @@ a.podcast-card:hover { background: var(--surface-2); }
 
 @media (max-width: 720px) {
   .show-head { padding: 18px; margin-top: -4px; }
-  .show-head-inner { flex-direction: column; gap: 16px; }
-  .show-cover { width: 112px; height: 112px; font-size: 2rem; }
+  /* the cover and title side by side, everything else full width below */
+  .show-head-inner { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 12px 16px; }
+  .show-info { display: contents; }
+  .show-info > :not(.show-title) { grid-column: 1 / -1; }
+  .show-cover { width: 96px; height: 96px; border-radius: 12px; font-size: 2rem; }
   .show-info h1 { font-size: 1.45rem; }
 }
 
@@ -331,7 +335,12 @@ a.podcast-card:hover { background: var(--surface-2); }
 .section-tabs a:hover { color: var(--text); }
 .section-tabs a[aria-current="page"] { color: var(--text); border-bottom-color: var(--accent); }
 .section-tabs a[aria-current="page"] .icon { color: var(--accent); }
-.section-tabs .count { color: var(--faint); font-variant-numeric: tabular-nums; }
+.section-tabs .tab-label { display: inline-flex; align-items: center; gap: 6px; }
+.section-tabs .count {
+  display: inline-grid; place-items: center; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px;
+  background: var(--surface-3); color: var(--muted); font-size: 0.72rem; font-weight: 700; font-variant-numeric: tabular-nums;
+}
+.section-tabs a[aria-current="page"] .count { background: var(--accent-soft); color: var(--accent); }
 @media (max-width: 720px) {
   .section-tabs { gap: 0; }
   .section-tabs a {

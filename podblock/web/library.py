@@ -15,10 +15,12 @@ MAX_IDS = 5000  # per bulk action
 
 
 def podcasts(db: sqlite3.Connection, user_id: int, mine: bool = True) -> list[sqlite3.Row]:
-    """The podcasts a user picked for their home page, or every followed one; `subscribed` says which are theirs."""
+    """The podcasts a user picked for their home page, or every followed one; `subscribed` says which are theirs.
+    `episode_count` is how many are in the user's list: not archived by them, nor hidden by a filter."""
     return db.execute(
         f"""
-        SELECT p.*, up.user_id IS NOT NULL AS subscribed, COUNT(e.id) AS episode_count, MAX(e.pub_ts) AS latest_ts,
+        SELECT p.*, up.user_id IS NOT NULL AS subscribed, MAX(e.pub_ts) AS latest_ts,
+               COALESCE(SUM(COALESCE(ue.archived, 0) = 0), 0) AS episode_count,
                COALESCE(SUM(e.state = 'ready'), 0) AS ready_count,
                COALESCE(SUM(e.state = 'expired' AND COALESCE(ue.archived, 0) = 0), 0) AS expired_count,
                COALESCE(SUM(CASE WHEN e.cut_duration IS NOT NULL THEN e.duration - e.cut_duration END), 0) AS cut_sec

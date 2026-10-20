@@ -315,6 +315,7 @@ def test_archive_this_and_older(client, web):
     page = client.get(f"/podcasts/{pod}", headers=HTML).text
     assert "Archived 3 episodes." in page
     assert "Episode 5" in page and "Episode 4" in page and "Episode 3" not in page
+    assert ">2 episodes</span>" in client.get("/", headers=HTML).text  # the home page counts what's left
 
 
 def test_archiving_is_per_user(client, web):
