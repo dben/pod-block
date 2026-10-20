@@ -15,7 +15,7 @@ from test_feeds import FakeWeb, rss
 
 from podblock.cut import probe
 from podblock.store import Store
-from podblock.app import accounts, chapters, feeds, jobs, library, media, private_feeds, processing, worker
+from podblock.app import accounts, chapters, following, jobs, library, media, private_feeds, processing, worker
 from podblock.web.app import create_app
 from podblock.app.config import Settings
 from podblock.app.db import connect
@@ -95,7 +95,7 @@ def env(tmp_path, monkeypatch, audio_files):
     client = TestClient(app, follow_redirects=False)
     client.post("/login", data={"key": "k"})
     db = connect(settings.db_path)
-    pod = feeds.add_podcast(db, URL).podcast_id
+    pod = following.add_podcast(db, URL).podcast_id
     library.subscribe(db, accounts.admin_id(db), pod)
     ids = {r["guid"]: r["id"] for r in db.execute("SELECT id, guid FROM episodes")}
     yield type("Env", (), dict(settings=settings, client=client, db=db, pod=pod, ids=ids, cdn=cdn, web=web,
@@ -204,7 +204,7 @@ def test_jobs_cut_short_by_a_restart_run_again(env):
 def test_refresh_keeps_queued_episodes_that_left_the_feed(env):
     jobs.enqueue(env.db, "process", [env.ids["ep-1"]], None)
     env.web.pages[URL] = rss(*(item(n) for n in range(2, 6)))
-    assert feeds.refresh(env.db, env.pod).gone == 1
+    assert following.refresh(env.db, env.pod).gone == 1
     assert episode(env, "ep-1") is not None
 
 
@@ -383,7 +383,7 @@ def test_private_feed_lists_ready_episodes_with_cut_audio(env):
         b'type="application/json+chapters"/><media:content xmlns:media="http://search.yahoo.com/mrss/" '
         b'url="https://cdn.example.com/3.mp3" type="audio/mpeg"/><media:content xmlns:media="http://search.yahoo.com/mrss/" '
         b'url="https://example.com/3.jpg" medium="image"/>')
-    feeds.refresh(env.db, env.pod, conditional=False)
+    following.refresh(env.db, env.pod, conditional=False)
     processed(env)
     token, anon = feed_of(env)
     res = anon.get(f"/p/{token}/feed.xml")
@@ -542,7 +542,7 @@ def test_omni_feed_has_every_downloaded_episode_of_your_podcasts(env):
     env.web.pages["https://example.org/b.rss"] = rss(
         item(6).replace("Episode 6", "B one").replace("ep-6", "b-1").replace("6.mp3", "1.mp3").replace(
             "</item>", '<itunes:title> B one </itunes:title><itunes:image href=""/></item>'), title="Show B")
-    b = feeds.add_podcast(env.db, "https://example.org/b.rss").podcast_id
+    b = following.add_podcast(env.db, "https://example.org/b.rss").podcast_id
     b1 = env.db.execute("SELECT id FROM episodes WHERE guid = 'b-1'").fetchone()[0]
     jobs.enqueue(env.db, "process", [b1], None)
     worker.run_queue(env.settings)
@@ -848,7 +848,7 @@ def with_extras(env):
         b'<podcast:transcript url="https://example.com/3.vtt" type="text/vtt" language="en" rel="captions"/>'
         b'<podcast:transcript url="https://example.com/3.html" type="text/html"/>'
         b'<podcast:transcript url="https://example.com/missing.srt" type="application/x-subrip"/>')
-    feeds.refresh(env.db, env.pod, conditional=False)
+    following.refresh(env.db, env.pod, conditional=False)
 
 
 def test_chapters_and_transcripts_fit_the_cut_audio(env):

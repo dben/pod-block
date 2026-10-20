@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import re
+import xml.etree.ElementTree as ET
 from html.parser import HTMLParser
+
+from ..feed import CONTENT, ITUNES
 
 
 class _Text(HTMLParser):
@@ -43,3 +46,18 @@ def web_url(url: str | None) -> str | None:
     """A link from a feed, if it is an http(s) one; anything else (javascript:, data:, a file) is dropped."""
     url = (url or "").strip()
     return url if url.split(":", 1)[0].lower() in {"http", "https"} else None
+
+
+def show_notes(item_xml: str | None) -> str:
+    """An episode's full show notes as plain text, from the <item> we kept."""
+    if not item_xml:
+        return ""
+    try:
+        item = ET.fromstring(item_xml)
+    except ET.ParseError:
+        return ""
+    for path in (f"{CONTENT}encoded", "description", f"{ITUNES}summary"):
+        text = item.findtext(path)
+        if text and text.strip():
+            return html_to_text(text)
+    return ""

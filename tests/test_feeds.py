@@ -10,7 +10,7 @@ pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient
 
 from podblock.store import Store
-from podblock.app import directory, feeds, filters, library
+from podblock.app import directory, filters, following, library, text
 from podblock.web.app import create_app
 from podblock.app.config import Settings
 from podblock.app.db import connect, prepare
@@ -62,12 +62,12 @@ class FakeWeb:
         self.pages: dict[str, bytes] = {}
         self.requests: list[tuple] = []
         self.moves: dict[str, str] = {}  # url -> where a permanent redirect ends up
-        monkeypatch.setattr(feeds, "get_feed", self.get)
+        monkeypatch.setattr(following, "get_feed", self.get)
 
     def get(self, url, etag=None, last_modified=None):
         self.requests.append((url, etag))
         if url not in self.pages:
-            raise feeds.RefreshError("the server answered 404")
+            raise following.RefreshError("the server answered 404")
         body = self.pages[url]
         tag = f'"{hash(body)}"'
         return Fetched(None if etag == tag else body, tag, None, self.moves.get(url))
@@ -113,17 +113,17 @@ def test_feed_keeps_show_and_episode_metadata():
 
 
 def test_show_notes_become_plain_text():
-    assert feeds.html_to_text("<p>One &amp; <b>two</b></p><p>Three</p>") == "One & two\nThree"
-    assert feeds.html_to_text("&lt;p&gt;Escaped twice&lt;/p&gt;") == "Escaped twice"
-    assert feeds.html_to_text("<script>alert(1)</script>") == "alert(1)"
-    assert len(feeds.summary("word " * 500)) <= feeds.SUMMARY_CHARS + 1
+    assert text.html_to_text("<p>One &amp; <b>two</b></p><p>Three</p>") == "One & two\nThree"
+    assert text.html_to_text("&lt;p&gt;Escaped twice&lt;/p&gt;") == "Escaped twice"
+    assert text.html_to_text("<script>alert(1)</script>") == "alert(1)"
+    assert len(following.summary("word " * 500)) <= following.SUMMARY_CHARS + 1
 
 
 # ---- refreshing ---------------------------------------------------------------
 
 def test_adding_a_feed_stores_it_all(db, web):
     web.pages[URL] = rss(item(1), item(2), item(3))
-    result = feeds.add_podcast(db, URL)
+    result = following.add_podcast(db, URL)
     assert result.added == 3
     pod = db.execute("SELECT * FROM podcasts WHERE id = ?", (result.podcast_id,)).fetchone()
     assert pod["name"] == "Example Show" and json.loads(pod["categories"]) == ["Comedy", "Improv"]
@@ -135,67 +135,67 @@ def test_adding_a_feed_stores_it_all(db, web):
 
 def test_bad_feeds_are_refused(db, web):
     for url in ("ftp://example.com/x", "not a url", ""):
-        with pytest.raises(feeds.RefreshError):
-            feeds.add_podcast(db, url)
+        with pytest.raises(following.RefreshError):
+            following.add_podcast(db, url)
     web.pages[URL] = b"<html><body>not a feed</body></html>"
-    with pytest.raises(feeds.RefreshError, match="RSS"):
-        feeds.add_podcast(db, URL)
-    with pytest.raises(feeds.RefreshError, match="404"):
-        feeds.add_podcast(db, "https://example.com/missing.rss")
+    with pytest.raises(following.RefreshError, match="RSS"):
+        following.add_podcast(db, URL)
+    with pytest.raises(following.RefreshError, match="404"):
+        following.add_podcast(db, "https://example.com/missing.rss")
     assert db.execute("SELECT COUNT(*) FROM podcasts").fetchone()[0] == 0
 
 
 def test_episodes_that_leave_the_feed_go_unless_downloaded(db, web):
     web.pages[URL] = rss(item(1), item(2), item(3))
-    pod = feeds.add_podcast(db, URL).podcast_id
+    pod = following.add_podcast(db, URL).podcast_id
     db.execute("UPDATE episodes SET ever_downloaded = 1 WHERE guid = 'ep-1'")
     db.commit()
 
     web.pages[URL] = rss(item(3), item(4))
-    result = feeds.refresh(db, pod)
+    result = following.refresh(db, pod)
     assert (result.added, result.removed, result.gone) == (1, 1, 1)
     rows = {r["guid"]: r["in_feed"] for r in db.execute("SELECT guid, in_feed FROM episodes")}
     assert rows == {"ep-1": 0, "ep-3": 1, "ep-4": 1}
 
     web.pages[URL] = rss(item(1), item(3), item(4))  # back in the feed
-    feeds.refresh(db, pod)
+    following.refresh(db, pod)
     assert db.execute("SELECT in_feed FROM episodes WHERE guid = 'ep-1'").fetchone()[0] == 1
 
 
 def test_episodes_the_detector_knows_count_as_downloaded(db, web):
     web.pages[URL] = rss(item(1), item(2))
-    pod = feeds.add_podcast(db, URL).podcast_id
+    pod = following.add_podcast(db, URL).podcast_id
     ep = db.execute("SELECT id FROM episodes WHERE guid = 'ep-1'").fetchone()[0]
     db.execute("INSERT INTO reports VALUES (?, 0, '{}')", (ep,))
     db.commit()
     web.pages[URL] = rss(item(2))
-    assert feeds.refresh(db, pod).gone == 1
+    assert following.refresh(db, pod).gone == 1
 
 
 def test_an_empty_feed_deletes_nothing(db, web):
     web.pages[URL] = rss(item(1), item(2))
-    pod = feeds.add_podcast(db, URL).podcast_id
+    pod = following.add_podcast(db, URL).podcast_id
     web.pages[URL] = rss()
-    assert feeds.refresh(db, pod).removed == 0
+    assert following.refresh(db, pod).removed == 0
     assert len(episode_titles(db, pod)) == 2
 
 
 def test_unchanged_feeds_cost_one_short_request(db, web):
     web.pages[URL] = rss(item(1))
-    pod = feeds.add_podcast(db, URL).podcast_id
-    assert feeds.refresh(db, pod).unchanged
+    pod = following.add_podcast(db, URL).podcast_id
+    assert following.refresh(db, pod).unchanged
     assert web.requests[-1][1] is not None  # sent the ETag
 
 
 def test_failed_refresh_is_kept_on_the_podcast(db, web):
     web.pages[URL] = rss(item(1))
-    pod = feeds.add_podcast(db, URL).podcast_id
+    pod = following.add_podcast(db, URL).podcast_id
     del web.pages[URL]
-    with pytest.raises(feeds.RefreshError):
-        feeds.refresh(db, pod, conditional=False)
+    with pytest.raises(following.RefreshError):
+        following.refresh(db, pod, conditional=False)
     assert "404" in db.execute("SELECT last_error FROM podcasts").fetchone()[0]
     web.pages[URL] = rss(item(1))
-    feeds.refresh(db, pod, conditional=False)
+    following.refresh(db, pod, conditional=False)
     assert db.execute("SELECT last_error FROM podcasts").fetchone()[0] is None
 
 
@@ -203,30 +203,30 @@ def test_another_shows_guid_does_not_steal_episodes(db, web):
     other = "https://example.org/other.rss"
     web.pages[URL] = rss(item(1))
     web.pages[other] = rss(item(1, guid="ep-1"), title="Other Show")
-    a = feeds.add_podcast(db, URL).podcast_id
-    b = feeds.add_podcast(db, other).podcast_id
+    a = following.add_podcast(db, URL).podcast_id
+    b = following.add_podcast(db, other).podcast_id
     assert episode_titles(db, a) == ["Episode 1"] and episode_titles(db, b) == ["Episode 1"]
-    feeds.refresh(db, a, conditional=False)
-    feeds.refresh(db, b, conditional=False)
+    following.refresh(db, a, conditional=False)
+    following.refresh(db, b, conditional=False)
     assert db.execute("SELECT COUNT(*) FROM episodes").fetchone()[0] == 2
 
 
 def test_refresh_due_skips_fresh_and_removed_feeds(db, web):
     web.pages[URL] = rss(item(1))
-    pod = feeds.add_podcast(db, URL).podcast_id
-    assert feeds.refresh_due(db) == []
+    pod = following.add_podcast(db, URL).podcast_id
+    assert following.refresh_due(db) == []
     db.execute("UPDATE podcasts SET last_refreshed_at = 0")
     db.commit()
-    assert feeds.refresh_due(db) == [pod]
-    feeds.remove_podcast(db, pod)
+    assert following.refresh_due(db) == [pod]
+    following.remove_podcast(db, pod)
     db.execute("UPDATE podcasts SET last_refreshed_at = 0")
     db.commit()
-    assert feeds.refresh_due(db) == []
+    assert following.refresh_due(db) == []
 
 
 def test_the_detector_still_opens_a_store_the_app_has_filled(db, web, tmp_path):
     web.pages[URL] = rss(item(1), item(2))
-    feeds.add_podcast(db, URL)
+    following.add_podcast(db, URL)
     store = Store(tmp_path / "podblock.sqlite")
     assert store.fingerprinted_episodes() == []
     assert store.podcast_id("Example Show", URL) == 1
@@ -235,9 +235,9 @@ def test_the_detector_still_opens_a_store_the_app_has_filled(db, web, tmp_path):
 
 def test_a_download_queues_only_the_podcasts_own_episodes(db, web):
     web.pages[URL] = rss(item(1), item(2))
-    pod = feeds.add_podcast(db, URL).podcast_id
+    pod = following.add_podcast(db, URL).podcast_id
     web.pages["https://example.org/b.rss"] = rss(item(7, guid="b-7"), title="B")
-    feeds.add_podcast(db, "https://example.org/b.rss")
+    following.add_podcast(db, "https://example.org/b.rss")
     one, two, seven = (db.execute("SELECT id FROM episodes WHERE guid = ?", (g,)).fetchone()[0]
                        for g in ("ep-1", "ep-2", "b-7"))
     assert library.download(db, None, pod, [one, two, seven, one]) == ([one, two], 2)
@@ -251,7 +251,7 @@ def test_a_download_queues_only_the_podcasts_own_episodes(db, web):
 
 def test_podcast_settings_are_checked_and_say_when_the_gap_changed(db, web):
     web.pages[URL] = rss(item(1))
-    pod = feeds.add_podcast(db, URL).podcast_id
+    pod = following.add_podcast(db, URL).podcast_id
     with pytest.raises(library.SettingsError):
         library.save_settings(db, pod, 9999, 60, 4, False, False)
     assert not library.save_settings(db, pod, 3, 60, 4, True, True)  # 4 seconds is the gap already
@@ -406,37 +406,37 @@ def test_feed_links_that_are_not_web_links_are_dropped(client, web):
 
 def test_feeds_that_move_are_followed(db, web):
     web.pages[URL] = rss(item(1))
-    pod = feeds.add_podcast(db, URL).podcast_id
+    pod = following.add_podcast(db, URL).podcast_id
     new = "https://example.org/moved.rss"
     web.moves[URL] = new  # a permanent redirect
-    assert feeds.refresh(db, pod, conditional=False).moved_to == new
+    assert following.refresh(db, pod, conditional=False).moved_to == new
     assert db.execute("SELECT feed_url FROM podcasts").fetchone()[0] == new
 
     newer = "https://example.net/again.rss"
     web.pages[new] = rss(item(1), extra_channel=f"<itunes:new-feed-url>{newer}</itunes:new-feed-url>")
-    feeds.refresh(db, pod, conditional=False)
+    following.refresh(db, pod, conditional=False)
     assert db.execute("SELECT feed_url FROM podcasts").fetchone()[0] == newer
 
     other = "https://example.com/other.rss"
     web.pages[other] = rss(item(9, guid="o-9"), title="Other")
-    feeds.add_podcast(db, other)
+    following.add_podcast(db, other)
     web.pages[newer] = rss(item(1), extra_channel=f"<itunes:new-feed-url>{other}</itunes:new-feed-url>")
-    assert feeds.refresh(db, pod, conditional=False).moved_to is None  # that address is another podcast's
+    assert following.refresh(db, pod, conditional=False).moved_to is None  # that address is another podcast's
     assert db.execute("SELECT feed_url FROM podcasts WHERE id = ?", (pod,)).fetchone()[0] == newer
 
 
 def test_new_episodes_download_on_their_own_when_asked(db, web):
     web.pages[URL] = rss(*(item(n) for n in range(1, 4)))
-    pod = feeds.add_podcast(db, URL).podcast_id
+    pod = following.add_podcast(db, URL).podcast_id
     assert db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0] == 0  # adding a feed downloads nothing
     web.pages[URL] = rss(*(item(n) for n in range(1, 5)))
-    assert feeds.refresh(db, pod).queued == 0  # off by default
+    assert following.refresh(db, pod).queued == 0  # off by default
 
     db.execute("UPDATE podcasts SET auto_download = 1")
     db.commit()
     web.pages[URL] = rss(*(item(n) for n in range(1, 13)))
-    result = feeds.refresh(db, pod)
-    assert result.added == 8 and result.queued == feeds.AUTO_DOWNLOAD_MAX
+    result = following.refresh(db, pod)
+    assert result.added == 8 and result.queued == following.AUTO_DOWNLOAD_MAX
     queued = [r[0] for r in db.execute("SELECT e.guid FROM jobs j JOIN episodes e ON e.id = j.episode_id")]
     assert queued == [f"ep-{n}" for n in range(12, 7, -1)]  # the newest
     assert "5 queued to download" in result.describe()
@@ -567,7 +567,7 @@ def test_a_processing_filter_hides_episodes_from_everyone_and_skips_them(client,
     db.execute("UPDATE podcasts SET auto_download = 1")
     db.commit()
     web.pages[URL] = rss(*(item(n) for n in range(1, 6)))
-    assert feeds.refresh(db, pod).queued == 1
+    assert following.refresh(db, pod).queued == 1
     assert marked() == ["ep-2", "ep-4"]
     assert [r[0] for r in db.execute("SELECT e.guid FROM jobs j JOIN episodes e ON e.id = j.episode_id")] == ["ep-5"]
 
@@ -645,7 +645,7 @@ def test_only_the_admin_sees_downloads(client, web):
 def test_what_reads_as_an_address():
     assert directory.as_address(" https://example.com/show.rss ") == "https://example.com/show.rss"
     assert directory.as_address("feed://example.com/show.rss") == "https://example.com/show.rss"
-    assert directory.as_address("feeds.example.com/show") == "https://feeds.example.com/show"
+    assert directory.as_address("following.example.com/show") == "https://following.example.com/show"
     for text in ("radiolab", "this american life", "mr.robot", "99.9 percent invisible", ""):
         assert directory.as_address(text) is None
 

@@ -12,12 +12,11 @@ import logging
 import re
 import sqlite3
 import time
-import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 
 import requests
 
-from ..feed import CONTENT, ITUNES, Feed, FeedError, get_feed, parse_feed
+from ..feed import Feed, FeedError, get_feed, parse_feed
 from . import filters, jobs, locks
 from .db import new_token, transaction
 from .text import html_to_text
@@ -279,18 +278,3 @@ def refresh_due(db: sqlite3.Connection, now: float | None = None) -> list[int]:
         except RefreshError as e:
             log.warning("refreshing podcast %d failed: %s", podcast_id, e)
     return due
-
-
-def show_notes(item_xml: str | None) -> str:
-    """An episode's full show notes as plain text, from the <item> we kept."""
-    if not item_xml:
-        return ""
-    try:
-        item = ET.fromstring(item_xml)
-    except ET.ParseError:
-        return ""
-    for path in (f"{CONTENT}encoded", "description", f"{ITUNES}summary"):
-        text = item.findtext(path)
-        if text and text.strip():
-            return html_to_text(text)
-    return ""

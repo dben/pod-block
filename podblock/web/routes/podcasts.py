@@ -9,7 +9,7 @@ import segno
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 
-from ...app import directory, feeds, filters, library, private_feeds, storage
+from ...app import directory, filters, following, library, private_feeds, storage
 from ..deps import admin_user, current_user, feed_url, get_db, wake_worker
 from ..templating import flash, page
 
@@ -109,8 +109,8 @@ def add_podcast(request: Request, url: str = Form(""), user=Depends(current_user
     if address is None:
         return RedirectResponse(f"/?{urlencode({'search': url.strip()})}" if url.strip() else "/", status_code=303)
     try:
-        result = feeds.add_podcast(db, directory.apple_feed(address) or address)
-    except (feeds.RefreshError, directory.DirectoryError) as e:
+        result = following.add_podcast(db, directory.apple_feed(address) or address)
+    except (following.RefreshError, directory.DirectoryError) as e:
         return _home(request, user, db, status_code=422, url=url, error=f"Couldn't add that feed: {e}.")
     library.subscribe(db, user["id"], result.podcast_id)
     flash(request, f"Added, with {result.added:,} episodes." if result.added else "Added.")
@@ -217,8 +217,8 @@ def refresh_podcast(request: Request, podcast_id: int, user=Depends(current_user
                     db: sqlite3.Connection = Depends(get_db)) -> Response:
     _podcast_or_404(db, podcast_id)
     try:
-        flash(request, feeds.refresh(db, podcast_id, conditional=False).describe())
-    except feeds.RefreshError as e:
+        flash(request, following.refresh(db, podcast_id, conditional=False).describe())
+    except following.RefreshError as e:
         flash(request, f"Refresh failed: {e}.", "error")
     return RedirectResponse(f"/podcasts/{podcast_id}", status_code=303)
 
@@ -267,7 +267,7 @@ def change_episodes(request: Request, podcast_id: int, action: str = Form(...), 
 def remove_podcast(request: Request, podcast_id: int, user=Depends(admin_user),
                    db: sqlite3.Connection = Depends(get_db)) -> Response:
     pod = _podcast_or_404(db, podcast_id)
-    stayed = feeds.remove_podcast(db, podcast_id)
+    stayed = following.remove_podcast(db, podcast_id)
     note = f" Its {stayed:,} downloaded episodes stay." if stayed else ""
     flash(request, f"Removed {pod['name']}.{note}")
     return RedirectResponse("/", status_code=303)

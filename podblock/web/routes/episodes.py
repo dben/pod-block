@@ -12,7 +12,7 @@ from pydantic import BaseModel
 
 from ... import cut
 from ...app import grabs, jobs, library, processing
-from ...app.feeds import show_notes
+from ...app.text import show_notes
 from ..deps import current_user, get_db, wake_worker
 from ..templating import flash, page
 

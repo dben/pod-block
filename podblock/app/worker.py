@@ -24,7 +24,7 @@ import sys
 import threading
 import time
 
-from . import feeds, jobs, locks, processing, retention
+from . import following, jobs, locks, processing, retention
 from .config import Settings
 from .db import connect, prepare
 
@@ -110,7 +110,7 @@ class Background:
             try:
                 db = connect(self.settings.db_path)
                 try:
-                    feeds.refresh_due(db)
+                    following.refresh_due(db)
                     retention.expire_due(db)
                     retention.prune_store(db)
                 finally:
