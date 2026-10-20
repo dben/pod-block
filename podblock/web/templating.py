@@ -122,10 +122,21 @@ def until(ts: float | None) -> str:
     return f"in {days} {'day' if days == 1 else 'days'}"
 
 
+def filesize(n: int | None) -> str:
+    """Bytes in KB, MB, GB or TB, whichever keeps the number under 1,024."""
+    n = n or 0
+    if n < 1024:
+        return f"{n:,} bytes"
+    for unit in ("KB", "MB", "GB", "TB"):
+        n /= 1024
+        if n < 1024 or unit == "TB":
+            return f"{n:.1f} {unit}" if n < 100 else f"{n:,.0f} {unit}"
+
+
 def plural(n: int, one: str, many: str | None = None) -> str:
     return f"{n:,} {one if n == 1 else (many or one + 's')}"
 
 
 templates.env.globals.update(static=static, flashes=take_flashes, active_jobs=active_jobs, expires=expires)
-templates.env.filters.update(until=until, ago=ago, day=day, duration=duration, clock=clock, web_url=web_url, plural=plural,
+templates.env.filters.update(until=until, filesize=filesize, ago=ago, day=day, duration=duration, clock=clock, web_url=web_url, plural=plural,
                              text=html_to_text, fromjson=lambda text: json.loads(text) if text else [])

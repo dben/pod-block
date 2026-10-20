@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import accounts, episodes, podcasts, publish, users
+from . import accounts, downloads, episodes, podcasts, publish, users
 from .background import Background
 from .config import Settings
 from .db import connect, prepare, setting
@@ -77,6 +77,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(episodes.router)
     app.include_router(publish.router)
     app.include_router(users.router)
+    app.include_router(downloads.router)
 
     @app.exception_handler(LoginRequired)
     async def login_required(request: Request, exc: LoginRequired) -> Response:

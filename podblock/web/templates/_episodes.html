@@ -1,7 +1,10 @@
 {% for e in episodes %}{% include "_episode_row.html" %}{% endfor %}
 {% if next_url %}
 <li class="ep-more">
-  <a class="btn btn-ghost" href="{{ next_url }}" hx-get="{{ next_url }}&partial=1" hx-target="closest li"
-     hx-swap="outerHTML">Load more</a>
+  {# loads the next page as it scrolls into view; a plain link without JavaScript #}
+  <a class="btn btn-ghost" href="{{ next_url }}" hx-get="{{ next_url }}&partial=1" hx-trigger="revealed, click"
+     hx-target="closest li" hx-swap="outerHTML">
+    <span class="spinner" aria-hidden="true"></span><span class="ep-more-label">Load more</span><span class="ep-more-busy">Loading…</span>
+  </a>
 </li>
 {% endif %}

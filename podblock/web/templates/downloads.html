@@ -1,0 +1,107 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Downloads</h1>
+    <p class="muted">Every episode with audio on disk, from every podcast and user. Deleting one frees its space;
+      a ready one shows as cleaned up and can be downloaded again, cut the same way.</p>
+  </div>
+</div>
+
+<section class="card usage" aria-label="Space used">
+  <div class="usage-stats">
+    <div class="usage-stat"><b>{{ total|filesize }}</b><span class="muted">in {{ items|length|plural('episode') }}</span></div>
+    <div class="usage-stat"><b>{{ originals|filesize }}</b><span class="muted">original downloads</span></div>
+    <div class="usage-stat"><b>{{ cuts|filesize }}</b><span class="muted">cut audio</span></div>
+    {% if disk %}<div class="usage-stat"><b>{{ disk.free|filesize }}</b><span class="muted">free of {{ disk.total|filesize }}</span></div>{% endif %}
+  </div>
+  {% if disk and disk.total %}
+  {% set ours = (100 * total / disk.total) %}
+  {% set others = (100 * [disk.used - total, 0]|max / disk.total) %}
+  <div class="usage-bar" role="img" aria-label="pod-block uses {{ '%.1f'|format(ours) }}% of the media volume">
+    <span class="usage-ours" style="width: {{ '%.2f'|format(ours) }}%"></span>
+    <span class="usage-others" style="width: {{ '%.2f'|format(others) }}%"></span>
+  </div>
+  <p class="usage-key hint"><span class="usage-dot usage-ours"></span>pod-block
+    <span class="usage-dot usage-others"></span>Everything else on the volume</p>
+  {% endif %}
+</section>
+
+{% if items %}
+<div class="toolbar">
+  <nav class="tabs" aria-label="Sort by">
+    {% for key, label in sorts.items() %}
+    <a href="/downloads{% if key != 'size' %}?sort={{ key }}{% endif %}" {% if sort == key %}aria-current="page"{% endif %}>{{ label }}</a>
+    {% endfor %}
+  </nav>
+</div>
+
+<p class="list-note muted">
+  <span class="hide-touch">Tick the artwork to select; shift-click to select a range.</span>
+  <span class="show-touch">Tap the artwork, or press and hold, to select.</span>
+</p>
+<ul class="ep-list" data-select-list>
+  {% for d in items %}
+  {% set e = d.e %}
+  {% set art = e.image_url|web_url or e.podcast_image|web_url %}
+  <li class="ep{% if e.state in busy %} ep-busy{% endif %}" data-id="{{ e.id }}">
+    <label class="ep-select">
+      <input class="ep-check" type="checkbox" name="ids" value="{{ e.id }}" form="bulk" aria-label="Select “{{ e.title }}”"
+             {% if e.state in busy %}disabled{% endif %}>
+      {% if art %}<img class="ep-art" src="{{ art }}" alt="" loading="lazy" referrerpolicy="no-referrer">
+      {% else %}<span class="ep-art cover-blank" aria-hidden="true"></span>{% endif %}
+      <span class="ep-tick" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg></span>
+    </label>
+    <div class="ep-body">
+      <h3 class="ep-title"><a class="ep-link" href="/episodes/{{ e.id }}">{{ e.title or 'Untitled' }}</a></h3>
+      <p class="ep-meta">
+        {% if e.followed %}<a class="dl-show" href="/podcasts/{{ e.podcast_id }}">{{ e.podcast_name }}</a>
+        {% else %}<span title="This podcast was removed; its downloads stayed">{{ e.podcast_name }} (removed)</span>{% endif %}
+        {% if d.when %}<span title="When it was last processed">{{ d.when|day }}</span>{% endif %}
+        {% if e.state == 'ready' %}<span class="badge badge-ok">Ready</span>
+        {% elif e.state in busy %}<span class="badge badge-busy">Processing</span>
+        {% elif e.state == 'failed' %}<span class="badge badge-error">Failed</span>
+        {% else %}<span class="badge">Leftover</span>{% endif %}
+      </p>
+      <p class="dl-sizes">
+        <b>{{ d.total|filesize }}</b>
+        {% if d.original %}<span>Original {{ d.original|filesize }}</span>{% endif %}
+        {% if d.cut %}<span>Cut {{ d.cut|filesize }}</span>{% endif %}
+      </p>
+    </div>
+    <div class="ep-actions">
+      {% if e.state not in busy %}
+      <form method="post" action="/downloads/delete"
+            data-confirm="Delete the download of “{{ e.title }}”? It frees {{ d.total|filesize }}.{% if e.state == 'ready' %} It leaves everyone's private feeds until someone downloads it again.{% endif %}">
+        <input type="hidden" name="ids" value="{{ e.id }}">
+        <input type="hidden" name="next" value="{{ request.url.path }}{% if sort != 'size' %}?sort={{ sort }}{% endif %}">
+        <button class="icon-btn danger" type="submit" aria-label="Delete the download of “{{ e.title }}”" title="Delete">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-12M9 7V4h6v3"/></svg>
+        </button>
+      </form>
+      {% endif %}
+    </div>
+  </li>
+  {% endfor %}
+</ul>
+
+<form id="bulk" class="bulkbar" method="post" action="/downloads/delete"
+      data-confirm="Delete the selected downloads? Ready ones leave everyone's private feeds until someone downloads them again.">
+  <input type="hidden" name="next" value="{{ request.url.path }}{% if sort != 'size' %}?sort={{ sort }}{% endif %}">
+  <label class="bulk-all" title="Select all shown">
+    <input type="checkbox" data-select-all aria-label="Select all shown">
+  </label>
+  <span class="bulk-count"><b data-selected-count>0</b> selected</span>
+  <div class="bulk-actions">
+    <button class="btn btn-primary btn-sm btn-danger" type="submit">Delete</button>
+    <button class="btn btn-ghost btn-sm" type="button" data-clear>Clear</button>
+  </div>
+</form>
+{% else %}
+<div class="card empty">
+  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11m-4.5-4.5L12 15l4.5-4.5M5 20h14"/></svg>
+  <h2>Nothing on disk</h2>
+  <p class="muted">Episodes show here once someone downloads them, until they're cleaned up or deleted.</p>
+</div>
+{% endif %}
+{% endblock %}

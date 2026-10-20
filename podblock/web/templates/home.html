@@ -1,10 +1,17 @@
 {% extends "base.html" %}
 {% block content %}
+<div x-data="{ omni: {{ 'true' if request.query_params.get('omni') else 'false' }} }">
 <div class="page-head">
   <div>
     <h1>Podcasts</h1>
     <p class="muted">{{ mine_count|plural('feed') }} on your home page</p>
   </div>
+  <div class="page-head-actions">
+  <a class="btn btn-ghost btn-sm" href="/?omni=1" @click.prevent="omni = !omni" :aria-expanded="omni"
+     title="One feed of every downloaded episode of your podcasts">
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 19a1 1 0 1 0 0-2 1 1 0 0 0 0 2zM4 11a9 9 0 0 1 9 9M4 4a16 16 0 0 1 16 16"/></svg>
+    Omni feed
+  </a>
   {% if expired_total %}
   <form method="post" action="/episodes/archive-expired"
         data-confirm="Archive all {{ expired_total }} cleaned-up episodes? They stay in the Archived tab of each podcast.">
@@ -12,6 +19,17 @@
       Archive {{ expired_total|plural('cleaned-up episode') }}</button>
   </form>
   {% endif %}
+  </div>
+</div>
+
+<div class="omni-panel" x-show="omni" {% if not request.query_params.get('omni') %}x-cloak{% endif %} x-transition.opacity>
+{% set feed_title = 'Omni feed' %}
+{% set feed_about = "One feed for any podcast app with every downloaded episode of the podcasts on your home page, " ~ omni_count|plural('episode') ~ " right now, newest first and with the repeats cut out. Episodes you've archived or filtered stay out." %}
+{% set feed_url, feed_qr, feed_id = omni_url, omni_qr, 'omni-url' %}
+{% set feed_new = '/omni-token' %}
+{% set feed_confirm = "Make a new address for your omni feed? Apps using the old one will stop getting episodes until you add the new one." %}
+{% include "_feed_panel.html" %}
+</div>
 </div>
 
 <form class="card add-feed" method="post" action="/podcasts" x-data="{ busy: false }" @submit="busy = true">

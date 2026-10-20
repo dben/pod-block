@@ -1,4 +1,5 @@
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -417,7 +418,7 @@ def test_each_user_has_their_own_feed(env):
     bob_id = env.db.execute("SELECT id FROM users WHERE username = 'bob'").fetchone()[0]
     mine, anon = feed_of(env)
     his, _ = feed_of(env, bob_id)
-    assert mine != his and f"/p/{his}/feed.xml" in bob.get(f"/podcasts/{env.pod}").text
+    assert mine != his and f"/p/{his}/feed.xml" in bob.get(f"/podcasts/{env.pod}?tab=feed").text
 
     def guids(token):
         from podblock.feed import parse_feed
@@ -427,7 +428,7 @@ def test_each_user_has_their_own_feed(env):
     bob.post(f"/podcasts/{env.pod}/episodes", data={"action": "archive", "ids": env.ids["ep-4"]})
     bob.post(f"/podcasts/{env.pod}/filters", data={"pattern": "episode 3"})
     assert guids(his) == ["ep-5", "ep-2"] and guids(mine) == ["ep-5", "ep-4", "ep-3", "ep-2"]
-    assert "2 episodes with the" in bob.get(f"/podcasts/{env.pod}").text
+    assert "2 episodes with the" in bob.get(f"/podcasts/{env.pod}?tab=feed").text
     assert audio_url(env, anon, mine) == audio_url(env, anon, his)  # the same audio links
 
     env.client.post(f"/podcasts/{env.pod}/filters", data={"pattern": "episode 5", "processing": "true"})
@@ -444,7 +445,7 @@ def test_each_user_has_their_own_feed(env):
 def test_show_page_offers_the_private_feed(env):
     processed(env)
     token, _ = feed_of(env)
-    page = env.client.get(f"/podcasts/{env.pod}").text
+    page = env.client.get(f"/podcasts/{env.pod}?tab=feed").text
     assert f"http://testserver/p/{token}/feed.xml" in page and "<svg" in page and "4 episodes" in page
 
 
@@ -453,6 +454,100 @@ def test_public_url_setting_is_used_for_links(env):
     env.settings.public_url = "https://pods.example.com"
     token, anon = feed_of(env)
     assert b"https://pods.example.com/p/" in anon.get(f"/p/{token}/feed.xml").content
+
+
+def test_feed_items_get_the_shows_artwork_and_a_build_date(env):
+    processed(env)
+    token, anon = feed_of(env)
+    body = anon.get(f"/p/{token}/feed.xml").content
+    assert body.count(b'<itunes:image href="https://example.com/art.jpg"') == 1 + 4  # the channel's and each item's
+    assert b"<generator>pod-block</generator>" in body and b"<lastBuildDate>" in body
+
+
+def omni(env, anon, token):
+    import xml.etree.ElementTree as ET
+    res = anon.get(f"/p/{token}/feed.xml")
+    assert res.status_code == 200 and res.headers["content-type"].startswith("application/rss+xml")
+    return ET.fromstring(res.content).find("channel")
+
+
+def test_omni_feed_has_every_downloaded_episode_of_your_podcasts(env):
+    from podblock.feed import ITUNES, parse_feed
+    processed(env)
+    env.web.pages["https://example.org/b.rss"] = rss(
+        item(6).replace("Episode 6", "B one").replace("ep-6", "b-1").replace("6.mp3", "1.mp3"), title="Show B")
+    b = feeds.add_podcast(env.db, "https://example.org/b.rss").podcast_id
+    b1 = env.db.execute("SELECT id FROM episodes WHERE guid = 'b-1'").fetchone()[0]
+    jobs.enqueue(env.db, "process", [b1], None)
+    background.run_queue(env.settings)
+    assert episode(env, "b-1")["state"] == "ready"
+
+    home = env.client.get("/").text
+    token = re.search(r'value="http://testserver/p/([^/"]+)/feed\.xml"', home).group(1)
+    assert "Omni feed" in home and "4 episodes right now" in home  # Show B isn't on the admin's page yet
+    anon = TestClient(env.client.app)
+    channel = omni(env, anon, token)
+    assert channel.findtext("title") == "Pod Block Omni Feed"
+    assert channel.find(f"{ITUNES}image").get("href") == "http://testserver/static/omni.jpg"
+    assert anon.get("/static/omni.jpg").headers["content-type"] == "image/jpeg"
+    assert channel.findtext(f"{ITUNES}block") == "Yes"
+    assert [i.findtext("title") for i in channel.findall("item")] == [
+        f"Example Show: Episode {n}" for n in (5, 4, 3, 2)]
+
+    env.client.post(f"/podcasts/{b}/subscribe", data={"on": "true"})
+    env.client.post(f"/podcasts/{env.pod}/episodes", data={"action": "archive", "ids": env.ids["ep-4"]})
+    feed = parse_feed(anon.get(f"/p/{token}/feed.xml").content, "x")
+    assert [e.guid for e in feed.episodes] == ["b-1", "ep-5", "ep-3", "ep-2"]
+    assert feed.episodes[0].title == "Show B: B one" and feed.episodes[0].audio_type == "audio/mpeg"
+    audio = feed.episodes[0].audio_url.replace("http://testserver", "")
+    assert anon.get(audio, headers={"range": "bytes=0-9"}).status_code == 206
+    assert channel.find("item").findtext(f"{ITUNES}author") == "Example Network"
+
+    env.client.post("/omni-token")
+    assert anon.get(f"/p/{token}/feed.xml").status_code == 404
+    new = re.search(r'value="http://testserver/p/([^/"]+)/feed\.xml"', env.client.get("/?omni=1").text).group(1)
+    assert new != token and omni(env, anon, new).findtext("title") == "Pod Block Omni Feed"
+
+
+def test_each_user_has_their_own_omni_feed(env):
+    processed(env)
+    env.client.post("/users", data={"username": "bob", "password": "password1"})
+    bob_id = env.db.execute("SELECT id FROM users WHERE username = 'bob'").fetchone()[0]
+    anon = TestClient(env.client.app)
+    his = publish.omni_token(env.db, bob_id)
+    assert omni(env, anon, his).findall("item") == []  # no podcasts on his page yet
+    library.subscribe(env.db, bob_id, env.pod)
+    assert len(omni(env, anon, his).findall("item")) == 4
+    env.client.post(f"/users/{bob_id}/remove")
+    assert anon.get(f"/p/{his}/feed.xml").status_code == 404
+
+
+# ---- downloads ------------------------------------------------------------------------
+
+def test_downloads_page_shows_sizes_and_deletes(env):
+    from podblock.feed import parse_feed
+    from podblock.web.templating import filesize
+    processed(env)
+    page = env.client.get("/downloads").text
+    sizes = [sum(Path(p).stat().st_size for p in (ep["original_path"], ep["cut_path"], ep["peaks_path"]) if p)
+             for ep in env.db.execute("SELECT * FROM episodes WHERE state = 'ready'")]
+    assert "in 4 episodes" in page and filesize(sum(sizes)) in page
+    assert page.count('class="ep"') == 4 and "Example Show" in page
+
+    three = episode(env, "ep-3")
+    files = [Path(three[k]) for k in ("original_path", "cut_path")]
+    res = env.client.post("/downloads/delete", data={"ids": [three["id"]]})
+    assert res.status_code == 303 and res.headers["location"] == "/downloads"
+    assert not any(f.exists() for f in files)
+    gone = episode(env, "ep-3")
+    assert gone["state"] == "expired" and gone["cut_path"] is None and gone["expired_at"]
+    token, anon = feed_of(env)
+    assert "ep-3" not in [e.guid for e in parse_feed(anon.get(f"/p/{token}/feed.xml").content, "x").episodes]
+    assert "in 3 episodes" in env.client.get("/downloads").text
+
+    jobs.enqueue(env.db, "process", [env.ids["ep-3"]], None)  # being processed: left alone
+    env.client.post("/downloads/delete", data={"ids": [env.ids["ep-3"], env.ids["ep-4"]]})
+    assert episode(env, "ep-3")["state"] == "queued" and episode(env, "ep-4")["state"] == "expired"
 
 
 # ---- retention ------------------------------------------------------------------------

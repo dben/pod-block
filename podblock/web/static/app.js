@@ -1,4 +1,4 @@
-// pod-block: episode selection, bulk actions, menus and toasts.
+// pod-block: episode selection, bulk actions, downloads, menus and toasts.
 // Every page works without this file; it only makes things quicker.
 (() => {
   "use strict";
@@ -72,7 +72,7 @@
   let pressStart = null;
   let swallowClick = false;
 
-  const boxes = () => $$("[data-select-list] .ep-check");
+  const boxes = () => $$("[data-select-list] .ep-check:not(:disabled)");
   const bar = () => document.getElementById("bulk");
 
   function update() {
@@ -283,5 +283,35 @@
         location.reload();
       },
     });
+  });
+
+  // ---- download without a page load ---------------------------------------------
+  // Queue the episodes, then swap in their rows, which keep themselves up to date
+  // while they're processed. The list stays where it was scrolled to.
+
+  document.addEventListener("submit", async (e) => {
+    const form = e.target;
+    const action = e.submitter?.value;
+    if (e.defaultPrevented || !form.matches("[data-bulk]") || !["download", "reprocess"].includes(action)
+        || !window.htmx) return;
+    e.preventDefault();
+    const data = new FormData(form);
+    data.set("action", action);
+    if (!data.getAll("ids").length) return;
+    form.closest("details.menu")?.removeAttribute("open");
+    let out;
+    try {
+      out = await post(form.getAttribute("action"), data);
+    } catch {
+      toast("That didn't work. Try again.", { kind: "error" });
+      return;
+    }
+    if (form.id === "bulk") clearSelection();
+    for (const id of out.changed) {
+      const row = document.querySelector(`[data-select-list] .ep[data-id="${id}"]`);
+      if (row) htmx.ajax("GET", `/episodes/${id}/row`, { target: row, swap: "outerHTML" });
+    }
+    const n = out.changed.length;
+    toast(n ? `Queued ${n.toLocaleString()} ${n === 1 ? "episode" : "episodes"}.` : "Those are already ready or queued.");
   });
 })();

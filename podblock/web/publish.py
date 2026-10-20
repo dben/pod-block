@@ -15,7 +15,14 @@ changes:
   `podcast:alternateEnclosure`), since apps may play those instead;
 - `itunes:new-feed-url` goes (it would send apps back to the source), the
   `atom:link rel="self"` points here, and `itunes:block` keeps the feed out
-  of directories.
+  of directories;
+- an item with no artwork of its own gets the show's, and the channel says
+  what made it (`generator`) and when it last changed (`lastBuildDate`).
+
+Each user also has an omni feed (`users.omni_token`, at the same kind of
+address): every downloaded episode of the podcasts on their home page, newest
+first, under pod-block's own channel. Its items are built as above, with the
+show's name before each title and the show as each item's author.
 """
 
 from __future__ import annotations
@@ -45,6 +52,10 @@ PREFIXES = {"itunes": ITUNES[1:-1], "atom": ATOM[1:-1], "podcast": PODCAST[1:-1]
             "content": "http://purl.org/rss/1.0/modules/content/", "psc": PSC[1:-1],
             "googleplay": "http://www.google.com/schemas/play-podcasts/1.0", "media": "http://search.yahoo.com/mrss/"}
 MEDIA = "{http://search.yahoo.com/mrss/}"
+OMNI_TITLE = "Pod Block Omni Feed"
+OMNI_ABOUT = ("Every episode you've downloaded from your podcasts, in one feed, with the repeats cut out. "
+              "Made by pod-block.")
+OMNI_ART = "static/omni.jpg"
 OUT_OF_STEP = {f"{PODCAST}chapters", f"{PODCAST}transcript", f"{PODCAST}soundbite", f"{PSC}chapters",
                f"{PODCAST}alternateEnclosure"}
 
@@ -102,6 +113,20 @@ def new_feed_token(db: sqlite3.Connection, user_id: int, podcast_id: int) -> str
     return token
 
 
+def omni_token(db: sqlite3.Connection, user_id: int) -> str:
+    """The token of a user's omni feed, made on first ask."""
+    row = db.execute("SELECT omni_token FROM users WHERE id = ?", (user_id,)).fetchone()
+    return row["omni_token"] or new_omni_token(db, user_id)
+
+
+def new_omni_token(db: sqlite3.Connection, user_id: int) -> str:
+    """Give a user's omni feed a new address; the old one stops working at once."""
+    token = new_token()
+    db.execute("UPDATE users SET omni_token = ? WHERE id = ?", (token, user_id))
+    db.commit()
+    return token
+
+
 def base_url(request: Request) -> str:
     return request.app.state.settings.public_url or str(request.base_url).rstrip("/")
 
@@ -122,6 +147,24 @@ def published(db: sqlite3.Connection, podcast_id: int, user_id: int | None = Non
     return [r for r in rows if Path(r["cut_path"]).exists()]
 
 
+def omni_published(db: sqlite3.Connection, user_id: int) -> list[sqlite3.Row]:
+    """The episodes in a user's omni feed: ready, with their cut file on disk, of the podcasts on their home
+    page, not archived by them nor hidden by a filter; newest first. Each row has its podcast's name, author,
+    artwork, explicit flag and audio token."""
+    for r in db.execute("""SELECT p.id FROM podcasts p JOIN user_podcasts up ON up.podcast_id = p.id
+                           WHERE up.user_id = ? AND p.public_token IS NULL""", (user_id,)).fetchall():
+        ensure_token(db, r["id"])
+    rows = db.execute(
+        f"""SELECT e.*, p.name AS podcast_name, p.author AS podcast_author, p.image_url AS podcast_image,
+                   p.explicit AS podcast_explicit, p.public_token
+            FROM episodes e JOIN podcasts p ON p.id = e.podcast_id AND p.followed = 1
+            JOIN user_podcasts up ON up.podcast_id = p.id AND up.user_id = ?
+            LEFT JOIN user_episodes ue ON ue.episode_id = e.id AND ue.user_id = ?
+            WHERE e.state = 'ready' AND e.cut_path IS NOT NULL AND COALESCE(ue.archived, 0) = 0 AND NOT {HIDDEN}
+            ORDER BY e.pub_ts IS NULL, e.pub_ts DESC, e.id DESC""", (user_id, user_id, user_id)).fetchall()
+    return [r for r in rows if Path(r["cut_path"]).exists()]
+
+
 def _podcast_by_token(db: sqlite3.Connection, token: str) -> sqlite3.Row | None:
     """The podcast whose audio links carry this token."""
     if not token or len(token) > 64:
@@ -138,6 +181,13 @@ def _feed_by_token(db: sqlite3.Connection, token: str) -> sqlite3.Row | None:
                       (token,)).fetchone()
 
 
+def _omni_by_token(db: sqlite3.Connection, token: str) -> sqlite3.Row | None:
+    """The user whose omni feed this is."""
+    if not token or len(token) > 64:
+        return None
+    return db.execute("SELECT * FROM users WHERE omni_token = ?", (token,)).fetchone()
+
+
 def _hms(secs: float | None) -> str:
     secs = int(round(secs or 0))
     return f"{secs // 3600}:{secs % 3600 // 60:02d}:{secs % 60:02d}"
@@ -152,7 +202,16 @@ def _set(parent: ET.Element, tag: str, text: str, attrib: dict | None = None) ->
     return el
 
 
-def _item(ep: sqlite3.Row, audio_url: str) -> ET.Element:
+def _rfc822(ts: float) -> str:
+    return format_datetime(datetime.fromtimestamp(ts, timezone.utc))
+
+
+def _web(url: str | None) -> str | None:
+    return url if url and url.split(":", 1)[0].lower() in {"http", "https"} else None
+
+
+def _item(ep: sqlite3.Row, audio_url: str, art: str | None = None) -> ET.Element:
+    """An episode's <item>, pointing at its cut audio. `art` is the show's artwork, for items with none."""
     item = None
     if ep["item_xml"]:
         try:
@@ -164,7 +223,7 @@ def _item(ep: sqlite3.Row, audio_url: str) -> ET.Element:
         ET.SubElement(item, "title").text = ep["title"] or "Untitled"
         ET.SubElement(item, "guid", isPermaLink="false").text = ep["guid"]
         if ep["pub_ts"]:
-            ET.SubElement(item, "pubDate").text = format_datetime(datetime.fromtimestamp(ep["pub_ts"], timezone.utc))
+            ET.SubElement(item, "pubDate").text = _rfc822(ep["pub_ts"])
     for el in [el for el in item if el.tag in OUT_OF_STEP or _uncut_audio(el)]:
         item.remove(el)
     for el in item.findall("enclosure")[1:]:
@@ -175,7 +234,24 @@ def _item(ep: sqlite3.Row, audio_url: str) -> ET.Element:
     enclosure.attrib.clear()
     enclosure.attrib.update(url=audio_url, length=str(ep["cut_bytes"] or 0), type=ep["cut_type"] or "audio/mpeg")
     _set(item, f"{ITUNES}duration", _hms(ep["cut_duration"]))
+    if item.find(f"{ITUNES}image") is None and (image := _web(ep["image_url"]) or _web(art)):
+        ET.SubElement(item, f"{ITUNES}image", href=image)
     return item
+
+
+def _stamp(channel: ET.Element, episodes: list[sqlite3.Row]) -> None:
+    """Say what made the feed, and when it last changed: when its newest-processed episode was made ready."""
+    _set(channel, "generator", "pod-block")
+    changed = max((ep["processed_at"] or 0 for ep in episodes), default=0)
+    if changed:
+        _set(channel, "lastBuildDate", _rfc822(changed))
+
+
+def _rss(channel: ET.Element) -> bytes:
+    rss = ET.Element("rss", version="2.0")
+    rss.append(channel)
+    ET.indent(rss, space="  ")
+    return ET.tostring(rss, encoding="utf-8", xml_declaration=True)
 
 
 def build_feed(db: sqlite3.Connection, pod: sqlite3.Row, base: str, user_id: int, token: str) -> bytes:
@@ -198,14 +274,49 @@ def build_feed(db: sqlite3.Connection, pod: sqlite3.Row, base: str, user_id: int
                            type="application/rss+xml")
     channel.insert(0, self_link)
     _set(channel, f"{ITUNES}block", "Yes")
-    for ep in published(db, pod["id"], user_id):
+    episodes = published(db, pod["id"], user_id)
+    _stamp(channel, episodes)
+    for ep in episodes:
         _register(ep["item_xml"])
-        suffix = Path(ep["cut_path"]).suffix
-        channel.append(_item(ep, f"{base}/p/{pod['public_token']}/{media_key(ep['guid'])}{suffix}"))
-    rss = ET.Element("rss", version="2.0")
-    rss.append(channel)
-    ET.indent(rss, space="  ")
-    return ET.tostring(rss, encoding="utf-8", xml_declaration=True)
+        channel.append(_item(ep, _audio_url(base, pod["public_token"], ep), pod["image_url"]))
+    return _rss(channel)
+
+
+def _audio_url(base: str, podcast_token: str, ep: sqlite3.Row) -> str:
+    return f"{base}/p/{podcast_token}/{media_key(ep['guid'])}{Path(ep['cut_path']).suffix}"
+
+
+def build_omni(db: sqlite3.Connection, user_id: int, base: str, token: str) -> bytes:
+    """A user's omni feed, whose address holds `token`: every downloaded episode of their podcasts."""
+    _register(None)
+    episodes = omni_published(db, user_id)
+    art = f"{base}/{OMNI_ART}"
+    channel = ET.Element("channel")
+    ET.SubElement(channel, f"{ATOM}link", href=f"{base}/p/{token}/feed.xml", rel="self", type="application/rss+xml")
+    ET.SubElement(channel, "title").text = OMNI_TITLE
+    ET.SubElement(channel, "link").text = f"{base}/"
+    ET.SubElement(channel, "description").text = OMNI_ABOUT
+    _stamp(channel, episodes)
+    image = ET.SubElement(channel, "image")
+    ET.SubElement(image, "url").text = art
+    ET.SubElement(image, "title").text = OMNI_TITLE
+    ET.SubElement(image, "link").text = f"{base}/"
+    ET.SubElement(channel, f"{ITUNES}image", href=art)
+    ET.SubElement(channel, f"{ITUNES}author").text = "pod-block"
+    ET.SubElement(channel, f"{ITUNES}summary").text = OMNI_ABOUT
+    ET.SubElement(channel, f"{ITUNES}type").text = "episodic"
+    ET.SubElement(channel, f"{ITUNES}explicit").text = "true" if any(ep["podcast_explicit"] for ep in episodes) else "false"
+    ET.SubElement(channel, f"{ITUNES}block").text = "Yes"
+    ET.SubElement(channel, f"{PODCAST}locked").text = "yes"
+    for ep in episodes:
+        _register(ep["item_xml"])
+        item = _item(ep, _audio_url(base, ep["public_token"], ep), ep["podcast_image"])
+        show = ep["podcast_name"] or "Untitled"
+        _set(item, "title", f"{show}: {item.findtext('title') or ep['title'] or 'Untitled'}")
+        _set(item, f"{ITUNES}author", ep["podcast_author"] or show)
+        _set(item, "guid", ep["guid"], {"isPermaLink": "false"})  # unique across shows, as the store keeps them
+        channel.append(item)
+    return _rss(channel)
 
 
 NOT_FOUND = PlainTextResponse("Not found", status_code=404)
@@ -213,10 +324,13 @@ NOT_FOUND = PlainTextResponse("Not found", status_code=404)
 
 @router.api_route("/p/{token}/feed.xml", methods=["GET", "HEAD"], include_in_schema=False)
 def private_feed(request: Request, token: str, db: sqlite3.Connection = Depends(get_db)) -> Response:
-    pod = _feed_by_token(db, token)
-    if pod is None:
+    """A user's feed of one podcast, or their omni feed of all of them."""
+    if (pod := _feed_by_token(db, token)) is not None:
+        body = build_feed(db, pod, base_url(request), pod["user_id"], token)
+    elif (user := _omni_by_token(db, token)) is not None:
+        body = build_omni(db, user["id"], base_url(request), token)
+    else:
         return NOT_FOUND
-    body = build_feed(db, pod, base_url(request), pod["user_id"], token)
     etag = '"' + hashlib.sha1(body).hexdigest()[:20] + '"'
     headers = {"ETag": etag, "Cache-Control": "private, max-age=300", "X-Robots-Tag": "noindex"}
     if etag in request.headers.get("if-none-match", ""):
