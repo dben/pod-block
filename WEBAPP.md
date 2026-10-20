@@ -20,8 +20,10 @@ what is done, and what comes later. Update it as work lands.
 | Users | done: password logins, a users page for the admin, each user's own podcast list |
 | Filters | done: regex filters on titles per user; filters from processing for compilations and rewinds |
 | Per-user feeds | done: each user's own private feed of each podcast, without their archived and filtered episodes |
+| Omni feed | done: each user's one feed of every downloaded episode of their podcasts |
+| Downloads page | done: the admin's list of every download on disk, with sizes and a total, and delete |
 
-Last updated: 2026-10-19.
+Last updated: 2026-10-20.
 
 ## Decisions
 
@@ -125,12 +127,20 @@ Ticked items are built. Each has an id so commits and issues can point at it.
   refused with a reason.
 - [x] **F2** Show page with a header built from the feed: artwork (also
   blurred behind the header), author, title, episode count, categories,
-  description (three lines, then "More"), Refresh, Website, and a menu with
-  Remove. It shows when the feed was last checked and the last error.
-  - [ ] Link to the private feed and to podcast settings (milestones 4 and 5).
+  description (three lines, then "More"), Subscribe, Refresh and Website. It
+  shows when the feed was last checked and the last error.
+  - [x] Below the header, tabs: Episodes, Private feed, Filters and Settings
+    (`?tab=`; links land on the tabs with `#tabs`, so a phone needn't scroll
+    past the header again). Only the open tab is rendered. Remove is at the
+    foot of Settings, for the admin; the "…" menu it lived in got clipped by
+    the header on phones.
 - [x] **F3** Episode list: artwork, title, date, length, season and episode
   number, trailer and bonus badges, two lines of show notes as plain text.
-  Newest first, 50 at a time with "Load more". Search by title as you type.
+  Newest first, 50 at a time; the next 50 load as "Load more" scrolls into
+  view (htmx `revealed`), and it stays a plain link without JavaScript.
+  Search by title as you type.
+  - [x] Oldest first instead, set per podcast in Settings (shared, like the
+    other settings): for shows best heard in order.
   - [x] Processing state per episode: Queued, what it is doing ("Downloading
     45%", "Fingerprinting", "Cutting"), Ready with the cut length, Failed.
     A row being processed refreshes itself every 3 seconds.
@@ -158,8 +168,14 @@ Ticked items are built. Each has an id so commits and issues can point at it.
     while anything is selected. Archiving takes the rows out without a page
     load, with Undo in the toast.
   - "Archive this and older" in each row's menu.
-  - [x] Download in the bar and in each row's menu ("Download and cut";
-    "Process again" once ready or failed).
+  - [x] Download in the bar, and as an icon button on each row ("Download
+    and cut", "Download again" once cleaned up, or after a failure); a
+    spinner takes its place while queued or running, and a tick once ready.
+    "Process again" is in the row's menu. With JavaScript, downloading
+    queues the episodes and swaps in their rows, without a page load.
+  - On touch screens a tapped artwork used to keep its tick after being
+    deselected, since `:hover` sticks after a tap; the hover tick now shows
+    only on devices that can hover.
   - [x] Keep in the bar and in each row's menu (milestone 5).
 - [x] **F9** Download new episodes on their own, set per podcast (off by
   default). Only episodes that appear after the feed was added, and at most
@@ -280,6 +296,15 @@ Ticked items are built. Each has an id so commits and issues can point at it.
   one, then the new one twice). A new password, whether they set it or the
   admin did, ends the user's other sessions (`users.session_version`); the
   session that changed it carries on.
+- [x] **A8** A Downloads page for the admin (`/downloads`): every episode
+  with audio on disk, from every podcast (removed ones too), with the size
+  of its download and cut file; at the top the total, the originals and cut
+  files apart, and the media volume's free space with a bar of how much
+  pod-block takes. Sort by size, newest or podcast. Delete one, or select
+  several as in the episode list: the download, cut file and waveform go,
+  and a ready episode becomes cleaned up, as retention does it, so it can be
+  downloaded again and cut the same way. Episodes being processed are left
+  alone. Other users get 403.
 - [x] **A7** Each user picks the podcasts on their home page: "My podcasts"
   lists them, "All podcasts" lists every one with Subscribe and Unsubscribe,
   and the show page has the same button. Adding a feed puts it on the adder's
@@ -351,6 +376,21 @@ Ticked items are built. Each has an id so commits and issues can point at it.
 - [x] **S6** A "Private feed" button on the show page opens your address with
   Copy, a QR code (made on the server with `segno`), and how many episodes
   are in it.
+- [x] **S8** An omni feed per user (`users.omni_token`, at
+  `/p/<token>/feed.xml` like the others): every ready episode of the
+  podcasts on their home page, newest first, without the ones they archived
+  or filtered. Its channel is pod-block's own: "Pod Block Omni Feed", the
+  logo as artwork (`static/omni.jpg`, 1400 px square), a description,
+  `itunes:block` and `podcast:locked`. Each item is built as in S2, with the
+  show's name before its title ("Show: Episode"), the show as
+  `itunes:author`, the show's artwork when the episode has none, and the
+  guid as the store keeps it, which is unique across shows. An "Omni feed"
+  button on the home page opens its address, QR code and "Make a new
+  address" (`POST /omni-token`).
+- [x] **S9** Both kinds of feed give items with no artwork the show's
+  (`itunes:image`), and say what made them (`generator`) and when they
+  last changed (`lastBuildDate`, the newest processing time, so the ETag
+  holds steady between changes).
 - [x] **S7** Feed links use `PODBLOCK_PUBLIC_URL`, else the address the
   request came to. Behind a proxy, set one or the other
   (`FORWARDED_ALLOW_IPS`), or links will point at the inside address.
@@ -466,6 +506,9 @@ Built in migration 12: `user_feeds(user_id, podcast_id, token, created_at)`,
 each user's private feed of each podcast. The admin is given each podcast's
 `public_token`, which now only guards audio links.
 
+Built in migration 13: `users.omni_token` (unique), the omni feed's
+address, made on first ask; `podcasts.sort_oldest`.
+
 Built in migration 7: `podcasts.retention_days` (default 7),
 `episodes.ready_at` (the clock) and `episodes.expired_at`; episodes gain the
 state `expired`.
@@ -500,7 +543,7 @@ only looks at fingerprinted ones, so they don't affect it.
 | `GET /p/{token}/feed.xml` | no | private feed | built |
 | `GET /p/{token}/{key}.{ext}` | no | cut audio, with byte ranges | built |
 | `POST /podcasts/{id}/feed-token` | yes | new address for your own private feed | built |
-| `POST /podcasts/{id}/settings` | yes | clean-up days and refresh interval | built |
+| `POST /podcasts/{id}/settings` | yes | clean-up days, refresh interval, gap, auto-download, `sort` (newest or oldest) | built |
 | `POST /podcasts/{id}/episodes` with `action` = keep, unkeep or archive_expired | yes | keep a selection; archive every cleaned-up episode | built |
 | `POST /episodes/archive-expired` | yes | archive every cleaned-up episode of every podcast | built |
 | `POST /episodes/{id}/keep` | yes | keep it or stop keeping it | built |
@@ -512,6 +555,11 @@ only looks at fingerprinted ones, so they don't affect it.
 | `GET /podcasts/{id}?view=filtered` | yes | the episodes your filters hide | built |
 | `POST /podcasts/{id}/filters` | yes | add a filter: `pattern`, `scope` (podcast or all), `processing` | built |
 | `POST /filters/{id}/remove` | owner or admin | remove a filter | built |
+| `GET /podcasts/{id}?tab=` | yes | `feed`, `filters` or `settings` instead of the episode list (`feed=1` and `filters=1` still work) | built |
+| `POST /omni-token` | yes | new address for your omni feed | built |
+| `GET /p/{token}/feed.xml` with an omni token | no | your omni feed | built |
+| `GET /downloads?sort=` | admin | every download on disk, with sizes | built |
+| `POST /downloads/delete` | admin | delete the files of `ids` | built |
 
 ## Milestones
 
@@ -568,7 +616,6 @@ None right now.
   fail that one episode and carry on with the rest.
 - Filters on show notes as well as titles, and a page listing all of your
   filters across podcasts.
-- One combined private feed across podcasts.
 - Postgres, and the worker as its own Deployment, so the web side can run
   more than one replica.
 - CSRF tokens on forms. For now the session cookie is `SameSite=Lax`, which
@@ -597,3 +644,8 @@ None right now.
   user's own list of podcasts. Then filters on episode titles, per user, and
   filters from processing for compilations and rewinds. Then a private feed
   per user, without the episodes they archived or filtered.
+- 2026-10-20: show page tabs (Episodes, Private feed, Filters, Settings),
+  with Remove moved into Settings; oldest-first order per podcast; the next
+  page loads on scroll; a download button on each row; the stuck tick after
+  deselecting on phones fixed. An omni feed per user, and artwork and dates
+  in every feed. The admin's Downloads page.

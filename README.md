@@ -75,7 +75,8 @@ can add feeds, browse, search and archive their episodes, and download
 episodes: a background job finds their repeats and makes a copy with them
 cut out, to play or download from the episode's page, check and change on a
 timeline, and get in any podcast app through your own private feed of each
-podcast.
+podcast, or one omni feed of them all. The admin has a page of every download
+on disk, with the space it takes, to delete them from.
 
 ```sh
 pip install -e '.[web]'

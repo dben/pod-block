@@ -20,6 +20,22 @@
     </p>
     {% if e.summary %}<p class="ep-summary">{{ e.summary }}</p>{% endif %}
   </div>
+  <div class="ep-actions">
+  {% if busy %}
+  <span class="icon-btn ep-dl-busy" title="{{ e.state_note or 'Queued' }}"><span class="spinner" aria-hidden="true"></span></span>
+  {% elif e.state == 'ready' %}
+  <span class="icon-btn ep-dl-done" title="Downloaded and cut"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg></span>
+  {% else %}
+  <form method="post" action="/podcasts/{{ podcast.id }}/episodes" data-bulk>
+    <input type="hidden" name="ids" value="{{ e.id }}">
+    <input type="hidden" name="next" value="{{ here }}">
+    {% set label = 'Download again' if e.state == 'expired' else 'Try again' if e.state == 'failed' else 'Download and cut' %}
+    <button class="icon-btn ep-dl" type="submit" name="action" value="download"
+            aria-label="{{ label }}: “{{ e.title }}”" title="{{ label }}">
+      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11m-4.5-4.5L12 15l4.5-4.5M5 20h14"/></svg>
+    </button>
+  </form>
+  {% endif %}
   <details class="menu ep-menu">
     <summary class="icon-btn" aria-label="More for “{{ e.title }}”">
       <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="5" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="12" cy="19" r="1.6"/></svg>
@@ -28,9 +44,6 @@
       <form method="post" action="/podcasts/{{ podcast.id }}/episodes" data-bulk>
         <input type="hidden" name="ids" value="{{ e.id }}">
         <input type="hidden" name="next" value="{{ here }}">
-        {% if not busy and e.state != 'ready' %}
-        <button type="submit" name="action" value="download">{{ 'Download again' if e.state == 'expired' else 'Download and cut' }}</button>
-        {% endif %}
         {% if e.state in ('ready', 'failed') %}
         <button type="submit" name="action" value="reprocess">Process again</button>
         {% endif %}
@@ -48,4 +61,5 @@
       </form>
     </div>
   </details>
+  </div>
 </li>

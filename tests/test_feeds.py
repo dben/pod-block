@@ -449,12 +449,13 @@ def test_only_the_admin_removes_a_podcast(client, web):
     bob.post("/login", data={"username": "bob", "password": "password1"})
     bob.post(f"/podcasts/{pod}/subscribe", data={"on": "true"})
 
-    show = bob.get(f"/podcasts/{pod}", headers=HTML).text
-    assert "Remove podcast" not in show and "Make a new address" in show
+    assert "Remove podcast" not in bob.get(f"/podcasts/{pod}?tab=settings", headers=HTML).text
+    show = bob.get(f"/podcasts/{pod}?tab=feed", headers=HTML).text
+    assert "Make a new address" in show
     private = re.search(r'value="(http[^"]+/p/[^"]+/feed\.xml)"', show).group(1)
     assert bob.get(private).status_code == 200  # every user gets the private feed of any podcast
     assert bob.post(f"/podcasts/{pod}/remove").status_code == 403
-    assert "Remove podcast" in client.get(f"/podcasts/{pod}", headers=HTML).text
+    assert "Remove podcast" in client.get(f"/podcasts/{pod}?tab=settings", headers=HTML).text
 
     client.post(f"/podcasts/{pod}/remove")
     assert "No podcasts yet" in bob.get("/", headers=HTML).text
@@ -479,12 +480,13 @@ def test_a_filter_hides_episodes_from_its_owner_only(client, web):
     pod = add(client, web, *(item(n) for n in range(1, 5)))
     bob = bob_logged_in(client)
     res = client.post(f"/podcasts/{pod}/filters", data={"pattern": "EPISODE [23]$", "scope": "podcast"})
-    assert res.headers["location"] == f"/podcasts/{pod}?filters=1"
+    assert res.headers["location"] == f"/podcasts/{pod}?tab=filters#tabs"
     page = client.get(res.headers["location"], headers=HTML).text
     assert "It hides 2 episodes of this podcast from you." in page and "EPISODE [23]$" in page
 
     assert titles(client, pod) == [1, 4] and titles(client, pod, "filtered") == [2, 3]
-    assert 'Filtered <span class="count">2</span>' in page and "2 episodes</span>" in page
+    assert "2 episodes</span>" in page
+    assert 'Filtered <span class="count">2</span>' in client.get(f"/podcasts/{pod}", headers=HTML).text
     assert titles(bob, pod) == [1, 2, 3, 4]
     assert "Filtered <span" not in bob.get(f"/podcasts/{pod}", headers=HTML).text
 
@@ -504,7 +506,7 @@ def test_filters_for_every_podcast_and_bad_patterns(client, web):
 
     for pattern, why in [("(oops", "valid regular expression"), (".*", "matches every title"), ("  ", "Type a pattern")]:
         res = client.post(f"/podcasts/{pod}/filters", data={"pattern": pattern})
-        assert "filters=1" in res.headers["location"]
+        assert "tab=filters" in res.headers["location"]
         assert why in client.get(res.headers["location"], headers=HTML).text
     db = connect(client.db_path)
     assert db.execute("SELECT COUNT(*) FROM episode_filters").fetchone()[0] == 1
@@ -519,7 +521,7 @@ def test_a_processing_filter_hides_episodes_from_everyone_and_skips_them(client,
     bob.post(f"/podcasts/{pod}/filters", data={"pattern": "episode 1"})
     assert titles(client, pod) == [1, 3] and titles(bob, pod) == [3]
     assert titles(client, pod, "filtered") == [2]
-    assert "Filtered from processing" in client.get(f"/podcasts/{pod}", headers=HTML).text
+    assert "Filtered from processing" in client.get(f"/podcasts/{pod}?tab=filters", headers=HTML).text
 
     db = connect(client.db_path)
     marked = lambda: [r["guid"] for r in db.execute("SELECT guid FROM episodes WHERE skip_processing = 1 ORDER BY id")]
@@ -537,8 +539,67 @@ def test_a_processing_filter_hides_episodes_from_everyone_and_skips_them(client,
     bob_id = db.execute("SELECT id FROM users WHERE username = 'bob'").fetchone()[0]
     client.post(f"/users/{bob_id}/remove")  # his own filter goes; the one for everyone stays
     (f,) = db.execute("SELECT id, user_id FROM episode_filters").fetchall()
-    assert f["user_id"] is None and "added by a removed user" in client.get(f"/podcasts/{pod}", headers=HTML).text
+    assert f["user_id"] is None and "added by a removed user" in client.get(f"/podcasts/{pod}?tab=filters", headers=HTML).text
     assert client.post(f"/filters/{f['id']}/remove").status_code == 303  # the admin may remove anyone's
     assert marked() == []
     assert titles(client, pod) == [1, 2, 3, 4, 5]
     db.close()
+
+
+# ---- show tabs, order, paging and downloads -----------------------------------------
+
+def test_show_page_tabs(client, web):
+    pod = add(client, web, item(1))
+    show = client.get(f"/podcasts/{pod}", headers=HTML).text
+    assert 'id="tabs"' in show and "Episode 1" in show and "More actions" not in show
+    assert "Make a new address" not in show and "Add filter" not in show and "Clean up downloads" not in show
+    assert "Make a new address" in client.get(f"/podcasts/{pod}?tab=feed", headers=HTML).text
+    assert "Make a new address" in client.get(f"/podcasts/{pod}?feed=1", headers=HTML).text  # the old address
+    filters_tab = client.get(f"/podcasts/{pod}?tab=filters", headers=HTML).text
+    assert "Add filter" in filters_tab and "Episode 1" not in filters_tab
+    assert "Clean up downloads" in client.get(f"/podcasts/{pod}?tab=settings", headers=HTML).text
+
+
+def test_episodes_can_be_listed_oldest_first(client, web, monkeypatch):
+    monkeypatch.setattr("podblock.web.podcasts.PAGE_SIZE", 2)
+    pod = add(client, web, *(item(n) for n in range(1, 6)))
+    assert titles(client, pod) == [4, 5] and "Newest first" in client.get(f"/podcasts/{pod}").text
+
+    res = client.post(f"/podcasts/{pod}/settings", data={"retention_days": 7, "refresh_minutes": 60, "sort": "oldest"})
+    assert res.headers["location"] == f"/podcasts/{pod}?tab=settings#tabs"
+    assert "Oldest first</option>" in client.get(f"/podcasts/{pod}?tab=settings").text.replace("selected>", ">")
+    first = client.get(f"/podcasts/{pod}").text
+    assert titles(client, pod) == [1, 2] and "Oldest first" in first
+    assert ">Episode 3<" in client.get(f"/podcasts/{pod}?page=2&partial=1").text
+
+    client.post(f"/podcasts/{pod}/settings", data={"retention_days": 7, "refresh_minutes": 60, "sort": "newest"})
+    assert titles(client, pod) == [4, 5]
+
+
+def test_the_next_page_loads_as_it_scrolls_into_view(client, web, monkeypatch):
+    monkeypatch.setattr("podblock.web.podcasts.PAGE_SIZE", 2)
+    pod = add(client, web, *(item(n) for n in range(1, 4)))
+    more = re.search(r'<li class="ep-more">.*?</li>', client.get(f"/podcasts/{pod}").text, re.S).group(0)
+    assert 'hx-trigger="revealed, click"' in more and f'href="/podcasts/{pod}?page=2"' in more
+    assert "ep-more" not in client.get(f"/podcasts/{pod}?page=2&partial=1").text  # the last page
+
+
+def test_each_row_has_a_download_button(client, web):
+    pod = add(client, web, item(1))
+    (one,) = ids_of(client, pod, "ep-1")
+    row = client.get(f"/episodes/{one}/row").text
+    assert 'class="icon-btn ep-dl"' in row and 'value="download"' in row and "Download and cut" in row
+    res = client.post(f"/podcasts/{pod}/episodes", data={"action": "download", "ids": one}, headers=JSON)
+    assert res.json() == {"action": "download", "changed": [one]}
+    row = client.get(f"/episodes/{one}/row").text
+    assert "ep-dl-busy" in row and 'value="download"' not in row and 'hx-trigger="every 3s"' in row
+
+
+def test_only_the_admin_sees_downloads(client, web):
+    add(client, web, item(1))
+    page = client.get("/downloads", headers=HTML)
+    assert page.status_code == 200 and "Nothing on disk" in page.text and 'href="/downloads"' in page.text
+    bob = bob_logged_in(client)
+    assert bob.get("/downloads", headers=HTML).status_code == 403
+    assert bob.post("/downloads/delete", data={"ids": 1}).status_code == 403
+    assert 'href="/downloads"' not in bob.get("/", headers=HTML).text

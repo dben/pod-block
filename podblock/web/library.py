@@ -55,9 +55,9 @@ def _like(q: str) -> str:
 
 
 def episodes(db: sqlite3.Connection, user_id: int, podcast_id: int, archived: bool, q: str = "",
-             limit: int = 50, offset: int = 0, downloaded: bool = False,
-             filtered: bool = False) -> tuple[list[sqlite3.Row], int]:
-    """One page of a podcast's episodes, newest first, and how many match in all.
+             limit: int = 50, offset: int = 0, downloaded: bool = False, filtered: bool = False,
+             oldest_first: bool = False) -> tuple[list[sqlite3.Row], int]:
+    """One page of a podcast's episodes, newest first (or oldest), and how many match in all.
 
     `downloaded` keeps only episodes downloaded at some point: queued, ready, failed or cleaned up.
     Episodes a filter hides from this user are left out; `filtered` lists only those, archived or not."""
@@ -70,10 +70,11 @@ def episodes(db: sqlite3.Connection, user_id: int, podcast_id: int, archived: bo
         where += " AND e.title LIKE ? ESCAPE '\\'"
         args.append(_like(q.strip()))
     total = db.execute(f"SELECT COUNT(*) FROM episodes e {USER_JOIN} WHERE {where}", args).fetchone()[0]
+    order = "ASC" if oldest_first else "DESC"
     rows = db.execute(
         f"""SELECT e.*, {ARCHIVED} AS archived, COALESCE(ue.kept, 0) AS kept, {KEPT_ANY} AS kept_any
             FROM episodes e {USER_JOIN} WHERE {where}
-            ORDER BY e.pub_ts IS NULL, e.pub_ts DESC, e.id DESC LIMIT ? OFFSET ?""",
+            ORDER BY e.pub_ts IS NULL, e.pub_ts {order}, e.id {order} LIMIT ? OFFSET ?""",
         [*args, limit, offset]).fetchall()
     return rows, total
 

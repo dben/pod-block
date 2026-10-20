@@ -188,6 +188,13 @@ MIGRATIONS = [
     SELECT u.id, p.id, p.public_token, strftime('%s', 'now') + 0.0 FROM users u, podcasts p
     WHERE u.is_admin = 1 AND p.public_token IS NOT NULL;
     """,
+    # 13: each user's omni feed, of every downloaded episode of their podcasts; and the order of each
+    # podcast's episode list
+    """
+    ALTER TABLE users ADD COLUMN omni_token TEXT;  -- the omni feed's address: /p/<token>/feed.xml
+    CREATE UNIQUE INDEX users_omni_token ON users(omni_token);
+    ALTER TABLE podcasts ADD COLUMN sort_oldest INTEGER NOT NULL DEFAULT 0;  -- list episodes oldest first
+    """,
 ]
 
 

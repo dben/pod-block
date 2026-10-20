@@ -39,6 +39,20 @@ def _unlink(path: str | None) -> None:
         Path(path).unlink(missing_ok=True)
 
 
+def clear(db: sqlite3.Connection, ep: sqlite3.Row, now: float | None = None) -> None:
+    """Delete an episode's download, cut file and waveform. A ready one becomes `expired`, to be downloaded
+    again and cut the same way; any other keeps its state. The caller commits."""
+    for path in (ep["original_path"], ep["cut_path"], ep["peaks_path"]):
+        _unlink(path)
+    if ep["state"] == "ready":
+        db.execute("""UPDATE episodes SET state = 'expired', state_note = NULL, original_path = NULL, cut_path = NULL,
+                      peaks_path = NULL, cut_spec = NULL, ready_at = NULL, expired_at = ? WHERE id = ?""",
+                   (now or time.time(), ep["id"]))
+    else:
+        db.execute("UPDATE episodes SET original_path = NULL, cut_path = NULL, peaks_path = NULL, cut_spec = NULL "
+                   "WHERE id = ?", (ep["id"],))
+
+
 def expire_due(db: sqlite3.Connection, now: float | None = None) -> list[int]:
     """Delete the files of every episode whose time is up. Returns the ids that expired."""
     now = now or time.time()
@@ -47,11 +61,7 @@ def expire_due(db: sqlite3.Connection, now: float | None = None) -> list[int]:
             WHERE e.state = 'ready' AND e.ready_at IS NOT NULL AND p.retention_days > 0
               AND e.ready_at + p.retention_days * {DAY} <= ? AND NOT {KEPT}""", (now,)).fetchall()
     for ep in due:
-        for path in (ep["original_path"], ep["cut_path"], ep["peaks_path"]):
-            _unlink(path)
-        db.execute("""UPDATE episodes SET state = 'expired', state_note = NULL, original_path = NULL, cut_path = NULL,
-                      peaks_path = NULL, cut_spec = NULL, ready_at = NULL, expired_at = ? WHERE id = ?""",
-                   (now, ep["id"]))
+        clear(db, ep, now)
     # Downloads that never became ready (a failed job, companions of a cancelled one) go on the same clock.
     leftovers = db.execute(
         f"""SELECT e.id, e.original_path, p.retention_days FROM episodes e JOIN podcasts p ON p.id = e.podcast_id

@@ -2,8 +2,6 @@
 {% block content %}
 {% set art = podcast.image_url|web_url %}
 {% set about = podcast.description|text %}
-<div x-data="{ feed: {{ 'true' if request.query_params.get('feed') else 'false' }}, settings: false,
-              filters: {{ 'true' if request.query_params.get('filters') else 'false' }} }">
 <section class="show-head">
   {% if art %}<img class="show-backdrop" src="{{ art }}" alt="" aria-hidden="true" referrerpolicy="no-referrer">{% endif %}
   <div class="show-head-inner">
@@ -47,36 +45,11 @@
           </button>
         </form>
         {% endif %}
-        <button class="btn btn-ghost btn-sm" type="button" @click="feed = !feed" :aria-expanded="feed">
-          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 19a1 1 0 1 0 0-2 1 1 0 0 0 0 2zM4 11a9 9 0 0 1 9 9M4 4a16 16 0 0 1 16 16"/></svg>
-          Private feed
-        </button>
-        <button class="btn btn-ghost btn-sm" type="button" @click="settings = !settings" :aria-expanded="settings">
-          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 2v3m0 14v3M4.9 4.9 7 7m10 10 2.1 2.1M2 12h3m14 0h3M4.9 19.1 7 17m10-10 2.1-2.1"/></svg>
-          Settings
-        </button>
-        <button class="btn btn-ghost btn-sm" type="button" @click="filters = !filters" :aria-expanded="filters">
-          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16l-6 7.5V19l-4-2v-4.5z"/></svg>
-          Filters{% if filters %} <span class="nav-count">{{ filters|length }}</span>{% endif %}
-        </button>
         {% if podcast.link|web_url %}
         <a class="btn btn-ghost btn-sm" href="{{ podcast.link }}" target="_blank" rel="noopener noreferrer">
           <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg>
           Website
         </a>
-        {% endif %}
-        {% if user.is_admin %}
-        <details class="menu">
-          <summary class="btn btn-ghost btn-sm icon-only" aria-label="More actions">
-            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg>
-          </summary>
-          <div class="menu-pop">
-            <form method="post" action="/podcasts/{{ podcast.id }}/remove"
-                  data-confirm="Remove {{ podcast.name }}? Episodes you haven't downloaded are deleted. Blocks learned from it stay, since they help find ads in other shows.">
-              <button class="danger" type="submit">Remove podcast</button>
-            </form>
-          </div>
-        </details>
         {% endif %}
       </div>
       <p class="hint">
@@ -87,45 +60,29 @@
   </div>
 </section>
 
-<section class="card settings-panel" x-show="settings" x-cloak x-transition.opacity>
-  <h2>Settings</h2>
-  <form class="settings-form" method="post" action="/podcasts/{{ podcast.id }}/settings">
-    <label class="field">
-      <span>Clean up downloads after</span>
-      <span class="input-with-unit">
-        <input class="input" type="number" name="retention_days" min="0" max="3650" value="{{ podcast.retention_days }}" required>
-        <span class="muted">days</span>
-      </span>
-      <small class="hint">Counted from when an episode is ready. 0 keeps them for good. Episodes anyone keeps stay.</small>
-    </label>
-    <label class="field">
-      <span>Check for new episodes every</span>
-      <select class="input" name="refresh_minutes">
-        {% for minutes, label in [(15, '15 minutes'), (30, '30 minutes'), (60, 'hour'), (180, '3 hours'), (360, '6 hours'), (720, '12 hours'), (1440, 'day'), (10080, 'week')] %}
-        <option value="{{ minutes }}" {% if podcast.refresh_minutes == minutes %}selected{% endif %}>{{ label }}</option>
-        {% endfor %}
-        {% if podcast.refresh_minutes not in [15, 30, 60, 180, 360, 720, 1440, 10080] %}
-        <option value="{{ podcast.refresh_minutes }}" selected>{{ podcast.refresh_minutes }} minutes</option>
-        {% endif %}
-      </select>
-    </label>
-    <label class="field">
-      <span>Also cut new audio between cuts up to</span>
-      <span class="input-with-unit">
-        <input class="input" type="number" name="fill_gaps" min="0" max="120" step="1" value="{{ podcast.fill_gaps|round|int }}" required>
-        <span class="muted">seconds apart</span>
-      </span>
-      <small class="hint">Catches a new ad that plays between two known ones. Too high and a short bit of the show between two ads goes too.</small>
-    </label>
-    <label class="tl-check settings-check">
-      <input type="checkbox" name="auto_download" value="true" {% if podcast.auto_download %}checked{% endif %}>
-      Download new episodes as they appear
-    </label>
-    <button class="btn btn-primary btn-sm" type="submit">Save</button>
-  </form>
-</section>
-
-<section class="card filters-panel" x-show="filters" x-cloak x-transition.opacity>
+<nav class="section-tabs" id="tabs" aria-label="Podcast">
+  <a href="/podcasts/{{ podcast.id }}#tabs" {% if tab == 'episodes' %}aria-current="page"{% endif %}>
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10"/></svg>
+    Episodes</a>
+  <a href="/podcasts/{{ podcast.id }}?tab=feed#tabs" {% if tab == 'feed' %}aria-current="page"{% endif %}>
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 19a1 1 0 1 0 0-2 1 1 0 0 0 0 2zM4 11a9 9 0 0 1 9 9M4 4a16 16 0 0 1 16 16"/></svg>
+    Private feed</a>
+  <a href="/podcasts/{{ podcast.id }}?tab=filters#tabs" {% if tab == 'filters' %}aria-current="page"{% endif %}>
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16l-6 7.5V19l-4-2v-4.5z"/></svg>
+    Filters{% if filters %} <span class="count">{{ filters|length }}</span>{% endif %}</a>
+  <a href="/podcasts/{{ podcast.id }}?tab=settings#tabs" {% if tab == 'settings' %}aria-current="page"{% endif %}>
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 2v3m0 14v3M4.9 4.9 7 7m10 10 2.1 2.1M2 12h3m14 0h3M4.9 19.1 7 17m10-10 2.1-2.1"/></svg>
+    Settings</a>
+</nav>
+{% if tab == 'feed' %}
+{% set feed_title = 'Private feed' %}
+{% set feed_about = "Add this address to any podcast app to get " ~ private_count|plural('episode') ~ " with the repeats cut out. It's your own: it lists the episodes anyone has downloaded, except the ones you've archived or filtered, and new ones appear when they're ready." %}
+{% set feed_url, feed_qr, feed_id = private_url, private_qr, 'private-url' %}
+{% set feed_new = '/podcasts/' ~ podcast.id ~ '/feed-token' %}
+{% set feed_confirm = "Make a new address for your feed? Apps using the old one will stop getting episodes until you add the new one. Other people's feeds don't change." %}
+{% include "_feed_panel.html" %}
+{% elif tab == 'filters' %}
+<section class="card filters-panel">
   <h2>Filters</h2>
   <p class="muted">Hide episodes whose titles match a regular expression. It matches anywhere in the title and
     ignores case: <code>rewind|best of</code> hides both. Hidden episodes are in the Filtered tab.</p>
@@ -142,7 +99,7 @@
       {% if user.is_admin or f.user_id == user.id %}
       <form method="post" action="/filters/{{ f.id }}/remove"
             {% if f.processing %}data-confirm="Remove this filter? Its episodes show for everyone again, and can be used to find repeats again."{% endif %}>
-        <input type="hidden" name="next" value="/podcasts/{{ podcast.id }}?filters=1">
+        <input type="hidden" name="next" value="/podcasts/{{ podcast.id }}?tab=filters#tabs">
         <button class="btn btn-ghost btn-sm" type="submit">Remove</button>
       </form>
       {% endif %}
@@ -173,32 +130,72 @@
   </form>
 </section>
 
-<section class="card feed-panel" x-show="feed" x-cloak x-transition.opacity>
-  <div class="feed-panel-body">
-    <h2>Private feed</h2>
-    <p class="muted">Add this address to any podcast app to get {{ private_count|plural('episode') }} with the
-      repeats cut out. It's your own: it lists the episodes anyone has downloaded, except the ones you've
-      archived or filtered, and new ones appear when they're ready.</p>
-    <div class="copy-row">
-      <input class="input mono" type="text" readonly value="{{ private_url }}" id="private-url" aria-label="Private feed address"
-             @focus="$el.select()">
-      <button class="btn btn-primary" type="button" data-copy="#private-url">Copy</button>
-    </div>
-    <p class="hint">No login is needed to use it, so anyone with the address can listen. It isn't listed
-      anywhere and asks podcast directories not to list it.</p>
-    <form method="post" action="/podcasts/{{ podcast.id }}/feed-token"
-          data-confirm="Make a new address for your feed? Apps using the old one will stop getting episodes until you add the new one. Other people's feeds don't change.">
-      <button class="btn btn-ghost btn-sm" type="submit">Make a new address</button>
-    </form>
-  </div>
-  <div class="qr" aria-label="QR code of the address">{{ private_qr|safe }}</div>
+{% elif tab == 'settings' %}
+<section class="card settings-panel">
+  <h2>Settings</h2>
+  <p class="muted">Shared by everyone who follows this podcast.</p>
+  <form class="settings-form" method="post" action="/podcasts/{{ podcast.id }}/settings">
+    <label class="field">
+      <span>Clean up downloads after</span>
+      <span class="input-with-unit">
+        <input class="input" type="number" name="retention_days" min="0" max="3650" value="{{ podcast.retention_days }}" required>
+        <span class="muted">days</span>
+      </span>
+      <small class="hint">Counted from when an episode is ready. 0 keeps them for good. Episodes anyone keeps stay.</small>
+    </label>
+    <label class="field">
+      <span>Check for new episodes every</span>
+      <select class="input" name="refresh_minutes">
+        {% for minutes, label in [(15, '15 minutes'), (30, '30 minutes'), (60, 'hour'), (180, '3 hours'), (360, '6 hours'), (720, '12 hours'), (1440, 'day'), (10080, 'week')] %}
+        <option value="{{ minutes }}" {% if podcast.refresh_minutes == minutes %}selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+        {% if podcast.refresh_minutes not in [15, 30, 60, 180, 360, 720, 1440, 10080] %}
+        <option value="{{ podcast.refresh_minutes }}" selected>{{ podcast.refresh_minutes }} minutes</option>
+        {% endif %}
+      </select>
+    </label>
+    <label class="field">
+      <span>Also cut new audio between cuts up to</span>
+      <span class="input-with-unit">
+        <input class="input" type="number" name="fill_gaps" min="0" max="120" step="1" value="{{ podcast.fill_gaps|round|int }}" required>
+        <span class="muted">seconds apart</span>
+      </span>
+      <small class="hint">Catches a new ad that plays between two known ones. Too high and a short bit of the show between two ads goes too.</small>
+    </label>
+    <label class="field">
+      <span>List episodes</span>
+      <select class="input" name="sort">
+        <option value="newest">Newest first</option>
+        <option value="oldest" {% if podcast.sort_oldest %}selected{% endif %}>Oldest first</option>
+      </select>
+      <small class="hint">Oldest first suits shows that are best heard in order.</small>
+    </label>
+    <label class="tl-check settings-check">
+      <input type="checkbox" name="auto_download" value="true" {% if podcast.auto_download %}checked{% endif %}>
+      Download new episodes as they appear
+    </label>
+    <button class="btn btn-primary btn-sm" type="submit">Save</button>
+  </form>
 </section>
-</div>
 
+{% if user.is_admin %}
+<section class="card danger-zone">
+  <div>
+    <h2>Remove podcast</h2>
+    <p class="muted">Stops following it for everyone. Episodes nobody downloaded are deleted; downloaded ones,
+      and the blocks learned from it, stay. Adding the same feed again brings it back.</p>
+  </div>
+  <form method="post" action="/podcasts/{{ podcast.id }}/remove"
+        data-confirm="Remove {{ podcast.name }}? Episodes you haven't downloaded are deleted. Blocks learned from it stay, since they help find ads in other shows.">
+    <button class="btn btn-ghost btn-sm danger" type="submit">Remove podcast</button>
+  </form>
+</section>
+{% endif %}
+{% else %}
 <div class="toolbar">
   <nav class="tabs" aria-label="Episode lists">
     <a href="/podcasts/{{ podcast.id }}" {% if view == 'active' %}aria-current="page"{% endif %}>
-      Episodes <span class="count" data-count="active">{{ '{:,}'.format(counts.active) }}</span></a>
+      All <span class="count" data-count="active">{{ '{:,}'.format(counts.active) }}</span></a>
     <a href="/podcasts/{{ podcast.id }}?view=downloaded" {% if view == 'downloaded' %}aria-current="page"{% endif %}>
       Downloaded <span class="count" data-count="downloaded">{{ '{:,}'.format(counts.downloaded) }}</span></a>
     <a href="/podcasts/{{ podcast.id }}?view=archived" {% if view == 'archived' %}aria-current="page"{% endif %}>
@@ -233,7 +230,7 @@
   {% endif %}
   {% if episodes %}
   <p class="list-note muted">
-    {% if q %}{{ "{:,}".format(total) }} matching “{{ q }}”{% else %}Newest first{% endif %}
+    {% if q %}{{ "{:,}".format(total) }} matching “{{ q }}”{% else %}{{ 'Oldest' if podcast.sort_oldest else 'Newest' }} first{% endif %}
     <span class="hide-touch"> · Tick the artwork to select; shift-click to select a range.</span>
     <span class="show-touch"> · Tap the artwork, or press and hold, to select.</span>
   </p>
@@ -268,4 +265,5 @@
     <button class="btn btn-ghost btn-sm" type="button" data-clear>Clear</button>
   </div>
 </form>
+{% endif %}
 {% endblock %}
