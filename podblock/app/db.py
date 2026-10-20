@@ -6,6 +6,11 @@ tables. The app adds its own tables, and its own columns on `podcasts` and
 functions given the connection. The last step applied is kept in
 `settings` under `app_schema`.
 
+Each side changes its tables on its own, so neither may name a table, a
+column or a `settings` key the other has. A step, once shipped, never
+changes: a database that ran it won't run it again, so a change is a new
+step at the end. `tests/test_schema.py` checks all of this.
+
 Writes go in `transaction` blocks (from the detector's store): a function that
 writes wraps its own writes in one, and a caller that needs several of them to
 land together wraps the lot in another; only the outermost block commits.
