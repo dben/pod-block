@@ -68,15 +68,13 @@ podblock report --feed "$FEED"        # repeated sections in the newest episode
 
 ## Web app
 
-A web app to manage it all is under way; `WEBAPP.md` has the plan and its
-status. So far the admin can log in with an API key and add users with
-passwords, and each user picks which podcasts show on their home page. You
-can add feeds, browse, search and archive their episodes, and download
-episodes: a background job finds their repeats and makes a copy with them
-cut out, to play or download from the episode's page, check and change on a
-timeline, and get in any podcast app through your own private feed of each
-podcast, or one omni feed of them all. The admin has a page of every download
-on disk, with the space it takes, to delete them from.
+The web app follows feeds and cuts the repeats out of the episodes you
+pick. Download an episode and a background job finds its repeats and makes a
+copy with them cut out, to play from the episode's page, check and change on
+a timeline, and get in any podcast app through your own private feed of each
+podcast, or one omni feed of them all. The admin logs in with an API key and
+adds users with passwords; each user picks their own podcasts. `WEBAPP.md`
+describes it in full.
 
 ```sh
 pip install -e '.[web]'
@@ -197,7 +195,7 @@ Measured on one CPU core:
 | --- | --- |
 | Fingerprinting | about 30 s per hour of audio, about 0.3 GB of memory whatever the length |
 | Fingerprint file | about 2 MB per hour of audio |
-| Stored block | about 60 KB per minute of block (was 380 KB as one row per hash) |
+| Stored block | about 60 KB per minute of block |
 | Adding one 1-hour episode (download aside) | about 6 s after fingerprinting |
 | Report on a stored episode | about 1 s; 0.6 s with `--cached` |
 
