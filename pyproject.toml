@@ -43,3 +43,6 @@ extend-immutable-calls = ["fastapi.Depends", "fastapi.Form", "fastapi.Query"]  #
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["E402"]  # imports after pytest.importorskip, which skips a module when the web extras aren't there
+
+[tool.uv]
+exclude-newer = "1 week"  # lock only releases that have been out a week; Dependabot's cooldown matches it

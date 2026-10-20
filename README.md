@@ -286,13 +286,16 @@ raw XML); `WEBAPP.md` lists them.
 ## Tests and lint
 
 ```sh
-pip install -c constraints.txt -e '.[web,test,dev]'
-pytest -m "not slow"   # about 30 seconds
-pytest                 # everything, about 5 minutes: the slow tests cut real audio and start workers
-ruff check .
+uv sync --all-extras     # or: pip install -e '.[web,test,dev]', unpinned
+uv run pytest -m "not slow"   # about 30 seconds
+uv run pytest                 # everything, about 5 minutes: the slow tests cut real audio and start workers
+uv run ruff check .
 ```
 
-`constraints.txt` pins every package to the versions CI tests and the Docker
-image ships; `pyproject.toml` keeps the ranges pod-block works with. Its first
-lines say how to update it. Shared test helpers are in `tests/fakes.py`, and
-the fixtures built on them in `tests/conftest.py`.
+`uv.lock` pins every package to the versions CI tests and the Docker image
+ships, for each Python and platform pod-block supports; `pyproject.toml` keeps
+the ranges it works with. `uv lock --upgrade` updates the pins, to releases at
+least a week old (`exclude-newer` in `pyproject.toml`), and Dependabot opens
+pull requests for the same each week (`.github/dependabot.yml`). Shared test
+helpers are in `tests/fakes.py`, and the fixtures built on them in
+`tests/conftest.py`.
