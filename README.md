@@ -28,19 +28,19 @@ password. Then:
 
 1. Paste a podcast's RSS feed address into the box on the home page, or
    type its name to search for it.
-2. Pick a few episodes and press **Download**. Each is downloaded,
-   compared with others of the show, and cut. For a new show, pod-block
-   takes a few more episodes along to compare with, so the first download
-   takes longest.
+2. Pick a few episodes and press **Download**. The first download of a
+   new show takes longest, since it brings a few more episodes along to
+   compare with.
 3. Open the show's **Private feed** tab and add that address to your
    podcast app, or scan its QR code.
 
 `pb-data` holds the database (small; back it up) and `pb-media` the audio
-(large; it can be downloaded again). Podcast apps often fetch feeds from
-their own servers, so for the private feed to work, pod-block must be
-reachable from the internet: put it behind HTTPS and give it its address
-with `-e PODBLOCK_PUBLIC_URL=https://pods.example.com`. `WEBAPP.md` lists
-the other settings.
+(large; it can be downloaded again).
+
+For private feeds to work, pod-block must be reachable from the internet,
+since podcast apps often fetch feeds from their own servers. Put it behind
+HTTPS and set `-e PODBLOCK_PUBLIC_URL=https://pods.example.com`.
+`WEBAPP.md` lists the other settings.
 
 ### Kubernetes
 
@@ -107,11 +107,10 @@ the type decides two things:
 - **What gets cut.** Most blocks are cut where they play and no more. Some
   stretch to cover the audio around them, as below.
 
-pod-block types blocks itself, and you seldom need to change them. You
-change a type to tell it something it can't work out alone, such as which
-tune opens the show, or to undo a mistake. In the web app, pick a type
-from a section's menu on the timeline (or see [`CLI.md`](CLI.md)). A type
-set by hand stays: pod-block never changes it back.
+pod-block types blocks itself. Change a type to mark which tune opens the
+show, or to undo a mistake: in the web app, from a section's menu on the
+timeline (or see [`CLI.md`](CLI.md)). A type set by hand is never changed
+back.
 
 Each block belongs to the podcast it was first found in.
 
@@ -136,11 +135,11 @@ Some outros are read over a music bed, and the bed rarely matches between
 episodes. pod-block can find these from the sound alone (see "Outros read
 over music").
 
-### Local
+### Local (`show`)
 
 Cut where it plays, like a repeated block, but looked for in its own show
-only. Use it for audio this show plays that other shows might play and
-want to keep, such as stock music.
+only. Use it for audio, such as stock music, that other shows might play
+and want to keep.
 
 ### Bumpers
 
@@ -179,18 +178,15 @@ ad break also marks its bumpers as ignored, so the break stays.
 ## Outros read over music
 
 Some shows end with minutes of talk over a music bed: patron names, plugs,
-announcements. The talk changes every week and buries the music, so the bed
-seldom matches between episodes and no block covers it. It still stands out
-in the loudness floor, the level of the quietest moments: during the show it
-swings as people pause and talk over each other, while under a steady bed it
-holds still. With the setting on, the steady stretch at the end of each
-episode is cut as an outro, through to the end. It is off by default and set
-per podcast from the command line (see [`CLI.md`](CLI.md)).
+announcements. The talk changes every week, so the bed seldom matches
+between episodes and no block covers it. It shows in the loudness floor
+instead, the level of the quietest moments: during the show it swings as
+people pause, while under a steady bed it holds still. With the setting
+on, that steady stretch at the end of an episode is cut as an outro.
 
-On four episodes of one show it found outros of 6 to 8.5 minutes; on the two
-given by hand it started at 1:02:19 (given: 1:02:19) and 1:06:31 (given:
-around 1:07:32). It found none in the eight episodes of other shows tried.
-A loudness curve is stored with each fingerprint, so this needs no audio.
+The setting is off by default and set per podcast from the command line
+(see [`CLI.md`](CLI.md)). It works from a loudness curve stored with each
+fingerprint, so it needs no audio.
 
 ## How it works
 
@@ -198,12 +194,9 @@ A loudness curve is stored with each fingerprint, so this needs no audio.
    spectrogram. The strongest peaks are kept, each is paired with a few peaks
    just after it, and each pair becomes a 32-bit hash stamped with its time.
    This survives re-encoding, volume changes and moderate noise.
-   - By default, audio is decoded at 16 kHz and 4-8 kHz is fingerprinted as
-     a band of its own. Speech sits mostly below 4 kHz, so music played
-     under a host's voice often only shows up there. On the test episodes
-     this nearly tripled how much of a music bed under speech was found.
-   - Picking peaks within several bands separately (off by default) found
-     under a second more on the same test, for 8% more hashes.
+   - Audio is decoded at 16 kHz, and 4-8 kHz is fingerprinted as a band of
+     its own. Speech sits mostly below 4 kHz, so music under a host's voice
+     often only shows up there.
    - A store keeps the settings it was created with; fingerprints from
      different settings never match.
 2. **Compare.** Each new episode is compared with its comparison set (see
@@ -292,10 +285,7 @@ uv run pytest                 # everything, about 5 minutes: the slow tests cut 
 uv run ruff check .
 ```
 
-`uv.lock` pins every package to the versions CI tests and the Docker image
-ships, for each Python and platform pod-block supports; `pyproject.toml` keeps
-the ranges it works with. `uv lock --upgrade` updates the pins, to releases at
-least a week old (`exclude-newer` in `pyproject.toml`), and Dependabot opens
-pull requests for the same each week (`.github/dependabot.yml`). Shared test
-helpers are in `tests/fakes.py`, and the fixtures built on them in
-`tests/conftest.py`.
+`uv.lock` pins the versions CI tests and the image ships; `pyproject.toml`
+keeps the ranges. `uv lock --upgrade` updates the pins to releases at least
+a week old, and Dependabot does the same weekly. Test helpers are in
+`tests/fakes.py`, fixtures in `tests/conftest.py`.

@@ -81,7 +81,7 @@ then on, since fingerprints made with different settings never match.
   older), compare them with this one and store any new blocks. Good for
   catching ads that only ran for a week or two.
 - `--podcast P`: for a file or URL, which podcast's `intro`, `outro` and
-  `show` blocks apply.
+  `show` (Local) blocks apply.
 - `--outro-bed`: look for an outro read over a music bed even when the
   podcast's setting is off.
 - `--detail`: list the parts that make up each section.

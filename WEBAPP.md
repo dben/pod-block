@@ -12,7 +12,7 @@ built, and what could come next.
 | --- | --- |
 | Database | One database for the detector and the app: the app's tables and columns go in `podblock.sqlite` beside the detector's. If we move off SQLite, both move to the same host together. |
 | Marking blocks | Marking a block intro, outro, show or ignored on one episode changes the block itself, for every episode, as `podblock type` does. |
-| Block types | `show`: a block checked only against its own podcast's episodes, never other feeds'. `ignored`: a false positive, never reported, so never cut. Both are choices in the timeline. Every section a report lists is cut. |
+| Block types | `show` (Local in the app): a block checked only against its own podcast's episodes, never other feeds'. `ignored`: a false positive, never reported, so never cut. Both are choices in the timeline. Every section a report lists is cut. |
 | Comparison episodes | When a show has fewer than 4 fingerprinted episodes, a download also pulls the episodes published after the chosen one, nearest first, and older ones only when it reaches the newest episode. These are fully processed too: shows often run in parts, so they are likely next anyway. |
 | Retention | Counts from when an episode was processed, not its publish date. A keep pin stops the clock. |
 | Users | Built for a few users. The admin logs in with the API key and adds the others, with user names and passwords. Feeds, downloads, processing, blocks and podcast settings are shared, and any user can add a feed, download and edit timelines. Removing a podcast is the admin's, since it changes things for everyone. Archived, kept, filters, which podcasts are on the home page, and private feeds are per user. |
@@ -346,8 +346,8 @@ on Kubernetes, with backups and upgrades, see `deployment/README.md`.
   random token of their own (128 bits, URL-safe), made the first time they
   open the show page. It lists ready episodes with their cut audio on disk,
   newest first, except the ones that user archived or that a filter hides
-  from them. The Private feed tab shows the address with Copy, a QR code
-  (made on the server with `segno`), and how many episodes are in it.
+  from them. The Private feed tab shows the address with Copy and a QR code (made on
+  the server with `segno`).
 - Each user also gets an omni feed, at the same kind of address: every
   ready episode of the podcasts on their home page, newest first, without
   the ones they archived or filtered. Its channel is pod-block's own ("Pod
@@ -442,8 +442,9 @@ on Kubernetes, with backups and upgrades, see `deployment/README.md`.
   fresh first, since the detector ages them by file time. Audio the CLI
   downloaded is left alone.
 - The Settings tab sets days before clean-up, how often to check the feed
-  (15 minutes to a week), the gap cut between two repeats, oldest first,
-  and whether new episodes download on their own. Settings are shared.
+  (15 minutes to a week), how close two repeats must be to be combined,
+  oldest first, and whether new episodes download on their own. Settings
+  are shared.
 
 ### Look and feel
 
