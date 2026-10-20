@@ -19,7 +19,7 @@ built, and what could come next.
 | Downloads | By hand, apart from the comparison episodes above and podcasts set to download new episodes on their own. |
 | Short repeats | Sections under 15 seconds aren't cut (`report.MIN_SECTION_SEC`; the CLI's `--min-section`), unless they are ad breaks, intros, outros, show blocks or blocks typed by hand. Short blocks are still stored, since bumpers are short and are how breaks are found. |
 | Intro and outro marks | Marking a section Intro types only its last block, and Outro only its first: the report runs those to the ends anyway, and a section's other blocks are often ads that also play in mid-roll breaks. Keep and Show only type every block in the section. |
-| Grabs | A grab is a user getting an episode: through their private feed or omni feed, by playing it on its page, or with its Download button. Hits within 10 minutes of the last one, or starting partway into the file, are the same grab, since apps stream and download at once and seek with byte ranges. A play on the page counts after the longer of 5 minutes and 5% of the episode (90% of one shorter than that). |
+| Grabs | A grab is a user getting an episode: through their private feed or omni feed, by playing it in its page's player (not the timeline's), or with its Download button. Hits within 10 minutes of the last one, or starting partway into the file, are the same grab, since apps stream and download at once and seek with byte ranges. A play on the page counts after the longer of 5 minutes and 5% of the episode (90% of one shorter than that). |
 | Keeping it generic | No real feed URLs, show names or audio in the repo, its history or its tests. Real feeds for trying things by hand live in the environment variable `PODBLOCK_TEST_FEEDS` (space-separated), set in the cloud environment's settings. |
 
 ## Stack
@@ -169,6 +169,13 @@ on Kubernetes, with backups and upgrades, see `deployment/README.md`.
   retry. Cancelling stops a running job between steps or mid-download.
   Jobs left running when the app stops go back in the queue on start,
   unless they were being cancelled.
+- Only one job works on an episode at a time, however many workers there
+  are. A running job holds its episode and the ones it took along
+  (`episodes.held_by`); a job asked for one of those meanwhile (a re-cut,
+  say) waits in the queue until it is let go, and the other workers take
+  the next job instead. An episode has at most one job waiting. The
+  episode's state can't decide this, as a job moves it back and forth as it
+  goes.
 - Cut audio keeps the source format (MP3, AAC in M4A, Opus, Vorbis; anything
   else becomes MP3) at the nearest standard bitrate, with a 40 ms fade
   either side of each join. Tags and cover art are copied. Kept stretches
@@ -362,10 +369,10 @@ on Kubernetes, with backups and upgrades, see `deployment/README.md`.
   of the last one, or one that starts partway into the file, adds to the
   grab before it. A `HEAD`, and the chapters and transcripts, count for
   nothing.
-- Playing an episode on its page counts too, once the players there have
-  played the longer of 5 minutes and 5% of it (or 90% of an episode shorter
-  than 5 minutes); jumps and seeks don't add to the time. So does the
-  page's Download button.
+- Playing an episode on its page counts too, once its player has played
+  the longer of 5 minutes and 5% of it (or 90% of an episode shorter than 5
+  minutes); seeks don't add to the time. The timeline's player is for
+  editing and doesn't count. The page's Download button counts too.
 - Each row in the episode list, and the episode page, shows "Grabbed" (with
   "×2" and so on) for your own grabs, with when you last did in its tooltip.
   A Grabbed tab lists the episodes you grabbed, until you archive them. The
@@ -413,7 +420,7 @@ on Kubernetes, with backups and upgrades, see `deployment/README.md`.
 
 ## Data model
 
-The app's tables and columns, added by migrations 1 to 14 in
+The app's tables and columns, added by migrations 1 to 15 in
 `podblock/web/db.py`, beside the detector's (see `README.md`):
 
 ```
@@ -443,6 +450,7 @@ episodes  + pub_ts, summary, image_url, link, audio_type, audio_length, feed_dur
             peaks_path,                                      -- the waveform
             source_chapters, transcripts,                    -- the source's, as found when first cut
             cut_chapters,                                    -- the chapters written into the cut file
+            held_by                                          -- the running job working on it
             ready_at, expired_at                             -- the retention clock
 
 jobs(id, kind, episode_id, state, step, progress, error, cancel_requested, attempts,

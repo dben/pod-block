@@ -26,7 +26,7 @@ from ..pipeline import Paths, episode_report, find_common_blocks, load_fingerpri
 from ..store import BUMPER, BUMPER_IN, BUMPER_OUT, IGNORED, INTRO, OUTRO, PODCAST_ONLY, REPEATED, SHOW, Store
 from . import chapters
 from .config import Settings
-from .jobs import Cancelled, Context, enqueue, settle_episode
+from .jobs import Cancelled, Context, enqueue, settle_episode, take_along
 
 log = logging.getLogger(__name__)
 
@@ -67,7 +67,8 @@ def companions(db: sqlite3.Connection, ep: sqlite3.Row, count: int) -> list[sqli
     if count <= 0 or ep["pub_ts"] is None:
         return []
     usable = """podcast_id = ? AND id != ? AND fingerprint_path IS NULL AND audio_url IS NOT NULL
-                AND in_feed = 1 AND skip_processing = 0 AND COALESCE(state, '') NOT IN ('queued', 'running')"""
+                AND in_feed = 1 AND skip_processing = 0 AND COALESCE(state, '') NOT IN ('queued', 'running')
+                AND held_by IS NULL"""
     after = db.execute(f"SELECT * FROM episodes WHERE {usable} AND pub_ts > ? ORDER BY pub_ts LIMIT ?",
                        (ep["podcast_id"], ep["id"], ep["pub_ts"], count)).fetchall()
     before = db.execute(f"SELECT * FROM episodes WHERE {usable} AND pub_ts <= ? ORDER BY pub_ts DESC LIMIT ?",
@@ -185,13 +186,9 @@ def run(ctx: Context, settings: Settings) -> None:
         have = ctx.db.execute("SELECT COUNT(*) FROM episodes WHERE podcast_id = ? AND fingerprint_path IS NOT NULL "
                               "AND skip_processing = 0", (ep["podcast_id"],)).fetchone()[0]
         extra = companions(ctx.db, ep, COMPARE_WITH - have) if learn else []
-        for c in extra:
-            ctx.db.execute("UPDATE episodes SET state = 'queued', state_note = ? WHERE id = ?",
-                           (f"Coming along with “{ep['title']}”", c["id"]))
-        ctx.db.commit()
-        group += [c["id"] for c in extra]
-        for c in extra:
-            _fetch(ctx, settings, store, paths, c["id"])
+        group += take_along(ctx.db, ctx.job["id"], [c["id"] for c in extra], f"Coming along with “{ep['title']}”")
+        for other in group[1:]:
+            _fetch(ctx, settings, store, paths, other)
 
         ctx.step("Finding repeats", episode_id)
         for other in group[1:]:

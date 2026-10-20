@@ -7,9 +7,10 @@ every seek is another request; so a hit within WINDOW of the last one counts
 as the same grab. A hit that starts partway into the file is a seek or a
 resume, so it only opens a grab of its own when there was none before.
 
-Playing an episode on its page counts too, once the player has played the
-longer of APP_MIN_SEC and APP_MIN_SHARE of it (or most of it, for an episode
-shorter than that); so does the page's Download button.
+Playing an episode on its page counts too, once its player (not the
+timeline's, which is for editing) has played the longer of APP_MIN_SEC and
+APP_MIN_SHARE of it (or most of it, for an episode shorter than that); so
+does the page's Download button.
 """
 
 from __future__ import annotations

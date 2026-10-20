@@ -966,7 +966,7 @@ def test_playing_or_downloading_on_the_episode_page_counts(env):
     page = env.client.get(f"/episodes/{two}").text
     needed = re.findall(r'data-grab="/episodes/\d+/played" data-grab-after="(\d+)"', page)
     short = episode(env, "ep-2")["cut_duration"]  # about a minute: it counts once 90% of it has played
-    assert needed == [str(round(0.9 * short))] * 2 and short < 300
+    assert needed == [str(round(0.9 * short))] and short < 300  # the timeline's player doesn't count
     assert env.client.post(f"/episodes/{two}/played").json() == {"new": True}
     assert env.client.post(f"/episodes/{two}/played").json() == {"new": False}  # the same listen
     assert env.client.get(f"/episodes/{two}/audio").status_code == 200 and len(grab_rows(env)) == 1  # the player

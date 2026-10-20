@@ -99,8 +99,7 @@
         <span class="muted">{{ report.sections|length|plural('section') }} cut</span>
       </div>
       <script type="application/json" id="timeline-data">{{ timeline|tojson }}</script>
-      <audio data-original preload="none" src="{{ timeline.audio }}"
-             data-grab="/episodes/{{ e.id }}/played" data-grab-after="{{ play_needed }}"></audio>
+      <audio data-original preload="none" src="{{ timeline.audio }}"></audio>
 
       <div class="tl-toolbar">
         <button class="btn btn-primary btn-sm icon-only tl-playbtn" type="button" data-tl="play" aria-label="Play">

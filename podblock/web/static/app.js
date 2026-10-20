@@ -316,8 +316,8 @@
   });
 
   // ---- plays on a page count as grabs -------------------------------------------
-  // Adds up what the page's players have played, leaving out jumps (seeks, "Skip cuts"),
-  // and says so once it passes `data-grab-after` seconds.
+  // Adds up what the episode's player has played, leaving out jumps (seeks), and says so
+  // once it passes `data-grab-after` seconds. The timeline's player is for editing; it doesn't count.
 
   const played = {};  // grab URL -> seconds played, and whether it was sent
   for (const audio of $$("audio[data-grab]")) {

@@ -212,6 +212,10 @@ MIGRATIONS = [
     );
     CREATE INDEX grabs_user_episode ON grabs(user_id, episode_id, last_at);
     """,
+    # 15: the job working on each episode, so two workers never work on one at once
+    """
+    ALTER TABLE episodes ADD COLUMN held_by INTEGER;  -- the running job working on it: its own, or taken along
+    """,
 ]
 
 
