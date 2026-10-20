@@ -295,6 +295,12 @@ on Kubernetes, with backups and upgrades, see `deployment/README.md`.
   show's artwork when the episode has none. Guids are the store's, which
   are unique across shows. The "Omni feed" button on the home page opens
   its address and QR code.
+- Each feed, the omni feed too, has a second address, `downloaded.xml` in
+  place of `feed.xml`, with the same episodes newest downloaded first.
+  Apps sort by `pubDate`, so there each item's `pubDate` is when its
+  episode was downloaded and first cut (`ready_at`). The feed panel has a
+  switch, "By release date" or "By download date", that picks which
+  address and QR code it shows.
 - A feed keeps the show's channel and each episode's `<item>` as the source
   had them (`podblock/web/publish.py`), with these changes: the enclosure
   points at the cut file with its length and type, and `itunes:duration` is
@@ -315,8 +321,8 @@ on Kubernetes, with backups and upgrades, see `deployment/README.md`.
   episode would add nothing. Byte ranges, `HEAD`, `ETag` and caching
   headers come with it; the feed itself answers `If-None-Match` with 304.
 - "Make a new address" gives your own feed, or your omni feed, a new token
-  after a confirmation; the old address stops working at once. Audio links
-  stay as they were.
+  after a confirmation; the old address stops working at once, in both
+  orders. Audio links stay as they were.
 - Unknown tokens, and podcasts removed in the app, get a plain "Not found"
   that says nothing more.
 - Feed links use `PODBLOCK_PUBLIC_URL`, else the address the request came
@@ -418,6 +424,7 @@ only looks at fingerprinted ones, so they don't affect it.
 | `GET /login`, `POST /login`, `POST /logout` | no | session |
 | `GET /healthz` | no | probe |
 | `GET /p/{token}/feed.xml` | no | a private feed or an omni feed |
+| `GET /p/{token}/downloaded.xml` | no | the same feed, newest downloaded first |
 | `GET /p/{token}/{key}.{ext}` | no | cut audio, with byte ranges |
 | `GET /` (`?view=all`) | yes | your podcasts, or every podcast with Subscribe |
 | `POST /podcasts` | yes | add a feed |

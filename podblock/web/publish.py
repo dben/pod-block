@@ -25,6 +25,10 @@ address): every downloaded episode of the podcasts on their home page, newest
 first, under pod-block's own channel. Its items are built as above, with the
 show's name before each title (`itunes:title` too, which apps show first) and
 the show as each item's author.
+
+Each feed has a second address, `downloaded.xml` in place of `feed.xml`, that
+lists the same episodes newest downloaded first. Apps sort by `pubDate`, so
+there each item's `pubDate` is when its episode was downloaded and cut.
 """
 
 from __future__ import annotations
@@ -58,6 +62,7 @@ OMNI_TITLE = "Pod Block Omni Feed"
 OMNI_ABOUT = ("Every episode you've downloaded from your podcasts, in one feed, with the repeats cut out. "
               "Made by pod-block.")
 OMNI_ART = "static/omni.jpg"
+FEED_FILES = {False: "feed.xml", True: "downloaded.xml"}  # by_download: the feed's file name
 OUT_OF_STEP = {f"{PODCAST}chapters", f"{PODCAST}transcript", f"{PODCAST}soundbite", f"{PSC}chapters",
                f"{PODCAST}alternateEnclosure"}
 
@@ -133,26 +138,39 @@ def base_url(request: Request) -> str:
     return request.app.state.settings.public_url or str(request.base_url).rstrip("/")
 
 
-def feed_url(request: Request, token: str) -> str:
-    return f"{base_url(request)}/p/{token}/feed.xml"
+def feed_url(request: Request, token: str, by_download: bool = False) -> str:
+    return f"{base_url(request)}/p/{token}/{FEED_FILES[by_download]}"
 
 
-def published(db: sqlite3.Connection, podcast_id: int, user_id: int | None = None) -> list[sqlite3.Row]:
-    """A podcast's episodes that can be in a private feed: ready, with their cut file on disk, newest first.
-    With a user, the ones in their feed: not archived by them, nor hidden by a filter."""
+def _order(by_download: bool) -> str:
+    """Newest first: released, or downloaded."""
+    if by_download:
+        return "COALESCE(e.ready_at, e.processed_at) IS NULL, COALESCE(e.ready_at, e.processed_at) DESC, e.id DESC"
+    return "e.pub_ts IS NULL, e.pub_ts DESC, e.id DESC"
+
+
+def _downloaded_at(ep: sqlite3.Row) -> float | None:
+    """When an episode was downloaded and first cut."""
+    return ep["ready_at"] or ep["processed_at"]
+
+
+def published(db: sqlite3.Connection, podcast_id: int, user_id: int | None = None,
+              by_download: bool = False) -> list[sqlite3.Row]:
+    """A podcast's episodes that can be in a private feed: ready, with their cut file on disk, newest released
+    (or downloaded) first. With a user, the ones in their feed: not archived by them, nor hidden by a filter."""
     mine = f"AND COALESCE(ue.archived, 0) = 0 AND NOT {HIDDEN}" if user_id is not None else ""
     rows = db.execute(
         f"""SELECT e.* FROM episodes e LEFT JOIN user_episodes ue ON ue.episode_id = e.id AND ue.user_id = ?
             WHERE e.podcast_id = ? AND e.state = 'ready' AND e.cut_path IS NOT NULL {mine}
-            ORDER BY e.pub_ts IS NULL, e.pub_ts DESC, e.id DESC""",
+            ORDER BY {_order(by_download)}""",
         (user_id, podcast_id, *([user_id] if user_id is not None else []))).fetchall()
     return [r for r in rows if Path(r["cut_path"]).exists()]
 
 
-def omni_published(db: sqlite3.Connection, user_id: int) -> list[sqlite3.Row]:
+def omni_published(db: sqlite3.Connection, user_id: int, by_download: bool = False) -> list[sqlite3.Row]:
     """The episodes in a user's omni feed: ready, with their cut file on disk, of the podcasts on their home
-    page, not archived by them nor hidden by a filter; newest first. Each row has its podcast's name, author,
-    artwork, explicit flag and audio token."""
+    page, not archived by them nor hidden by a filter; newest released (or downloaded) first. Each row has its
+    podcast's name, author, artwork, explicit flag and audio token."""
     for r in db.execute("""SELECT p.id FROM podcasts p JOIN user_podcasts up ON up.podcast_id = p.id
                            WHERE up.user_id = ? AND p.public_token IS NULL""", (user_id,)).fetchall():
         ensure_token(db, r["id"])
@@ -163,7 +181,7 @@ def omni_published(db: sqlite3.Connection, user_id: int) -> list[sqlite3.Row]:
             JOIN user_podcasts up ON up.podcast_id = p.id AND up.user_id = ?
             LEFT JOIN user_episodes ue ON ue.episode_id = e.id AND ue.user_id = ?
             WHERE e.state = 'ready' AND e.cut_path IS NOT NULL AND COALESCE(ue.archived, 0) = 0 AND NOT {HIDDEN}
-            ORDER BY e.pub_ts IS NULL, e.pub_ts DESC, e.id DESC""", (user_id, user_id, user_id)).fetchall()
+            ORDER BY {_order(by_download)}""", (user_id, user_id, user_id)).fetchall()
     return [r for r in rows if Path(r["cut_path"]).exists()]
 
 
@@ -212,8 +230,9 @@ def _web(url: str | None) -> str | None:
     return url if url and url.split(":", 1)[0].lower() in {"http", "https"} else None
 
 
-def _item(ep: sqlite3.Row, audio_url: str, art: str | None = None) -> ET.Element:
-    """An episode's <item>, pointing at its cut audio. `art` is the show's artwork, for items with none."""
+def _item(ep: sqlite3.Row, audio_url: str, art: str | None = None, by_download: bool = False) -> ET.Element:
+    """An episode's <item>, pointing at its cut audio. `art` is the show's artwork, for items with none.
+    By download, its `pubDate` is when it was downloaded."""
     item = None
     if ep["item_xml"]:
         try:
@@ -239,6 +258,8 @@ def _item(ep: sqlite3.Row, audio_url: str, art: str | None = None) -> ET.Element
     own = item.find(f"{ITUNES}image")
     if (own is None or not _web(own.get("href"))) and (image := _web(ep["image_url"]) or _web(art)):
         _set(item, f"{ITUNES}image", "", {"href": image})
+    if by_download and (when := _downloaded_at(ep)):
+        _set(item, "pubDate", _rfc822(when))
     return item
 
 
@@ -257,7 +278,8 @@ def _rss(channel: ET.Element) -> bytes:
     return ET.tostring(rss, encoding="utf-8", xml_declaration=True)
 
 
-def build_feed(db: sqlite3.Connection, pod: sqlite3.Row, base: str, user_id: int, token: str) -> bytes:
+def build_feed(db: sqlite3.Connection, pod: sqlite3.Row, base: str, user_id: int, token: str,
+               by_download: bool = False) -> bytes:
     """A user's feed of a podcast, whose address holds `token`."""
     _register(pod["channel_xml"])
     channel = None
@@ -273,15 +295,15 @@ def build_feed(db: sqlite3.Connection, pod: sqlite3.Row, base: str, user_id: int
     for el in [el for el in channel if el.tag == f"{ITUNES}new-feed-url"
                or (el.tag == f"{ATOM}link" and el.get("rel") == "self")]:
         channel.remove(el)
-    self_link = ET.Element(f"{ATOM}link", href=f"{base}/p/{token}/feed.xml", rel="self",
+    self_link = ET.Element(f"{ATOM}link", href=f"{base}/p/{token}/{FEED_FILES[by_download]}", rel="self",
                            type="application/rss+xml")
     channel.insert(0, self_link)
     _set(channel, f"{ITUNES}block", "Yes")
-    episodes = published(db, pod["id"], user_id)
+    episodes = published(db, pod["id"], user_id, by_download)
     _stamp(channel, episodes)
     for ep in episodes:
         _register(ep["item_xml"])
-        channel.append(_item(ep, _audio_url(base, pod["public_token"], ep), pod["image_url"]))
+        channel.append(_item(ep, _audio_url(base, pod["public_token"], ep), pod["image_url"], by_download))
     return _rss(channel)
 
 
@@ -289,13 +311,14 @@ def _audio_url(base: str, podcast_token: str, ep: sqlite3.Row) -> str:
     return f"{base}/p/{podcast_token}/{media_key(ep['guid'])}{Path(ep['cut_path']).suffix}"
 
 
-def build_omni(db: sqlite3.Connection, user_id: int, base: str, token: str) -> bytes:
+def build_omni(db: sqlite3.Connection, user_id: int, base: str, token: str, by_download: bool = False) -> bytes:
     """A user's omni feed, whose address holds `token`: every downloaded episode of their podcasts."""
     _register(None)
-    episodes = omni_published(db, user_id)
+    episodes = omni_published(db, user_id, by_download)
     art = f"{base}/{OMNI_ART}"
     channel = ET.Element("channel")
-    ET.SubElement(channel, f"{ATOM}link", href=f"{base}/p/{token}/feed.xml", rel="self", type="application/rss+xml")
+    ET.SubElement(channel, f"{ATOM}link", href=f"{base}/p/{token}/{FEED_FILES[by_download]}", rel="self",
+                  type="application/rss+xml")
     ET.SubElement(channel, "title").text = OMNI_TITLE
     ET.SubElement(channel, "link").text = f"{base}/"
     ET.SubElement(channel, "description").text = OMNI_ABOUT
@@ -313,7 +336,7 @@ def build_omni(db: sqlite3.Connection, user_id: int, base: str, token: str) -> b
     ET.SubElement(channel, f"{PODCAST}locked").text = "yes"
     for ep in episodes:
         _register(ep["item_xml"])
-        item = _item(ep, _audio_url(base, ep["public_token"], ep), ep["podcast_image"])
+        item = _item(ep, _audio_url(base, ep["public_token"], ep), ep["podcast_image"], by_download)
         show = ep["podcast_name"] or "Untitled"
         title = (item.findtext("title") or "").strip() or ep["title"] or "Untitled"
         _set(item, "title", f"{show}: {title}")
@@ -330,11 +353,21 @@ NOT_FOUND = PlainTextResponse("Not found", status_code=404)
 
 @router.api_route("/p/{token}/feed.xml", methods=["GET", "HEAD"], include_in_schema=False)
 def private_feed(request: Request, token: str, db: sqlite3.Connection = Depends(get_db)) -> Response:
-    """A user's feed of one podcast, or their omni feed of all of them."""
+    """A user's feed of one podcast, or their omni feed of all of them, newest released first."""
+    return _serve_feed(request, token, db, by_download=False)
+
+
+@router.api_route("/p/{token}/downloaded.xml", methods=["GET", "HEAD"], include_in_schema=False)
+def private_feed_by_download(request: Request, token: str, db: sqlite3.Connection = Depends(get_db)) -> Response:
+    """The same feed, newest downloaded first."""
+    return _serve_feed(request, token, db, by_download=True)
+
+
+def _serve_feed(request: Request, token: str, db: sqlite3.Connection, by_download: bool) -> Response:
     if (pod := _feed_by_token(db, token)) is not None:
-        body = build_feed(db, pod, base_url(request), pod["user_id"], token)
+        body = build_feed(db, pod, base_url(request), pod["user_id"], token, by_download)
     elif (user := _omni_by_token(db, token)) is not None:
-        body = build_omni(db, user["id"], base_url(request), token)
+        body = build_omni(db, user["id"], base_url(request), token, by_download)
     else:
         return NOT_FOUND
     etag = '"' + hashlib.sha1(body).hexdigest()[:20] + '"'

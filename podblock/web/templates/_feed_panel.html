@@ -1,19 +1,33 @@
-{# A private feed's address with Copy, a QR code and a way to make a new one. Set feed_title, feed_about,
-   feed_url, feed_qr, feed_id, feed_new (where to post for a new address) and feed_confirm before including. #}
-<section class="card feed-panel">
+{# A private feed's addresses with Copy, a QR code and a way to make a new one. Set feed_title, feed_about,
+   feed_addresses (by release date, then by download date), feed_id, feed_new (where to post for a new
+   address) and feed_confirm before including. #}
+<section class="card feed-panel" x-data="{ order: '{{ feed_addresses[0].key }}' }">
   <div class="feed-panel-body">
     <h2>{{ feed_title }}</h2>
     <p class="muted">{{ feed_about }}</p>
-    <div class="copy-row">
-      <input class="input mono" type="text" readonly value="{{ feed_url }}" id="{{ feed_id }}" aria-label="{{ feed_title }} address"
-             onfocus="this.select()">
-      <button class="btn btn-primary" type="button" data-copy="#{{ feed_id }}">Copy</button>
+    <div class="tabs feed-order" role="group" aria-label="Order episodes">
+      {% for a in feed_addresses %}
+      <button type="button" aria-pressed="{{ 'true' if loop.first else 'false' }}"
+              :aria-pressed="order === '{{ a.key }}'" @click="order = '{{ a.key }}'">{{ a.label }}</button>
+      {% endfor %}
     </div>
+    {% for a in feed_addresses %}
+    <div class="copy-row" x-show="order === '{{ a.key }}'" {% if not loop.first %}x-cloak{% endif %}>
+      <input class="input mono" type="text" readonly value="{{ a.url }}" id="{{ feed_id }}-{{ a.key }}"
+             aria-label="{{ feed_title }} address, {{ a.label|lower }}" onfocus="this.select()">
+      <button class="btn btn-primary" type="button" data-copy="#{{ feed_id }}-{{ a.key }}">Copy</button>
+    </div>
+    {% endfor %}
+    <p class="hint" x-show="order === 'downloaded'" x-cloak>Podcast apps sort episodes by date, so this address
+      dates each episode by when it was downloaded, not when it came out.</p>
     <p class="hint">No login is needed to use it, so anyone with the address can listen. It isn't listed
       anywhere and asks podcast directories not to list it.</p>
     <form method="post" action="{{ feed_new }}" data-confirm="{{ feed_confirm }}">
       <button class="btn btn-ghost btn-sm" type="submit">Make a new address</button>
     </form>
   </div>
-  <div class="qr" aria-label="QR code of the address">{{ feed_qr|safe }}</div>
+  {% for a in feed_addresses %}
+  <div class="qr" aria-label="QR code of the address, {{ a.label|lower }}" x-show="order === '{{ a.key }}'"
+       {% if not loop.first %}x-cloak{% endif %}>{{ a.qr|safe }}</div>
+  {% endfor %}
 </section>
