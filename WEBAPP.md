@@ -2,9 +2,9 @@
 
 The second half of pod-block: a web app that follows feeds, cuts the repeats
 that the detector finds out of the episodes you pick, and serves the cut
-episodes as private podcast feeds. `README.md` covers the detector and the
-CLI; this file covers the app: what it does, how it is built, and what could
-come next.
+episodes as private podcast feeds. `README.md` covers the detector and
+`CLI.md` the command line; this file covers the app: what it does, how it is
+built, and what could come next.
 
 ## Decisions
 
