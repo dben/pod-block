@@ -613,8 +613,9 @@
       const s = sections[i];
       if (isNew(s)) sections.splice(i, 1);
       else if (s.manual) s.removed = false;
-      else s.value = s.saved;
+      else { s.value = s.saved; s.deleted = false; }
     }
+    for (const s of falses) s.value = s.saved;
     selected = null;
     render();
   });
