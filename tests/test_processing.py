@@ -244,6 +244,96 @@ def test_marking_a_block_changes_it_everywhere_and_recuts(env):
     assert all(episode(env, g)["processed_at"] > before[g] for g in before)
 
 
+def other_show(env):
+    """A second podcast, with the first's jingle and ad, processed."""
+    url = "https://example.org/other.rss"
+    env.web.pages[url] = rss(*(item(n).replace(f"<guid>ep-{n}</guid>", f"<guid>b-{n}</guid>")
+                               .replace(f"/{n}.mp3", f"/1{n}.mp3") for n in (1, 2, 3)), title="Other Show")
+    pod = following.add_podcast(env.db, url).podcast_id
+    ids = {r["guid"]: r["id"] for r in env.db.execute("SELECT id, guid FROM episodes WHERE podcast_id = ?", (pod,))}
+    jobs.enqueue(env.db, "process", [ids["b-2"]], None)
+    worker.run_queue(env.settings)
+    return pod, ids
+
+
+def recut(env, guid, change):
+    res = env.client.post(f"/episodes/{env.ids[guid]}/edits", json=change)
+    assert res.status_code == 200, res.text
+    worker.run_queue(env.settings)
+
+
+def by_id(env, ep_id):
+    return env.db.execute("SELECT * FROM episodes WHERE id = ?", (ep_id,)).fetchone()
+
+
+def test_keep_and_intro_are_this_shows_own_and_come_off_again(env):
+    processed(env)
+    pod_b, b = other_show(env)
+    first = report_of(env, "ep-3")["sections"][0]
+    assert first["start"] < 0.5
+    cut_b = by_id(env, b["b-3"])["cut_duration"]
+
+    recut(env, "ep-3", {"types": [{"type": "kept", "blocks": first["blocks"], "bumpers": []}]})
+    assert episode(env, "ep-3")["cut_duration"] == pytest.approx(JINGLE + 2 * FILLER, abs=3)  # the jingle stays
+    kept = report_of(env, "ep-3")["kept"]
+    assert kept and kept[0]["start"] < 0.5 and sorted(kept[0]["blocks"]) == sorted(first["blocks"])
+    assert by_id(env, b["b-3"])["cut_duration"] == cut_b  # the other show still cuts it
+    data = processing.timeline(env.db, env.ids["ep-3"], report_of(env, "ep-3"))
+    shown = next(s for s in data["sections"] if s["value"] == "kept")
+    assert shown["custom"] and shown["start"] < 0.5
+    assert not any(s["custom"] for s in processing.timeline(env.db, b["b-3"], json.loads(env.db.execute(
+        "SELECT report FROM reports WHERE episode_id = ?", (b["b-3"],)).fetchone()[0]))["sections"])
+
+    recut(env, "ep-3", {"types": [{"type": "auto", "blocks": shown["blocks"], "bumpers": []}]})  # remove it
+    assert episode(env, "ep-3")["cut_duration"] == pytest.approx(2 * FILLER, abs=3)
+    assert report_of(env, "ep-3")["kept"] == []
+    assert env.db.execute("SELECT COUNT(*) FROM podcast_types").fetchone()[0] == 0
+
+    recut(env, "ep-3", {"types": [{"type": "intro", "blocks": first["blocks"], "bumpers": [], "start": 0,
+                                   "end": first["end"]}]})
+    (row,) = env.db.execute("SELECT * FROM podcast_types").fetchall()
+    assert row["podcast_id"] == env.pod and row["type"] == "intro"
+    assert env.db.execute("SELECT type FROM segments WHERE id = ?", (row["segment_id"],)).fetchone()[0] == "repeated"
+
+
+def test_not_a_repeat_is_for_every_show_and_listed_to_undo(env):
+    processed(env)
+    pod_b, b = other_show(env)
+    first = report_of(env, "ep-3")["sections"][0]
+    cut_b = by_id(env, b["b-3"])["cut_duration"]
+
+    recut(env, "ep-3", {"types": [{"type": "ignored", "blocks": first["blocks"], "bumpers": []}]})
+    assert by_id(env, b["b-3"])["cut_duration"] == pytest.approx(cut_b + JINGLE, abs=3)  # every show keeps it now
+    listed = report_of(env, "ep-3")["not_repeats"]
+    assert listed and listed[0]["start"] < 0.5
+    data = processing.timeline(env.db, env.ids["ep-3"], report_of(env, "ep-3"))
+    assert data["not_repeats"][0]["blocks"] == listed[0]["blocks"]
+    assert all(s["start"] > 0.5 for s in data["sections"])  # not on the timeline
+
+    recut(env, "ep-3", {"types": [{"type": "auto", "blocks": listed[0]["blocks"], "bumpers": []}]})  # undo
+    assert report_of(env, "ep-3")["not_repeats"] == [] and report_of(env, "ep-3")["sections"][0]["start"] < 0.5
+    assert by_id(env, b["b-3"])["cut_duration"] == pytest.approx(cut_b, abs=1)  # cut again in the other show too
+
+
+def test_blocks_marked_by_hand_are_this_shows_and_can_be_deleted(env):
+    processed(env)
+    pod_b, b = other_show(env)
+    recut(env, "ep-4", {"add": [{"start": 20, "end": 35, "as_block": True, "type": "show"}]})
+    new = env.db.execute("SELECT * FROM segments ORDER BY id DESC LIMIT 1").fetchone()
+    assert new["by_hand"] == 1 and new["type"] == "show" and new["podcast_id"] == env.pod
+    data = processing.timeline(env.db, env.ids["ep-4"], report_of(env, "ep-4"))
+    (mine,) = [s for s in data["sections"] if s["own"]]
+    assert mine["own"] == [new["id"]] and mine["custom"]
+
+    found = next(s for s in report_of(env, "ep-4")["sections"] if new["id"] not in s["blocks"])
+    for body in ({"delete": found["blocks"]}, {"delete": [99999]}):  # only blocks marked by hand
+        assert env.client.post(f"/episodes/{env.ids['ep-4']}/edits", json=body).status_code == 400
+    with_block = episode(env, "ep-4")["cut_duration"]
+    recut(env, "ep-4", {"delete": [new["id"]]})
+    assert env.db.execute("SELECT 1 FROM segments WHERE id = ?", (new["id"],)).fetchone() is None
+    assert episode(env, "ep-4")["cut_duration"] == pytest.approx(with_block + 15, abs=1)
+
+
 def test_cutting_a_stretch_by_hand(env):
     processed(env)
     ep_id = env.ids["ep-4"]

@@ -80,7 +80,8 @@ feeds or audio files and it lists what repeats. See [`CLI.md`](CLI.md).
   can keep "best of" and rerun episodes out of the learning.
 - **Check the cuts.** Each episode has a timeline of what was cut. Play
   any part, change what a section is, or drag across the waveform to cut
-  something by hand. Changes to a section apply to every episode it plays in.
+  something by hand. Intro, Outro and Keep apply to that show's episodes;
+  "Not a repeat" applies to every show.
 - **Listen anywhere.** Each user gets a private feed of each podcast, and
   one feed of all their podcasts together.
 - **Share it.** The admin adds users with passwords; each picks their own
@@ -114,6 +115,12 @@ back.
 
 Each block belongs to the podcast it was first found in.
 
+In the web app, Intro, Outro and Keep are a show's own: they change the
+block in that show's episodes only, and other shows go on treating it as
+pod-block found it. The timeline marks these "Custom (this show)", and
+removing one puts the block back as it was found. `podblock type` sets a
+block's type for every show at once.
+
 ### Repeated
 
 The type every new block starts with: an ad, a promo, a jingle. Looked for
@@ -122,7 +129,8 @@ in every podcast and cut where it plays.
 ### Intro and outro
 
 A show's opening and closing music. Set these by hand; pod-block can't tell
-an intro from any other jingle. Looked for in their own show only.
+an intro from any other jingle. Looked for in their own show only. In the
+web app, marking a found section Intro or Outro does it for that show only.
 
 An intro is cut from the start of the episode to the end of the tune, so
 the cold open or the chat before the theme goes too. An outro is cut from
@@ -138,8 +146,8 @@ over music").
 ### Local (`show`)
 
 Cut where it plays, like a repeated block, but looked for in its own show
-only. Use it for audio, such as stock music, that other shows might play
-and want to keep.
+only. In the web app, this is for sections you mark by hand and choose to
+catch in the show's other episodes too. You can delete those blocks again.
 
 ### Bumpers
 
@@ -157,12 +165,19 @@ between a bumper-in and the next bumper-out is cut as one, even ads
 pod-block has never heard. In shows without bumpers, a minute or more of
 known ads back to back counts as a break.
 
+### Keep (`kept`)
+
+Not cut in one show's episodes, and cut as usual in other shows. Only the
+web app sets it, as **Keep** on the timeline. Keeping an ad break also
+keeps its bumpers, so the break stays.
+
 ### Ignored
 
-A mistake: audio pod-block took for a repeat that you want to keep. It is
-never cut, and it stays in the database so pod-block doesn't learn the same
-audio again. In the web app, this is **Keep** on the timeline. Keeping an
-ad break also marks its bumpers as ignored, so the break stays.
+A mistake: audio pod-block took for a repeat. It is never cut in any show,
+and it stays in the database so pod-block doesn't learn the same audio
+again. In the web app, this is **Not a repeat** on the timeline. Each
+episode lists the ones it plays, under "Not a repeat" below its timeline,
+where you can undo them.
 
 ### In short
 
@@ -172,6 +187,7 @@ ad break also marks its bumpers as ignored, so the break stays.
 | `intro` | you | its own podcast | from the start of the episode to the end of the first intro |
 | `outro` | you | its own podcast | from the start of the last outro to the end of the episode |
 | `show` | you | its own podcast | the block |
+| `kept` | you, for one show | that show | nothing, in that show |
 | `bumper-in`, `bumper-out`, `bumper` | pod-block, or you | every podcast | the ad break between them; the bumpers stay |
 | `ignored` | you | nowhere | nothing |
 

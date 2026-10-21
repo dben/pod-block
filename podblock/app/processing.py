@@ -21,7 +21,7 @@ from ..feed import download
 from ..fingerprint import fingerprint_file
 from ..matcher import MatchParams
 from ..pipeline import Paths, episode_report, find_common_blocks, load_fingerprint, rescan
-from ..store import BUMPER, BUMPER_IN, BUMPER_OUT, IGNORED, INTRO, OUTRO, PODCAST_ONLY, REPEATED, SHOW, Store
+from ..store import BUMPER, BUMPER_IN, BUMPER_OUT, IGNORED, INTRO, KEPT, OUTRO, PODCAST_TYPES, SHOW, Store
 from . import chapters
 from .config import Settings
 from .db import transaction
@@ -256,7 +256,10 @@ def run_unlearn(ctx: Context, settings: Settings) -> None:
 
 # ---- the `edit` job: changes saved from the timeline -------------------------
 
-EDIT_TYPES = {"auto", *PODCAST_ONLY, IGNORED, "repeated"}  # what a section can be set to
+# What a found section can be set to: as found, a type of this podcast's own (PODCAST_TYPES), or a false
+# positive for every podcast. A section marked by hand is a local block, an intro or an outro.
+EDIT_TYPES = {"auto", *PODCAST_TYPES, IGNORED}
+BLOCK_TYPES = {SHOW, INTRO, OUTRO}
 BUMPERS = {BUMPER, BUMPER_IN, BUMPER_OUT}
 MIN_BLOCK_SEC = MatchParams.min_length_sec
 
@@ -275,12 +278,17 @@ def _edge_block(plays, blocks: list[int], section: dict, last: bool) -> int:
     return pick["segment_id"]
 
 
+def _reported_blocks(report: dict | None, *keys: str) -> set[int]:
+    return {b for key in keys for span in (report or {}).get(key, []) for b in span.get("blocks", [])}
+
+
 def check_edits(db: sqlite3.Connection, episode_id: int, changes: dict) -> dict:
     """Keep the timeline changes that make sense for this episode: blocks that play in it, types a section can
-    take, stretches long enough to cut, its own hand-made cuts. `changes` is shaped as the timeline sends it:
+    take, stretches long enough to cut, its own hand-made cuts and blocks. `changes` is shaped as the timeline
+    sends it:
 
         {"types": [{"type", "blocks": [ids], "bumpers": [ids], "start", "end"}],
-         "add": [{"start", "end", "as_block", "type"}], "remove": [edit ids]}
+         "add": [{"start", "end", "as_block", "type"}], "remove": [edit ids], "delete": [block ids]}
 
     (the web app checks that shape). Raises Busy while the episode is being processed, and ProcessError when
     no change is left."""
@@ -288,7 +296,10 @@ def check_edits(db: sqlite3.Connection, episode_id: int, changes: dict) -> dict:
     if ep["state"] in ACTIVE:
         raise Busy("it's being processed; save again when that's done")
     plays = db.execute("SELECT segment_id, start, end FROM occurrences WHERE episode_id = ?", (episode_id,)).fetchall()
-    here = {r["segment_id"] for r in plays}
+    row = db.execute("SELECT report FROM reports WHERE episode_id = ?", (episode_id,)).fetchone()
+    # False positives aren't kept as plays; the report says where they are.
+    here = {r["segment_id"] for r in plays} | _reported_blocks(json.loads(row["report"]) if row else None,
+                                                                 "not_repeats")
     types = []
     for t in changes.get("types", []):
         value = t.get("type")
@@ -297,12 +308,12 @@ def check_edits(db: sqlite3.Connection, episode_id: int, changes: dict) -> dict:
         if value in (INTRO, OUTRO) and blocks:
             blocks = [_edge_block(plays, blocks, t, last=value == INTRO)]
         if value in EDIT_TYPES and (blocks or bumpers):
-            types.append({"type": value, "blocks": blocks, "bumpers": bumpers if value == IGNORED else []})
+            types.append({"type": value, "blocks": blocks, "bumpers": bumpers if value in (IGNORED, KEPT) else []})
     added = []
     for a in changes.get("add", []):
         start, end = max(0.0, a["start"]), min(ep["duration"] or 0.0, a["end"])
         block_type = a.get("type", "repeated")
-        if end - start < MIN_BLOCK_SEC or block_type not in EDIT_TYPES - {IGNORED}:
+        if end - start < MIN_BLOCK_SEC or (a.get("as_block") and block_type not in BLOCK_TYPES):
             continue
         added.append({"start": round(start, 2), "end": round(end, 2), "as_block": bool(a.get("as_block")),
                       "type": block_type})
@@ -310,9 +321,13 @@ def check_edits(db: sqlite3.Connection, episode_id: int, changes: dict) -> dict:
     removed = [r["id"] for r in db.execute(
         f"SELECT id FROM edits WHERE episode_id = ? AND id IN ({', '.join('?' * len(removed))})",
         (episode_id, *removed))] if removed else []
-    if not (types or added or removed):
+    deleted = [b for b in changes.get("delete", []) if b in here]
+    deleted = [r["id"] for r in db.execute(
+        f"SELECT id FROM segments WHERE by_hand = 1 AND id IN ({', '.join('?' * len(deleted))})",
+        tuple(deleted))] if deleted else []
+    if not (types or added or removed or deleted):
         raise ProcessError("nothing to change")
-    return {"types": types, "add": added, "remove": removed}
+    return {"types": types, "add": added, "remove": removed, "delete": deleted}
 
 
 def queue_edits(db: sqlite3.Connection, episode_id: int, user_id: int | None, changes: dict) -> None:
@@ -321,8 +336,26 @@ def queue_edits(db: sqlite3.Connection, episode_id: int, user_id: int | None, ch
             note="Saving your changes")
 
 
+def _playing(db: sqlite3.Connection, blocks: set[int], podcast_id: int | None = None) -> set[int]:
+    """The episodes these blocks play in: as plays, or listed as false positives in their reports; only those
+    of `podcast_id`, if given."""
+    if not blocks:
+        return set()
+    marks = ", ".join("?" * len(blocks))
+    scope, args = ("AND e.podcast_id = ?", (podcast_id,)) if podcast_id is not None else ("", ())
+    found = {r[0] for r in db.execute(
+        f"SELECT DISTINCT o.episode_id FROM occurrences o JOIN episodes e ON e.id = o.episode_id "
+        f"WHERE o.segment_id IN ({marks}) {scope}", (*blocks, *args))}
+    for r in db.execute(f"SELECT r.episode_id, r.report FROM reports r JOIN episodes e ON e.id = r.episode_id "
+                        f"WHERE r.report LIKE '%\"not_repeats\": [{{%' {scope}", args):
+        if _reported_blocks(json.loads(r["report"]), "not_repeats") & blocks:
+            found.add(r["episode_id"])
+    return found
+
+
 def run_edit(ctx: Context, settings: Settings) -> None:
-    """Apply saved timeline changes, cut the episode again, and queue the other episodes they touch."""
+    """Apply saved timeline changes, cut the episode again, and queue the other episodes they touch: those of
+    this podcast for its own types, every podcast's for changes to a block itself."""
     episode_id = ctx.job["episode_id"]
     changes = json.loads(ctx.job["payload"] or "{}")
     params = MatchParams()
@@ -330,22 +363,39 @@ def run_edit(ctx: Context, settings: Settings) -> None:
     try:
         ctx.step("Saving your changes", episode_id)
         ep = _episode(ctx.db, episode_id)
+        podcast = ep["podcast_id"]
         if not ep["fingerprint_path"] or not Path(ep["fingerprint_path"]).exists():
             raise ProcessError("its fingerprint is gone; process it again first")
-        changed_blocks = {b for t in changes["types"] for b in t["blocks"] + t["bumpers"]}
-        touched = {r["episode_id"] for r in ctx.db.execute(
-            f"SELECT DISTINCT episode_id FROM occurrences WHERE segment_id IN ({', '.join('?' * len(changed_blocks))})",
-            tuple(changed_blocks))} if changed_blocks else set()
+        local, everywhere = set(changes.get("delete", [])), set()
+        for t in changes["types"]:
+            for block in t["blocks"] + t["bumpers"]:
+                seg = store.segment(block)
+                # A block's own hand type (a false positive, or one from the command line) is for every podcast.
+                if t["type"] == IGNORED or (t["type"] == "auto" and seg["type_manual"] and not seg["by_hand"]):
+                    everywhere.add(block)
+                else:
+                    local.add(block)
+        touched = _playing(ctx.db, everywhere) | _playing(ctx.db, local, podcast)
         with detecting:
             fp = load_fingerprint(store, episode_id) if any(a["as_block"] for a in changes["add"]) else None
             with transaction(ctx.db):  # the changes land together, or not at all
                 for t in changes["types"]:
                     for block in t["blocks"] + t["bumpers"]:
-                        store.set_type(block, None if t["type"] in ("auto", "repeated") else t["type"])
+                        if t["type"] == IGNORED:
+                            store.set_type(block, IGNORED)
+                        elif t["type"] == "auto":
+                            store.set_podcast_type(podcast, block, None)
+                            if block in everywhere:
+                                store.set_type(block, None)
+                        else:
+                            store.set_podcast_type(podcast, block, t["type"])
+                for block in changes.get("delete", []):
+                    store.delete_segment(block)
                 for a in changes["add"]:
                     if a["as_block"]:
-                        block = store.add_segment(fp.slice(a["start"], a["end"]), episode_id, a["start"], a["end"])
-                        store.set_type(block, REPEATED if a["type"] == "auto" else a["type"])  # cut however short
+                        block = store.add_segment(fp.slice(a["start"], a["end"]), episode_id, a["start"], a["end"],
+                                                  by_hand=True)
+                        store.set_type(block, a["type"])  # of this podcast only, and cut however short
                     else:
                         ctx.db.execute("INSERT INTO edits (episode_id, start, end, created_by, created_at) "
                                        "VALUES (?, ?, ?, ?, ?)",
@@ -371,8 +421,14 @@ def run_edit(ctx: Context, settings: Settings) -> None:
 
 
 def timeline(db: sqlite3.Connection, episode_id: int, report: dict | None) -> dict:
-    """What the episode page's timeline draws: each cut section, what it is, and the blocks and bumpers in it."""
-    types = dict(db.execute("SELECT id, type FROM segments").fetchall())
+    """What the episode page's timeline draws: each cut section, what it is, and the blocks and bumpers in it;
+    the sections kept in this podcast; and the false positives that play in it, for a list of their own.
+    `custom` marks a section of this podcast's own types or blocks; `own` lists its blocks marked by hand."""
+    podcast = db.execute("SELECT podcast_id FROM episodes WHERE id = ?", (episode_id,)).fetchone()[0]
+    store = Store.on(db)
+    types = store.types(podcast)
+    custom = set(store.podcast_types(podcast)) if podcast is not None else set()
+    own = {r[0] for r in db.execute("SELECT id FROM segments WHERE by_hand = 1")}
     bumpers = [r for r in db.execute(
         "SELECT o.segment_id, o.start, o.end FROM occurrences o JOIN segments s ON s.id = o.segment_id "
         f"WHERE o.episode_id = ? AND s.type IN ({', '.join('?' * len(BUMPERS))}) ORDER BY o.start",
@@ -393,8 +449,16 @@ def timeline(db: sqlite3.Connection, episode_id: int, report: dict | None) -> di
                 if r["start"] <= s["end"] + 5 and r["end"] >= s["start"] - 5]
         sections.append({"id": f"r{i}", "start": s["start"], "end": s["end"], "value": set_to,
                          "is_break": "break" in s["types"], "blocks": blocks,
-                         "bumpers": near if "break" in s["types"] else []})
+                         "bumpers": near if "break" in s["types"] else [],
+                         "custom": bool(custom & {*blocks, *(b["block"] for b in near)} or own & set(blocks)),
+                         "own": sorted(own & set(blocks))})
+    for i, k in enumerate((report or {}).get("kept", [])):
+        blocks = [b for b in k["blocks"] if b in types]
+        sections.append({"id": f"k{i}", "start": k["start"], "end": k["end"], "value": KEPT, "is_break": False,
+                         "blocks": blocks, "bumpers": [], "custom": True, "own": sorted(own & set(blocks))})
+    not_repeats = [{"id": f"x{i}", "start": x["start"], "end": x["end"], "blocks": x["blocks"]}
+                   for i, x in enumerate((report or {}).get("not_repeats", []))]
     manual = [{"id": f"m{r['id']}", "edit": r["id"], "start": r["start"], "end": r["end"]}
               for r in db.execute("SELECT * FROM edits WHERE episode_id = ? ORDER BY start", (episode_id,))]
-    return {"sections": sections, "manual": manual}
+    return {"sections": sections, "manual": manual, "not_repeats": not_repeats}
 

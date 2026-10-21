@@ -128,3 +128,39 @@ def test_cut_points_keep_pieces_long_enough():
     # the edge at 95 would leave a 5 s piece, so it is ignored.
     edges = [0, 40, 41, 75, 95, 100]
     assert _cut_points(edges, 100, 10) == pytest.approx([40.5, 75])
+
+
+def bare_block(store, block_type="repeated", manual=0, podcast=None):
+    cur = store.db.execute("INSERT INTO segments (podcast_id, source_start, source_end, hashes, times, type, "
+                           "type_manual) VALUES (?, 0, 1, x'', x'', ?, ?)", (podcast, block_type, manual))
+    store.db.commit()
+    return cur.lastrowid
+
+
+def test_a_podcasts_own_types_apply_to_its_episodes_only(tmp_path):
+    store = Store(tmp_path / "s.sqlite")
+    a, b = store.podcast_id("A"), store.podcast_id("B")
+    block = bare_block(store)
+    store.set_podcast_type(a, block, "kept")
+    assert store.types(a)[block] == "kept"
+    assert store.types(b)[block] == "repeated" and store.types()[block] == "repeated"
+    with pytest.raises(ValueError):
+        store.set_podcast_type(a, block, "bumper")
+    piece = bare_block(store)
+    store.carry_types(block, piece)  # a block split in pieces keeps its podcasts' types
+    assert store.podcast_types(a) == {block: "kept", piece: "kept"}
+    store.set_podcast_type(a, block, None)
+    store.delete_segment(piece)
+    assert store.podcast_types(a) == {}
+
+
+def test_old_hand_types_for_every_podcast_go_back_to_automatic(tmp_path):
+    store = Store(tmp_path / "s.sqlite")
+    blocks = [bare_block(store, t, 1) for t in ("intro", "outro", "show", "ignored")]
+    store.db.execute("ALTER TABLE segments DROP COLUMN by_hand")  # as a store made before podcasts had own types
+    store.db.commit()
+    store.close()
+    store = Store(tmp_path / "s.sqlite")
+    assert [store.segment(b)["type"] for b in blocks] == ["repeated", "repeated", "repeated", "ignored"]
+    assert store.hand_typed() == {blocks[-1]}
+    assert store.segment(blocks[0])["by_hand"] == 0

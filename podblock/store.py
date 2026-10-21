@@ -4,8 +4,14 @@ One store holds every feed, so blocks shared across podcasts (network promos,
 ads) are found too. Each block has a type. `repeated` blocks, and the bumpers
 tagged automatically, are checked against every episode; `intro`, `outro`
 and `show` blocks only against episodes of the podcast they came from.
-`ignored` blocks, false positives flagged by hand, are never reported; they
-stay stored only so the same audio is not taken up as a new block.
+`ignored` blocks, false positives flagged by hand, are never cut in any
+podcast; they stay stored so the same audio is not taken up as a new block,
+and reports list where they play so the flag can be undone.
+
+A podcast can give a block a type of its own (`podcast_types`): `intro`,
+`outro`, or `kept`, not cut in that podcast's episodes. It applies to that
+podcast only, and goes back to the block's own type when it is cleared.
+Blocks marked by hand (`by_hand`) are always of one podcast.
 """
 
 from __future__ import annotations
@@ -27,8 +33,10 @@ SCHEMA_VERSION = "3"
 REPEATED, INTRO, OUTRO, SHOW = "repeated", "intro", "outro", "show"
 BUMPER_IN, BUMPER_OUT, BUMPER = "bumper-in", "bumper-out", "bumper"
 IGNORED = "ignored"  # a false positive: kept so it is not found again, otherwise skipped
+KEPT = "kept"  # not cut in one podcast's episodes; only ever a podcast's own type for a block
 TYPES = (REPEATED, INTRO, OUTRO, SHOW, BUMPER_IN, BUMPER_OUT, BUMPER, IGNORED)
 PODCAST_ONLY = {INTRO, OUTRO, SHOW}  # only checked against their own podcast
+PODCAST_TYPES = (INTRO, OUTRO, KEPT)  # what a podcast can make a block, for its own episodes
 
 SEGMENTS_TABLE = """
 CREATE TABLE IF NOT EXISTS {name} (
@@ -41,6 +49,7 @@ CREATE TABLE IF NOT EXISTS {name} (
     type TEXT NOT NULL DEFAULT 'repeated',
     type_manual INTEGER NOT NULL DEFAULT 0,  -- set by hand; never retagged automatically
     confirmed INTEGER NOT NULL DEFAULT 0,  -- automatic bumper tag with enough evidence to keep
+    by_hand INTEGER NOT NULL DEFAULT 0,  -- marked by hand, not found by comparing episodes
     hashes BLOB NOT NULL,  -- uint32 per hash, little-endian
     times BLOB NOT NULL,  -- int32 frame of each hash from the block start
     created_at REAL,
@@ -87,6 +96,13 @@ CREATE TABLE IF NOT EXISTS compared_pairs (
 );
 CREATE INDEX IF NOT EXISTS occurrences_episode ON occurrences(episode_id);
 CREATE INDEX IF NOT EXISTS occurrences_segment ON occurrences(segment_id);
+CREATE TABLE IF NOT EXISTS podcast_types (
+    podcast_id INTEGER NOT NULL REFERENCES podcasts(id) ON DELETE CASCADE,
+    segment_id INTEGER NOT NULL REFERENCES segments(id) ON DELETE CASCADE,
+    type TEXT NOT NULL,  -- one of PODCAST_TYPES: the block's type in this podcast's episodes
+    created_at REAL,
+    PRIMARY KEY (podcast_id, segment_id)
+);
 CREATE TABLE IF NOT EXISTS reports (
     episode_id INTEGER PRIMARY KEY REFERENCES episodes(id) ON DELETE CASCADE,
     created_at REAL NOT NULL,
@@ -172,6 +188,8 @@ class Store:
         columns = {r["name"] for r in self.db.execute("PRAGMA table_info(segments)")}
         if "confirmed" not in columns:  # stores made before bumpers were confirmed
             self.db.execute("ALTER TABLE segments ADD COLUMN confirmed INTEGER NOT NULL DEFAULT 0")
+        if "by_hand" not in columns:  # stores made before podcasts had types of their own
+            self._upgrade_to_podcast_types()
         self.config = self._settle_config(config)
         self._index: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
 
@@ -212,6 +230,14 @@ class Store:
             db.execute("UPDATE settings SET value = ? WHERE key = 'schema'", (SCHEMA_VERSION,))
         db.execute("PRAGMA foreign_keys = ON")
         db.execute("VACUUM")
+
+    def _upgrade_to_podcast_types(self) -> None:
+        """Hand-typed intros, outros and local blocks, typed for every podcast at once, go back to automatic:
+        those are now a podcast's own types, set again where they are wanted. False positives stay."""
+        with transaction(self.db):
+            self.db.execute("ALTER TABLE segments ADD COLUMN by_hand INTEGER NOT NULL DEFAULT 0")
+            self.db.execute(f"UPDATE segments SET type = ?, type_manual = 0 WHERE type_manual = 1 "
+                            f"AND type IN ({', '.join('?' * len(PODCAST_ONLY))})", (REPEATED, *sorted(PODCAST_ONLY)))
 
     def _settle_config(self, wanted: FingerprintConfig | None) -> FingerprintConfig:
         rows = dict(self.db.execute("SELECT key, value FROM settings").fetchall())
@@ -319,10 +345,12 @@ class Store:
     # --- segments -----------------------------------------------------------
 
     def add_segment(self, fp: Fingerprint, source_episode_id: int | None,
-                    source_start: float, source_end: float, podcast_id: int | None = None) -> int:
+                    source_start: float, source_end: float, podcast_id: int | None = None,
+                    by_hand: bool = False) -> int:
         """Store a common segment. `fp` must already be timed relative to the segment.
 
-        Its podcast is the source episode's, or `podcast_id` when there is none.
+        Its podcast is the source episode's, or `podcast_id` when there is none. One marked `by_hand` should be
+        given one of PODCAST_ONLY's types, so it is only ever found in its podcast's episodes.
         """
         if source_episode_id is not None:
             podcast_id = self.episode(source_episode_id)["podcast_id"]
@@ -331,9 +359,9 @@ class Store:
         with transaction(self.db):
             cur = self.db.execute(
                 "INSERT INTO segments (source_episode_id, podcast_id, source_start, source_end, hashes, times, "
-                "created_at, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "created_at, last_seen, by_hand) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (source_episode_id, podcast_id, source_start, source_end,
-                 _pack(fp.hashes, "<u4"), _pack(fp.times, "<i4"), now, now),
+                 _pack(fp.hashes, "<u4"), _pack(fp.times, "<i4"), now, now, int(by_hand)),
             )
         return cur.lastrowid
 
@@ -384,8 +412,37 @@ class Store:
         """Blocks whose type was set by hand."""
         return {r[0] for r in self.db.execute("SELECT id FROM segments WHERE type_manual = 1")}
 
-    def types(self) -> dict[int, str]:
-        return dict(self.db.execute("SELECT id, type FROM segments").fetchall())
+    def types(self, podcast_id: int | None = None) -> dict[int, str]:
+        """Every block's type; in `podcast_id`'s episodes, with that podcast's own types for blocks over them."""
+        found = dict(self.db.execute("SELECT id, type FROM segments").fetchall())
+        if podcast_id is not None:
+            found.update(self.podcast_types(podcast_id))
+        return found
+
+    def podcast_types(self, podcast_id: int) -> dict[int, str]:
+        """The types a podcast gave blocks for its own episodes."""
+        return dict(self.db.execute("SELECT segment_id, type FROM podcast_types WHERE podcast_id = ?",
+                                    (podcast_id,)).fetchall())
+
+    def set_podcast_type(self, podcast_id: int, segment_id: int, block_type: str | None) -> None:
+        """Give a block a type in one podcast's episodes, or with None go back to the block's own type."""
+        if block_type is not None and block_type not in PODCAST_TYPES:
+            raise ValueError(f"unknown type {block_type!r}; pick one of {', '.join(PODCAST_TYPES)}")
+        with transaction(self.db):
+            if block_type is None:
+                self.db.execute("DELETE FROM podcast_types WHERE podcast_id = ? AND segment_id = ?",
+                                (podcast_id, segment_id))
+            else:
+                self.db.execute("INSERT OR REPLACE INTO podcast_types VALUES (?, ?, ?, ?)",
+                                (podcast_id, segment_id, block_type, time.time()))
+
+    def carry_types(self, from_id: int, to_id: int) -> None:
+        """Give block `to_id` the podcast types and the by-hand mark of `from_id`, a block it was cut from."""
+        with transaction(self.db):
+            self.db.execute("INSERT OR REPLACE INTO podcast_types SELECT podcast_id, ?, type, created_at "
+                            "FROM podcast_types WHERE segment_id = ?", (to_id, from_id))
+            self.db.execute("UPDATE segments SET by_hand = (SELECT by_hand FROM segments WHERE id = ?) WHERE id = ?",
+                            (from_id, to_id))
 
     def segment(self, segment_id: int) -> sqlite3.Row:
         return self.db.execute("SELECT * FROM segments WHERE id = ?", (segment_id,)).fetchone()
@@ -394,7 +451,7 @@ class Store:
         """Every block, without its hashes."""
         return self.db.execute(
             "SELECT id, source_episode_id, podcast_id, source_start, source_end, label, type, type_manual, "
-            "confirmed, created_at, last_seen FROM segments ORDER BY id"
+            "confirmed, by_hand, created_at, last_seen FROM segments ORDER BY id"
         ).fetchall()
 
     def segment_summary(self) -> list[sqlite3.Row]:
@@ -466,28 +523,28 @@ class Store:
                            np.concatenate([np.zeros(0, "<i4"), *times]).astype(np.int64))
         return self._index
 
-    def visible_segments(self, podcast_id: int | None) -> np.ndarray:
-        """Ids of the blocks that apply to an episode of `podcast_id`; never ignored ones."""
+    def visible_segments(self, podcast_id: int | None, ignored: bool = False) -> np.ndarray:
+        """Ids of the blocks that apply to an episode of `podcast_id`; ignored ones only with `ignored`."""
         scoped = ", ".join("?" * len(PODCAST_ONLY))
         rows = self.db.execute(
-            f"SELECT id FROM segments WHERE type != ? AND (type NOT IN ({scoped}) OR podcast_id IS ?)",
-            (IGNORED, *PODCAST_ONLY, podcast_id),
+            f"SELECT id FROM segments WHERE (type != ? OR ?) AND (type NOT IN ({scoped}) OR podcast_id IS ?)",
+            (IGNORED, int(ignored), *PODCAST_ONLY, podcast_id),
         ).fetchall()
         return np.array([r[0] for r in rows], dtype=np.int64)
 
     def scan(self, fp: Fingerprint, params: MatchParams, podcast_id: int | None = None,
-             everything: bool = False, heard: bool = False) -> list[SegmentMatch]:
+             everything: bool = False, heard: bool = False, ignored: bool = False) -> list[SegmentMatch]:
         """Find the stored blocks that appear in `fp`.
 
-        Only blocks that apply to `podcast_id`, and not ignored ones, are used,
-        unless `everything`.
+        Only blocks that apply to `podcast_id`, and not ignored ones (unless
+        `ignored`), are used, unless `everything`.
         With `heard`, the blocks found count as heard now, which keeps them
         from being pruned; pass it for audio being processed, not for
         rescans of episodes already stored.
         """
         hashes, seg_ids, seg_times = self._load_index()
         if not everything:
-            keep = np.isin(seg_ids, self.visible_segments(podcast_id))
+            keep = np.isin(seg_ids, self.visible_segments(podcast_id, ignored))
             hashes, seg_ids, seg_times = hashes[keep], seg_ids[keep], seg_times[keep]
         iq, iref = match_hashes(fp.hashes, hashes, params.max_hash_occurrences)
         if len(iq) == 0:

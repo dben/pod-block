@@ -9,6 +9,7 @@
   const audio = root.querySelector("audio[data-original]");
   const scroll = $("scroll"), track = $("track"), wave = $("wave"), canvas = $("canvas");
   const labels = $("labels"), plays = $("plays"), playhead = $("playhead"), list = $("list");
+  const falseBox = $("false"), falseList = $("false-list");
   const overview = $("overview"), ocanvas = overview.querySelector("canvas"), owindow = overview.querySelector(".tl-window");
   const savebar = $("savebar");
   const duration = data.duration;
@@ -17,15 +18,18 @@
   const MAX_PPS = 40;   // pixels per second, zoomed all the way in
   const RULER = 18;     // px under the waveform for times
 
+  // Intro, Outro and Keep are this show's own; Not a repeat is for every show. Local is for sections marked by hand.
   const VALUES = [["auto", null], ["intro", "Intro: cut it and everything before"], ["outro", "Outro: cut it and everything after"],
-                  ["show", "Local: this podcast"], ["ignored", "Keep: not a repeat"]];
-  const SHORT = { intro: "Intro", outro: "Outro", show: "Local", ignored: "Keep" };  // for labels on the timeline
-  const BLOCK_TYPES = [["repeated", "Repeat"], ["intro", "Intro"], ["outro", "Outro"], ["show", "Local"]];
+                  ["kept", "Keep: don't cut it in this show"], ["ignored", "Not a repeat: never cut it, in any show"]];
+  const SHORT = { intro: "Intro", outro: "Outro", show: "Local", kept: "Keep", ignored: "Not a repeat" };  // for labels on the timeline
+  const BLOCK_TYPES = [["show", "Local"], ["intro", "Intro"], ["outro", "Outro"]];
 
   const sections = [
-    ...data.sections.map((s) => ({ ...s, saved: s.value })),
+    ...data.sections.map((s) => ({ ...s, saved: s.value, deleted: false })),
     ...data.manual.map((m) => ({ ...m, manual: true, removed: false })),
   ];
+  // False positives that play here: not on the timeline, only in a list of their own, to undo the flag.
+  const falses = data.not_repeats.map((x) => ({ ...x, value: "ignored", saved: "ignored", bumpers: [] }));
   let peaks = new Uint8Array(0);
   let perSecond = 10;
   let pps = 0, fitPps = 0;
@@ -82,32 +86,35 @@
   const toast = (text, kind) => window.podblock?.toast(text, { kind });
 
   const isNew = (s) => s.manual && s.isNew;
-  const isCut = (s) => !s.removed && !(!s.manual && s.value === "ignored");
+  const isCut = (s) => !s.removed && !s.deleted && !(!s.manual && (s.value === "ignored" || s.value === "kept"));
+  const allOwn = (s) => !s.manual && s.own.length > 0 && s.own.length === s.blocks.length;  // only blocks marked by hand
   function kind(s) {
     if (s.manual) return s.removed ? "removed" : "manual";
+    if (s.deleted) return "removed";
     if (s.value === "auto") return s.is_break ? "break" : "repeated";
-    return s.value;
+    return s.value === "kept" ? "ignored" : s.value;
   }
   function name(s) {
     if (s.manual) return isNew(s) ? "New section" : "Cut by hand";
     if (s.value === "auto") return s.is_break ? "Ad break" : "Repeat";
-    return { intro: "Intro", outro: "Outro", show: "Local", ignored: "Kept" }[s.value];
+    return { intro: "Intro", outro: "Outro", show: "Local", kept: "Kept", ignored: "Not a repeat" }[s.value];
   }
 
   // ---- what has changed -------------------------------------------------------
 
   function changes() {
-    const types = [], add = [], remove = [];
-    for (const s of sections) {
-      if (isNew(s)) add.push({ start: s.start, end: s.end, as_block: !!s.asBlock, type: s.blockType || "repeated" });
+    const types = [], add = [], remove = [], del = [];
+    for (const s of [...sections, ...falses]) {
+      if (isNew(s)) add.push({ start: s.start, end: s.end, as_block: !!s.asBlock, type: s.blockType || "show" });
       else if (s.manual && s.removed) remove.push(s.edit);
+      else if (s.deleted) del.push(...s.own);
       else if (!s.manual && s.value !== s.saved) {
         types.push({ type: s.value, blocks: s.blocks, bumpers: s.bumpers.map((b) => b.block), start: s.start, end: s.end });
       }
     }
-    return { types, add, remove };
+    return { types, add, remove, delete: del };
   }
-  const unsaved = () => { const c = changes(); return c.types.length + c.add.length + c.remove.length; };
+  const unsaved = () => { const c = changes(); return c.types.length + c.add.length + c.remove.length + c.delete.length; };
 
   function refreshBar() {
     const n = unsaved();
@@ -124,7 +131,8 @@
 
   function valueSelect(s, short = false) {
     const sel = h("select", { class: "tl-select", "aria-label": "What this section is", disabled: !editable });
-    for (const [value, text] of VALUES) {
+    const values = s.saved === "show" ? [...VALUES, ["show", "Local: this show"]] : VALUES;  // set from the command line
+    for (const [value, text] of values) {
       const found = s.is_break ? "Ad break" : "Repeat";
       sel.append(h("option", { value }, short ? SHORT[value] || found : text || `${found} (as found)`));
     }
@@ -145,7 +153,7 @@
     btn.replaceChildren(icon(on ? PAUSE : PLAY));
     btn.setAttribute("aria-label", on ? "Pause" : `Play from ${clock(s.start)}`);
   }
-  const showAllPlaying = () => { for (const s of sections) for (const btn of s.buttons || []) showPlaying(btn, s); };
+  const showAllPlaying = () => { for (const s of [...sections, ...falses]) for (const btn of s.buttons || []) showPlaying(btn, s); };
 
   function timeEditor(s, which) {
     const input = h("input", { class: "input tl-time-input mono", value: clock(s[which], true), inputmode: "decimal",
@@ -171,25 +179,39 @@
     const times = h("span", { class: "tl-item-times mono" }, `${clock(s.start)} – ${clock(s.end)}`,
                     h("span", { class: "muted" }, ` · ${clock(s.end - s.start)}`));
     const head = h("div", { class: "tl-item-head" }, h("span", { class: "tl-dot" }), h("b", { class: "tl-item-name" }, name(s)),
-                   times);
+                   times, s.custom ? h("span", { class: "tl-pill", title: "Changed or marked by hand, for this show's episodes" },
+                                       "Custom (this show)") : null);
     const li = h("li", { class: `tl-item k-${kind(s)}${isNew(s) ? " tl-item-new" : ""}`, "data-id": s.id },
                  head, playButton(s, "icon-btn tl-item-play"));
     li.addEventListener("click", (e) => { if (!e.target.closest("button, select, input, label")) focusSection(s); });
     if (!s.manual) {
-      const row = h("div", { class: "tl-item-row" }, valueSelect(s));
+      const row = h("div", { class: "tl-item-row" }, allOwn(s) ? null : valueSelect(s));
       if (s.bumpers.length) row.append(h("span", { class: "hint" }, "Found from the bumpers around it"));
-      if (s.value === "ignored" && s.saved !== "ignored") row.append(h("span", { class: "hint" }, "Will be kept, and not cut from other episodes either"));
+      if (editable && s.custom && !allOwn(s) && s.saved !== "auto" && s.value === s.saved) {
+        row.append(h("button", { type: "button", class: "btn btn-ghost btn-xs danger", title: "Go back to how it was found",
+                                 onclick: () => { s.value = "auto"; render(); } }, "Remove"));
+      }
+      if (editable && s.own.length) {
+        row.append(h("button", { type: "button", class: "btn btn-ghost btn-xs danger",
+                                 onclick: () => { s.deleted = !s.deleted; render(); } }, s.deleted ? "Undo" : "Delete"));
+      }
+      const hint = s.deleted ? "Will be deleted, here and in this show's other episodes"
+        : s.value === s.saved ? null
+        : s.value === "ignored" ? "Won't be cut in any show. Undo it under “Not a repeat” below"
+        : s.value === "kept" ? "Won't be cut in this show"
+        : s.value === "auto" ? "Goes back to how it was found" : null;
+      if (hint) row.append(h("span", { class: "hint" }, hint));
       li.append(row);
     } else if (isNew(s)) {
       const asBlock = h("input", { type: "checkbox", checked: !!s.asBlock });
       const blockType = h("select", { class: "tl-select", "aria-label": "What it is", hidden: !s.asBlock });
       for (const [value, text] of BLOCK_TYPES) blockType.append(h("option", { value }, text));
-      blockType.value = s.blockType || "repeated";
+      blockType.value = s.blockType || "show";
       asBlock.addEventListener("change", () => { s.asBlock = asBlock.checked; blockType.hidden = !asBlock.checked; });
       blockType.addEventListener("change", () => { s.blockType = blockType.value; });
       li.append(timeEditor(s, "start"), timeEditor(s, "end"),
         h("div", { class: "tl-item-row" },
-          h("label", { class: "tl-check" }, asBlock, " Catch it in other episodes too"), blockType,
+          h("label", { class: "tl-check" }, asBlock, " Catch it in this show's other episodes too"), blockType,
           h("button", { type: "button", class: "btn btn-ghost btn-xs danger", onclick: () => drop(s) }, "Remove")));
     } else if (editable) {
       li.append(h("div", { class: "tl-item-row" },
@@ -198,6 +220,22 @@
         s.removed ? h("span", { class: "hint" }, "Will be put back") : null));
     }
     return li;
+  }
+
+  // A false positive: play it, or undo the flag so it is cut again, in every show.
+  function falseCard(s) {
+    s.buttons = [];
+    const undone = s.value !== s.saved;
+    return h("li", { class: `tl-item k-${undone ? "repeated" : "ignored"}` },
+      h("div", { class: "tl-item-head" }, h("span", { class: "tl-dot" }), h("b", { class: "tl-item-name" }, "Not a repeat"),
+        h("span", { class: "tl-item-times mono" }, `${clock(s.start)} – ${clock(s.end)}`,
+          h("span", { class: "muted" }, ` · ${clock(s.end - s.start)}`)),
+        h("span", { class: "tl-pill" }, "Custom (all shows)")),
+      playButton(s, "icon-btn tl-item-play"),
+      editable ? h("div", { class: "tl-item-row" },
+        h("button", { type: "button", class: "btn btn-ghost btn-xs",
+                      onclick: () => { s.value = undone ? "ignored" : "auto"; render(); } }, undone ? "Keep as not a repeat" : "Undo"),
+        undone ? h("span", { class: "hint" }, "Will be cut again, in every show it plays in") : null) : null);
   }
 
   function render() {
@@ -217,7 +255,7 @@
       }
       wave.append(s.region);
       s.label = h("div", { class: `tl-label k-${kind(s)}` },
-        !s.manual && editable ? valueSelect(s, true) : h("span", { class: "tl-label-text" }, name(s)),
+        !s.manual && !allOwn(s) && editable ? valueSelect(s, true) : h("span", { class: "tl-label-text" }, name(s)),
         h("button", { type: "button", class: "tl-chip", title: `${name(s)}, ${clock(s.start)}: click to zoom in`,
                       "aria-label": `${name(s)} at ${clock(s.start)}`, onclick: () => focusSection(s) },
           icon(KIND_ICONS[kind(s)] || KIND_ICONS.repeated)));
@@ -233,6 +271,9 @@
       list.append(s.card);
     }
     if (!ordered.length) list.append(h("li", { class: "muted tl-empty" }, "Nothing is cut from this episode yet."));
+    falseBox.hidden = !falses.length;
+    falseBox.querySelector("[data-tl=false-count]").textContent = falses.length;
+    falseList.replaceChildren(...falses.map(falseCard));
     place();
     drawOverview();
     refreshBar();

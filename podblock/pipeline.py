@@ -19,8 +19,8 @@ from .feed import Episode, Feed, download, fetch_feed
 from .fingerprint import Fingerprint, FingerprintConfig, fingerprint_file, frames_to_seconds, loudness_file
 from .matcher import MatchParams, common_runs
 from .outro import music_bed_outro
-from .report import MIN_SECTION_SEC, build_sections
-from .store import BUMPER, BUMPER_IN, BUMPER_OUT, SegmentMatch, Store, transaction
+from .report import MIN_SECTION_SEC, build_sections, skipped
+from .store import BUMPER, BUMPER_IN, BUMPER_OUT, IGNORED, KEPT, SegmentMatch, Store, transaction
 
 log = logging.getLogger(__name__)
 
@@ -147,16 +147,19 @@ def episode_report(store: Store, episode_id: int, params: MatchParams, fill_gaps
     leaves it to the podcast's setting.
     """
     ep = store.episode(episode_id)
-    matches = store.scan(load_fingerprint(store, episode_id), params, podcast_id=ep["podcast_id"], heard=True)
+    matches = store.scan(load_fingerprint(store, episode_id), params, podcast_id=ep["podcast_id"], heard=True,
+                         ignored=True)
     pod = store.podcast(ep["podcast_id"])
     wanted = outro_bed if outro_bed is not None else bool(pod and pod["outro_bed"])
     loudness = episode_loudness(store, episode_id) if wanted else None
     bed = music_bed_outro(loudness) if loudness is not None else None
-    sections = build_sections(matches, store.types(), ep["duration"], fill_gaps=fill_gaps, outro_bed_start=bed,
+    types = store.types(ep["podcast_id"])
+    sections = build_sections(matches, types, ep["duration"], fill_gaps=fill_gaps, outro_bed_start=bed,
                               min_section=min_section, pinned=store.hand_typed())
     data = {"episode_id": episode_id, "title": ep["title"], "duration": round(ep["duration"], 2),
             "repeated_sec": round(sum(s.length for s in sections), 2),
-            "sections": [s.to_dict() for s in sections]}
+            "sections": [s.to_dict() for s in sections],
+            "kept": skipped(matches, types, KEPT, sections), "not_repeats": skipped(matches, types, IGNORED)}
     store.save_report(episode_id, json.dumps(data))
     return data
 
@@ -339,6 +342,7 @@ def split_segments(store: Store, min_length: float = MatchParams.min_length_sec)
                 store.set_label(new_id, seg["label"])
             if seg["type_manual"]:
                 store.set_type(new_id, seg["type"])
+            store.carry_types(seg["id"], new_id)
             for o in occurrences:
                 # The part of the block this occurrence played, in block time.
                 o_lo, o_hi = o["segment_start"], o["segment_start"] + o["end"] - o["start"]
