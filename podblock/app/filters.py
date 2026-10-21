@@ -28,10 +28,16 @@ from .db import title_pattern, transaction
 
 MAX_PATTERN = 200
 
-# An episode is hidden from the user `:user_id` (a named parameter; see library.py).
-HIDDEN = """(e.skip_processing = 1 OR EXISTS (
-    SELECT 1 FROM episode_filters f WHERE f.user_id = :user_id AND (f.podcast_id IS NULL OR f.podcast_id = e.podcast_id)
+
+def hidden_from(user: str) -> str:
+    """SQL for: the episode `e` is hidden from `user`, a column or a named parameter."""
+    return f"""(e.skip_processing = 1 OR EXISTS (
+    SELECT 1 FROM episode_filters f WHERE f.user_id = {user} AND (f.podcast_id IS NULL OR f.podcast_id = e.podcast_id)
     AND e.title REGEXP f.pattern))"""
+
+
+# An episode is hidden from the user `:user_id` (a named parameter; see library.py).
+HIDDEN = hidden_from(":user_id")
 _PROCESSING = """EXISTS (
     SELECT 1 FROM episode_filters f WHERE f.processing = 1
     AND (f.podcast_id IS NULL OR f.podcast_id = episodes.podcast_id) AND episodes.title REGEXP f.pattern)"""

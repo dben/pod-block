@@ -150,17 +150,17 @@ def episodes(db: sqlite3.Connection, user_id: int, podcast_id: int, archived: bo
     how often this user grabbed it (`grabs`), and when last (`grabbed_at`).
 
     `downloaded` keeps only episodes downloaded at some point: queued, ready, failed or cleaned up; `grabbed`
-    only the ones this user grabbed. Episodes a filter hides from this user are left out; `filtered` lists only
-    those, archived or not."""
+    only the ones this user grabbed. Both narrow any list, together or alone. Episodes a filter hides from this
+    user are left out; `filtered` lists only those, archived or not."""
     args = {"user_id": user_id, "podcast_id": podcast_id, "archived": int(archived)}
     if filtered:
         where = f"e.podcast_id = :podcast_id AND {HIDDEN}"
     else:
         where = f"e.podcast_id = :podcast_id AND {ARCHIVED} = :archived AND NOT {HIDDEN}"
-        if downloaded:
-            where += f" AND {WAS_DOWNLOADED}"
-        if grabbed:
-            where += f" AND {GRABBED}"
+    if downloaded:
+        where += f" AND {WAS_DOWNLOADED}"
+    if grabbed:
+        where += f" AND {GRABBED}"
     if q.strip():
         where += " AND e.title LIKE :q ESCAPE '\\'"
         args["q"] = _like(q.strip())
@@ -174,19 +174,20 @@ def episodes(db: sqlite3.Connection, user_id: int, podcast_id: int, archived: bo
     return rows, total
 
 
-def counts(db: sqlite3.Connection, user_id: int, podcast_id: int) -> dict[str, int]:
-    """How many of a podcast's episodes are in each of a user's lists. Filtered ones count only as filtered."""
+def counts(db: sqlite3.Connection, user_id: int, podcast_id: int, downloaded: bool = False,
+           grabbed: bool = False) -> dict[str, int]:
+    """How many of a podcast's episodes are in each of a user's lists, narrowed as `episodes` narrows them.
+    Filtered ones count only as filtered. `episodes` is how many the podcast has outside the filtered list,
+    and `expired` how many cleaned-up ones are in the main list, neither narrowed."""
+    narrowed = " AND ".join(["1", *(["d"] if downloaded else []), *(["g"] if grabbed else [])])
     row = db.execute(
-        f"""SELECT COALESCE(SUM(h = 0), 0) AS everything, COALESCE(SUM(h = 0 AND a = 1), 0) AS archived,
-                   COALESCE(SUM(h = 0 AND d AND a = 0), 0) AS downloaded,
-                   COALESCE(SUM(h = 0 AND x AND a = 0), 0) AS expired, COALESCE(SUM(h), 0) AS filtered,
-                   COALESCE(SUM(h = 0 AND g AND a = 0), 0) AS grabbed
+        f"""SELECT COALESCE(SUM(h = 0), 0) AS episodes, COALESCE(SUM(h = 0 AND a = 0 AND {narrowed}), 0) AS active,
+                   COALESCE(SUM(h = 0 AND a = 1 AND {narrowed}), 0) AS archived,
+                   COALESCE(SUM(h AND {narrowed}), 0) AS filtered, COALESCE(SUM(h = 0 AND x AND a = 0), 0) AS expired
             FROM (SELECT {ARCHIVED} AS a, {WAS_DOWNLOADED} AS d, e.state = 'expired' AS x, {HIDDEN} AS h, {GRABBED} AS g
                   FROM episodes e {USER_JOIN} WHERE e.podcast_id = :podcast_id)""",
         {"user_id": user_id, "podcast_id": podcast_id}).fetchone()
-    return {"active": row["everything"] - row["archived"], "archived": row["archived"],
-            "downloaded": row["downloaded"], "expired": row["expired"], "filtered": row["filtered"],
-            "grabbed": row["grabbed"]}
+    return dict(row)
 
 
 def _set_flag(db: sqlite3.Connection, flag: str, user_id: int, podcast_id: int | None, ids: list[int],

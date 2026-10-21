@@ -638,6 +638,28 @@ def test_kept_episodes_and_keep_forever_podcasts_stay(env):
     assert env.db.execute("SELECT retention_days FROM podcasts").fetchone()[0] == 0  # out of range: unchanged
 
 
+def test_episodes_nobody_wants_are_cleaned_up_early(env):
+    from podblock.app import filters, retention
+    processed(env)
+    admin = accounts.admin_id(env.db)
+    bob = env.db.execute("INSERT INTO users (username, created_at) VALUES ('bob', 0)").lastrowid
+    env.db.commit()
+    library.subscribe(env.db, bob, env.pod)
+    library.set_archived(env.db, admin, env.pod, [env.ids[g] for g in ("ep-2", "ep-3", "ep-4", "ep-5")], True)
+    library.set_archived(env.db, bob, env.pod, [env.ids["ep-3"], env.ids["ep-5"]], True)
+    filters.add(env.db, bob, env.pod, "episode 4$", False)  # filtered out counts as archived
+    library.set_kept(env.db, bob, env.pod, [env.ids["ep-5"]], True)  # kept still stays
+    assert retention.expire_due(env.db) == []  # a day to play one first
+    for guid in ("ep-2", "ep-3", "ep-4", "ep-5"):
+        age(env, guid, 2)  # well inside the podcast's 7 days
+    assert sorted(retention.expire_due(env.db)) == sorted([env.ids["ep-3"], env.ids["ep-4"]])
+    assert episode(env, "ep-2")["state"] == "ready"  # bob still has it in his list
+
+    library.subscribe(env.db, bob, env.pod, False)  # only those with the podcast on their home page count
+    env.client.post(f"/podcasts/{env.pod}/settings", data={"retention_days": 0, "refresh_minutes": 60})
+    assert retention.expire_due(env.db) == [env.ids["ep-2"]]  # even when the podcast keeps downloads for good
+
+
 def test_ready_shows_when_it_will_be_cleaned_up(env):
     processed(env)
     page = env.client.get(f"/episodes/{env.ids['ep-3']}").text
@@ -948,11 +970,12 @@ def test_grabs_show_in_the_list_with_a_view_of_their_own(env):
         env.db.commit()
 
     page = env.client.get(f"/podcasts/{env.pod}").text
-    assert page.count("badge-grab") == 1 and 'data-count="grabbed">1<' in page
+    assert page.count("badge-grab") == 1
     assert "Grabbed</span>" in page and "Grabbed ×2" not in page
     assert "Grabbed ×2" in bob.get(f"/podcasts/{env.pod}").text
-    grabbed = env.client.get(f"/podcasts/{env.pod}?view=grabbed").text
+    grabbed = env.client.get(f"/podcasts/{env.pod}?grabbed=1").text
     assert grabbed.count('class="ep') - grabbed.count('class="ep-') == 1 and "Episode 5" in grabbed
+    assert 'data-count="active">1<' in grabbed
     env.client.post(f"/podcasts/{env.pod}/episodes", data={"action": "archive", "ids": env.ids["ep-5"]})
     assert "Nothing grabbed yet" in env.client.get(f"/podcasts/{env.pod}?view=grabbed").text
     assert "Grabbed ×2" in bob.get(f"/podcasts/{env.pod}?view=grabbed").text  # archiving is per user

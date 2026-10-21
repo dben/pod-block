@@ -4,7 +4,12 @@ Each podcast has `retention_days` (0 keeps downloads for good). When an
 episode's time is up, its download, cut file and waveform are deleted and it
 becomes `expired`: its metadata, report and timeline marks stay, so it can be
 downloaded again and cut the same way. An episode any user keeps never
-expires. Once a day the detector's own clean-up runs too, after making sure
+expires.
+
+An episode nobody wants goes sooner: once everyone who has its podcast on
+their home page has archived it or filters it out, its files go a day after
+it was made ready (the day leaves time to play one downloaded from the
+archive), whatever the podcast's `retention_days`. Once a day the detector's own clean-up runs too, after making sure
 the fingerprints of ready and kept episodes look fresh to it.
 """
 
@@ -20,6 +25,7 @@ from ..pipeline import prune
 from ..store import Store
 from . import chapters
 from .db import set_setting, setting, transaction
+from .filters import hidden_from
 from .locks import detecting
 from .states import IN_USE, READY, sql
 
@@ -32,7 +38,15 @@ BLOCK_DAYS = 90  # blocks not heard in this long go, unless typed by hand
 BUMPER_DAYS = 365
 NO_AUDIO_PRUNE = 36500  # the app never stores audio where the detector's prune looks; leave the CLI's alone
 
+UNWANTED_AFTER = DAY  # an episode nobody wants goes this long after it was made ready
+
 KEPT = "EXISTS (SELECT 1 FROM user_episodes ue WHERE ue.episode_id = e.id AND ue.kept = 1)"
+# Someone has the podcast, and everyone who has it archived the episode or filters it out.
+UNWANTED = f"""(EXISTS (SELECT 1 FROM user_podcasts up WHERE up.podcast_id = e.podcast_id)
+    AND NOT EXISTS (
+        SELECT 1 FROM user_podcasts up
+        LEFT JOIN user_episodes ua ON ua.user_id = up.user_id AND ua.episode_id = e.id
+        WHERE up.podcast_id = e.podcast_id AND COALESCE(ua.archived, 0) = 0 AND NOT {hidden_from("up.user_id")}))"""
 
 
 def _unlink(path: str | None) -> None:
@@ -57,24 +71,29 @@ def clear(db: sqlite3.Connection, ep: sqlite3.Row, now: float | None = None) -> 
 
 
 def expire_due(db: sqlite3.Connection, now: float | None = None) -> list[int]:
-    """Delete the files of every episode whose time is up. Returns the ids that expired."""
+    """Delete the files of every episode whose time is up, or that nobody wants. Returns the ids that expired."""
     now = now or time.time()
     due = db.execute(
         f"""SELECT e.* FROM episodes e JOIN podcasts p ON p.id = e.podcast_id
-            WHERE e.state = 'ready' AND e.ready_at IS NOT NULL AND p.retention_days > 0
-              AND e.ready_at + p.retention_days * {DAY} <= ? AND NOT {KEPT}""", (now,)).fetchall()
+            WHERE e.state = 'ready' AND NOT {KEPT}
+              AND ((e.ready_at IS NOT NULL AND p.retention_days > 0 AND e.ready_at + p.retention_days * {DAY} <= :now)
+                   OR (COALESCE(e.ready_at, 0) + {UNWANTED_AFTER} <= :now AND {UNWANTED}))""",
+        {"now": now}).fetchall()
     with transaction(db):
         for ep in due:
             clear(db, ep, now)
-    # Downloads that never became ready (a failed job, companions of a cancelled one) go on the same clock.
+    # Downloads that never became ready (a failed job, companions of a cancelled one) go on the same clock,
+    # or now if nobody wants them.
     leftovers = db.execute(
-        f"""SELECT e.id, e.original_path, p.retention_days FROM episodes e JOIN podcasts p ON p.id = e.podcast_id
+        f"""SELECT e.id, e.original_path, p.retention_days, {UNWANTED} AS unwanted
+            FROM episodes e JOIN podcasts p ON p.id = e.podcast_id
             WHERE e.original_path IS NOT NULL AND COALESCE(e.state, '') NOT IN ({sql(IN_USE)})
-              AND p.retention_days > 0 AND NOT {KEPT}""").fetchall()
+              AND (p.retention_days > 0 OR {UNWANTED}) AND NOT {KEPT}""").fetchall()
     with transaction(db):
         for ep in leftovers:
             path = Path(ep["original_path"])
-            if not path.exists() or path.stat().st_mtime + ep["retention_days"] * DAY <= now:
+            if (ep["unwanted"] or not path.exists()
+                    or path.stat().st_mtime + ep["retention_days"] * DAY <= now):
                 _unlink(ep["original_path"])
                 db.execute("UPDATE episodes SET original_path = NULL WHERE id = ?", (ep["id"],))
     if due:
