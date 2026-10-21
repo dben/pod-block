@@ -672,7 +672,7 @@ a.podcast-card:hover { background: var(--surface-2); }
 .tl-label[hidden], .tl-play[hidden] { display: none; }
 .tl-label.tl-row-2 { top: 36px; }
 .tl-label .tl-select, .tl-label .tl-label-text {
-  min-height: 28px; max-width: 108px; padding: 0 24px 0 9px; border-radius: 7px;
+  min-height: 28px; max-width: 120px; padding: 0 24px 0 9px; border-radius: 7px;
   border: 1px solid var(--c); background: color-mix(in srgb, var(--c) 18%, var(--surface));
   color: var(--text); font: inherit; font-size: 0.8rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }

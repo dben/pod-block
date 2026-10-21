@@ -276,8 +276,8 @@ on Kubernetes, with backups and upgrades, see `deployment/README.md`.
   from there. The main play button and the space bar play on with no end. "Skip cuts" jumps over
   everything that would be cut, unsaved changes included, to hear the
   joins.
-- Set a section to Intro, Outro or Keep (for this show's episodes), to Not
-  a repeat (for every show's), or back to how it was found. See Decisions
+- Set a section to Intro, Outro or Keep (this show), to Not a repeat (every
+  show), or back to how it was found. See Decisions
   for which blocks take it. Other ready episodes the blocks play in are
   cut again: this show's, or every show's for Not a repeat. Keep on an ad
   break keeps its bumpers too, so the break stays.
@@ -286,8 +286,8 @@ on Kubernetes, with backups and upgrades, see `deployment/README.md`.
   Delete deletes a block marked by hand. Kept sections stay on the
   timeline, in grey, and aren't cut.
 - Matches marked Not a repeat aren't on the timeline. When an episode has
-  any, a collapsed "Not a repeat" list under the sections shows them, with
-  Undo.
+  any, a collapsed "Not a repeat" list under the sections shows them, each
+  with "Cut again".
 - Add a section by hand: drag across the waveform (even over a section
   already there), or on a phone tap "Add section" at the player's place.
   Drag its edges, or type times and nudge them a second at a time or set
@@ -480,6 +480,24 @@ on Kubernetes, with backups and upgrades, see `deployment/README.md`.
 - Pages work without JavaScript where it costs little: adding, refreshing,
   paging, searching and archiving all work as plain forms and links. The
   timeline needs it.
+
+### Writing
+
+Labels and hints are short and plain, so a page can be scanned.
+
+- Cut text that says what the page already shows: a Downloads page doesn't
+  need a line saying it lists downloads.
+- Say what to do, not how it works inside. Why podcast apps sort by date,
+  or how rewind episodes upset finding repeats, belongs here, not on screen.
+- Put what matters first. A warning starts with "Caution:", rather than
+  sitting in the middle of a paragraph.
+- Prefer a label to a sentence, with scope in brackets: "Keep (this show)",
+  "Custom (this show)". A count goes in a badge ("3 users"), not a sentence.
+- Keep a hint only for a fact the label can't carry ("0 keeps them
+  forever."), or for a pending change with a wide effect ("Won't be cut in
+  any show"). Anything longer goes in a tooltip.
+- Buttons name the action ("Delete", "Cut again"), and a pending change
+  can be taken back with Undo.
 
 ## Data model
 

@@ -20,7 +20,7 @@
 
   // Intro, Outro and Keep are this show's own; Not a repeat is for every show. Local is for sections marked by hand.
   const VALUES = [["auto", null], ["intro", "Intro: cut it and everything before"], ["outro", "Outro: cut it and everything after"],
-                  ["kept", "Keep: don't cut it in this show"], ["ignored", "Not a repeat: never cut it, in any show"]];
+                  ["kept", "Keep (this show)"], ["ignored", "Not a repeat"]];
   const SHORT = { intro: "Intro", outro: "Outro", show: "Local", kept: "Keep", ignored: "Not a repeat" };  // for labels on the timeline
   const BLOCK_TYPES = [["show", "Local"], ["intro", "Intro"], ["outro", "Outro"]];
 
@@ -80,7 +80,7 @@
     manual: '<circle cx="6" cy="7" r="2.5"/><circle cx="6" cy="17" r="2.5"/><path d="M8 8.5 20 17M8 15.5 20 7"/>',
     removed: '<path d="M6 6l12 12M18 6 6 18"/>',
   };
-  const LABEL_W = { full: 112, text: 118, chip: 30 };  // px each kind of label takes
+  const LABEL_W = { full: 124, text: 130, chip: 30 };  // px each kind of label takes
   const GAP = 6;
   const PAUSE = '<path d="M8 5v14M16 5v14"/>';
   const toast = (text, kind) => window.podblock?.toast(text, { kind });
@@ -195,12 +195,7 @@
         row.append(h("button", { type: "button", class: "btn btn-ghost btn-xs danger",
                                  onclick: () => { s.deleted = !s.deleted; render(); } }, s.deleted ? "Undo" : "Delete"));
       }
-      const hint = s.deleted ? "Will be deleted, here and in this show's other episodes"
-        : s.value === s.saved ? null
-        : s.value === "ignored" ? "Won't be cut in any show. Undo it under “Not a repeat” below"
-        : s.value === "kept" ? "Won't be cut in this show"
-        : s.value === "auto" ? "Goes back to how it was found" : null;
-      if (hint) row.append(h("span", { class: "hint" }, hint));
+      if (s.value === "ignored" && s.saved !== "ignored") row.append(h("span", { class: "hint" }, "Won't be cut in any show"));
       li.append(row);
     } else if (isNew(s)) {
       const asBlock = h("input", { type: "checkbox", checked: !!s.asBlock });
@@ -234,8 +229,7 @@
       playButton(s, "icon-btn tl-item-play"),
       editable ? h("div", { class: "tl-item-row" },
         h("button", { type: "button", class: "btn btn-ghost btn-xs",
-                      onclick: () => { s.value = undone ? "ignored" : "auto"; render(); } }, undone ? "Keep as not a repeat" : "Undo"),
-        undone ? h("span", { class: "hint" }, "Will be cut again, in every show it plays in") : null) : null);
+                      onclick: () => { s.value = undone ? "ignored" : "auto"; render(); } }, undone ? "Undo" : "Cut again")) : null);
   }
 
   function render() {
