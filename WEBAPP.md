@@ -285,9 +285,11 @@ on Kubernetes, with backups and upgrades, see `deployment/README.md`.
   "Custom (this show)" pill. Remove puts a section back as it was found;
   Delete deletes a block marked by hand. Kept sections stay on the
   timeline, in grey, and aren't cut.
-- Matches marked Not a repeat aren't on the timeline. When an episode has
-  any, a collapsed "Not a repeat" list under the sections shows them, each
-  with "Cut again".
+- Matches marked Not a repeat aren't on the timeline: they are invalid
+  matches, not part of the episode's cuts. When an episode has any, a
+  collapsed "Not a repeat" list under the sections shows them, each with
+  "Cut again". A section set to Not a repeat moves there at once, with
+  Undo, before it is saved. Kept sections stay on the timeline.
 - Add a section by hand: drag across the waveform (even over a section
   already there), or on a phone tap "Add section" at the player's place.
   Drag its edges, or type times and nudge them a second at a time or set

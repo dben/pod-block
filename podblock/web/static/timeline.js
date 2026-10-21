@@ -195,7 +195,6 @@
         row.append(h("button", { type: "button", class: "btn btn-ghost btn-xs danger",
                                  onclick: () => { s.deleted = !s.deleted; render(); } }, s.deleted ? "Undo" : "Delete"));
       }
-      if (s.value === "ignored" && s.saved !== "ignored") row.append(h("span", { class: "hint" }, "Won't be cut in any show"));
       li.append(row);
     } else if (isNew(s)) {
       const asBlock = h("input", { type: "checkbox", checked: !!s.asBlock });
@@ -217,10 +216,13 @@
     return li;
   }
 
-  // A false positive: play it, or undo the flag so it is cut again, in every show.
+  // A false positive: play it, or undo the flag so it is cut again, in every show. A section just set to
+  // Not a repeat is listed here too, off the timeline, until it is saved or put back.
   function falseCard(s) {
     s.buttons = [];
-    const undone = s.value !== s.saved;
+    const pending = s.saved !== "ignored";
+    const undone = !pending && s.value !== s.saved;
+    const back = () => { s.value = pending ? s.saved : undone ? "ignored" : "auto"; render(); };
     return h("li", { class: `tl-item k-${undone ? "repeated" : "ignored"}` },
       h("div", { class: "tl-item-head" }, h("span", { class: "tl-dot" }), h("b", { class: "tl-item-name" }, "Not a repeat"),
         h("span", { class: "tl-item-times mono" }, `${clock(s.start)} – ${clock(s.end)}`,
@@ -228,14 +230,17 @@
         h("span", { class: "tl-pill" }, "Custom (all shows)")),
       playButton(s, "icon-btn tl-item-play"),
       editable ? h("div", { class: "tl-item-row" },
-        h("button", { type: "button", class: "btn btn-ghost btn-xs",
-                      onclick: () => { s.value = undone ? "ignored" : "auto"; render(); } }, undone ? "Undo" : "Cut again")) : null);
+        h("button", { type: "button", class: "btn btn-ghost btn-xs", onclick: back }, pending || undone ? "Undo" : "Cut again"),
+        pending ? h("span", { class: "hint" }, "Won't be cut in any show") : null) : null);
   }
 
   function render() {
     for (const el of root.querySelectorAll(".tl-region, .tl-label, .tl-play, .tl-bumper")) el.remove();
     list.replaceChildren();
-    const ordered = sections.filter((s) => !(isNew(s) && s.dropped)).sort((a, b) => a.start - b.start);
+    const live = sections.filter((s) => !(isNew(s) && s.dropped)).sort((a, b) => a.start - b.start);
+    const flagged = live.filter((s) => !s.manual && s.value === "ignored");  // listed below, off the timeline
+    for (const s of flagged) s.region = s.label = s.play = s.card = null;
+    const ordered = live.filter((s) => !flagged.includes(s));
     for (const s of ordered) {
       s.buttons = [];
       s.region = h("div", { class: `tl-region k-${kind(s)}${isNew(s) ? " tl-new" : ""}`, "data-id": s.id, title: name(s) });
@@ -265,9 +270,12 @@
       list.append(s.card);
     }
     if (!ordered.length) list.append(h("li", { class: "muted tl-empty" }, "Nothing is cut from this episode yet."));
-    falseBox.hidden = !falses.length;
-    falseBox.querySelector("[data-tl=false-count]").textContent = falses.length;
-    falseList.replaceChildren(...falses.map(falseCard));
+    const listed = [...flagged, ...falses].sort((a, b) => a.start - b.start);
+    falseBox.hidden = !listed.length;
+    if (flagged.some((s) => !s.shownFlagged)) falseBox.open = true;  // show where a section just went
+    for (const s of sections) s.shownFlagged = flagged.includes(s);
+    falseBox.querySelector("[data-tl=false-count]").textContent = listed.length;
+    falseList.replaceChildren(...listed.map(falseCard));
     place();
     drawOverview();
     refreshBar();
