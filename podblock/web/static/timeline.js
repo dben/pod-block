@@ -31,6 +31,7 @@
   let pps = 0, fitPps = 0;
   let selected = null;
   let made = 0;
+  let playing = null;  // the section played from its own button: playback stops at its end
 
   // ---- small helpers --------------------------------------------------------
 
@@ -133,9 +134,18 @@
   }
 
   function playButton(s, cls) {
-    return h("button", { type: "button", class: cls, "aria-label": `Play from ${clock(s.start)}`,
-                         onclick: (e) => { e.stopPropagation(); select(s); seek(s.start - 2, true); } }, icon(PLAY));
+    const btn = h("button", { type: "button", class: cls, onclick: (e) => { e.stopPropagation(); playSection(s); } });
+    s.buttons.push(btn);
+    showPlaying(btn, s);
+    return btn;
   }
+
+  function showPlaying(btn, s) {
+    const on = playing === s && !audio.paused;
+    btn.replaceChildren(icon(on ? PAUSE : PLAY));
+    btn.setAttribute("aria-label", on ? "Pause" : `Play from ${clock(s.start)}`);
+  }
+  const showAllPlaying = () => { for (const s of sections) for (const btn of s.buttons || []) showPlaying(btn, s); };
 
   function timeEditor(s, which) {
     const input = h("input", { class: "input tl-time-input mono", value: clock(s[which], true), inputmode: "decimal",
@@ -195,6 +205,7 @@
     list.replaceChildren();
     const ordered = sections.filter((s) => !(isNew(s) && s.dropped)).sort((a, b) => a.start - b.start);
     for (const s of ordered) {
+      s.buttons = [];
       s.region = h("div", { class: `tl-region k-${kind(s)}${isNew(s) ? " tl-new" : ""}`, "data-id": s.id, title: name(s) });
       s.region.addEventListener("pointerdown", (e) => { if (!e.target.closest(".tl-handle")) select(s); });
       if (isNew(s) && editable) {
@@ -245,6 +256,7 @@
   function drop(s) {
     sections.splice(sections.indexOf(s), 1);
     if (selected === s) selected = null;
+    if (playing === s) { playing = null; audio.pause(); }
     render();
   }
 
@@ -442,9 +454,22 @@
     else { audio.addEventListener("loadedmetadata", go, { once: true }); audio.load(); }
   }
 
-  playBtn.addEventListener("click", () => (audio.paused ? audio.play() : audio.pause()));
-  audio.addEventListener("play", () => { playBtn.replaceChildren(icon(PAUSE)); playBtn.setAttribute("aria-label", "Pause"); tick(); });
-  audio.addEventListener("pause", () => { playBtn.replaceChildren(icon(PLAY)); playBtn.setAttribute("aria-label", "Play"); });
+  // Play a section from just before it until its end; its button pauses it, and plays on from there.
+  function playSection(s) {
+    select(s);
+    if (playing === s && !audio.paused) { audio.pause(); return; }
+    const within = audio.currentTime >= s.start - 2 && audio.currentTime < s.end;
+    const resume = playing === s && within;
+    playing = s;
+    if (resume) audio.play();
+    else seek(s.start - 2, true);
+  }
+
+  // The main button, the space bar and clicks on the waveform play on with no end.
+  const togglePlay = () => { playing = null; audio.paused ? audio.play() : audio.pause(); showAllPlaying(); };
+  playBtn.addEventListener("click", togglePlay);
+  audio.addEventListener("play", () => { playBtn.replaceChildren(icon(PAUSE)); playBtn.setAttribute("aria-label", "Pause"); showAllPlaying(); tick(); });
+  audio.addEventListener("pause", () => { playBtn.replaceChildren(icon(PLAY)); playBtn.setAttribute("aria-label", "Play"); showAllPlaying(); });
   audio.addEventListener("timeupdate", () => { if (audio.paused) showTime(); });
 
   function showTime() {
@@ -456,8 +481,15 @@
   function tick() {
     if (audio.paused) return;
     const t = audio.currentTime;
-    if (preview.checked) {  // hear the episode as it would be cut, unsaved changes and all
-      const inCut = sections.find((s) => s.region && isCut(s) && t >= s.start && t < s.end - 0.05);
+    if (playing && t >= playing.end) {
+      audio.pause();
+      playing = null;
+      showAllPlaying();
+      showTime();
+      return;
+    }
+    if (preview.checked) {  // hear the episode as it would be cut, unsaved changes and all; not the section being played
+      const inCut = sections.find((s) => s !== playing && s.region && isCut(s) && t >= s.start && t < s.end - 0.05);
       if (inCut) audio.currentTime = inCut.end;
     }
     showTime();
@@ -468,7 +500,7 @@
 
   document.addEventListener("keydown", (e) => {
     if (e.target.closest("input, select, textarea, button, [contenteditable]")) return;
-    if (e.key === " ") { e.preventDefault(); audio.paused ? audio.play() : audio.pause(); }
+    if (e.key === " ") { e.preventDefault(); togglePlay(); }
     if ((e.key === "Delete" || e.key === "Backspace") && selected && isNew(selected)) drop(selected);
   });
 
@@ -480,7 +512,7 @@
     if (e.button !== 0 || e.target.closest(".tl-handle")) return;
     const from = timeAt(e.clientX), startX = e.clientX;
     const onSection = !!e.target.closest(".tl-region");
-    const click = () => { if (!onSection) seek(from); };
+    const click = () => { if (!onSection) { playing = null; showAllPlaying(); seek(from); } };
     if (!editable || e.pointerType === "touch") {
       wave.addEventListener("pointerup", click, { once: true });
       return;

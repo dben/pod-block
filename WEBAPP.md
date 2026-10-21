@@ -14,7 +14,7 @@ built, and what could come next.
 | Marking blocks | Marking a block intro, outro, show or ignored on one episode changes the block itself, for every episode, as `podblock type` does. |
 | Block types | `show` (Local in the app): a block checked only against its own podcast's episodes, never other feeds'. `ignored`: a false positive, never reported, so never cut. Both are choices in the timeline. Every section a report lists is cut. |
 | Comparison episodes | When a show has fewer than 4 fingerprinted episodes, a download also pulls the episodes published after the chosen one, nearest first, and older ones only when it reaches the newest episode. These are fully processed too: shows often run in parts, so they are likely next anyway. |
-| Retention | Counts from when an episode was processed, not its publish date. A keep pin stops the clock. |
+| Retention | Counts from when an episode was processed, not its publish date. A keep pin stops the clock. An episode everyone with the podcast has archived or filtered goes early, whatever the retention setting. |
 | Users | Built for a few users. The admin logs in with the API key and adds the others, with user names and passwords. Feeds, downloads, processing, blocks and podcast settings are shared, and any user can add a feed, download and edit timelines. Removing a podcast is the admin's, since it changes things for everyone. Archived, kept, filters, which podcasts are on the home page, and private feeds are per user. |
 | Downloads | By hand, apart from the comparison episodes above and podcasts set to download new episodes on their own. |
 | Short repeats | Sections under 15 seconds aren't cut (`report.MIN_SECTION_SEC`; the CLI's `--min-section`), unless they are ad breaks, intros, outros, show blocks or blocks typed by hand. Short blocks are still stored, since bumpers are short and are how breaks are found. |
@@ -183,6 +183,12 @@ on Kubernetes, with backups and upgrades, see `deployment/README.md`.
   and Clear rises while anything is selected. Archiving takes the rows out
   without a page load, with Undo in the toast. Archiving is per user, with
   an Archived tab to bring episodes back.
+- The list has three tabs: All, Archived, and Filtered (when a filter
+  hides anything). Downloaded and Grabbed are toggles beside them that
+  narrow whichever tab is open, alone or together, so "archived and
+  downloaded" is one view. Each is in the address (`?view=archived&downloaded=1`),
+  so the back button and bookmarks work; the old `?view=downloaded` and
+  `?view=grabbed` still do. Tab counts follow the toggles.
 - Each row has a download button ("Download and cut", or "Download again"
   once cleaned up or after a failure); a spinner takes its place while
   queued or running, and a tick once ready. Its menu has "Process again",
@@ -239,8 +245,9 @@ on Kubernetes, with backups and upgrades, see `deployment/README.md`.
   queued to be cut again; those whose cut wouldn't change are done in
   moments. A re-cut never sets off more re-cuts.
 - The episode page shows the status (queued and running ones update
-  themselves), a player and a download for the cut file, how much was cut,
-  the timeline, and the show notes.
+  themselves), a player and a download for the cut file, and how much was
+  cut, with the show notes beside it (below it on a phone), then the
+  timeline across the full width.
 
 ### Timeline editor
 
@@ -262,7 +269,10 @@ on Kubernetes, with backups and upgrades, see `deployment/README.md`.
   the cards below. Vertical was ruled out: dragging to mark a section and
   dragging to scroll the page would fight.
 - Click the waveform to play the original from that point, or a section's
-  play button to play from two seconds before it. "Skip cuts" jumps over
+  play button (under it, or on its card) to play from two seconds before it
+  to its end, where playback stops. While it plays, both of its buttons
+  turn to Pause; pressing one again pauses, and the next press plays on
+  from there. The main play button and the space bar play on with no end. "Skip cuts" jumps over
   everything that would be cut, unsaved changes included, to hear the
   joins.
 - Set a section to Intro, Outro, Local, Keep, or back to how it was
@@ -411,7 +421,7 @@ on Kubernetes, with backups and upgrades, see `deployment/README.md`.
   editing and doesn't count. The page's Download button counts too.
 - Each row in the episode list, and the episode page, shows "Grabbed" (with
   "×2" and so on) for your own grabs, with when you last did in its tooltip.
-  A Grabbed tab lists the episodes you grabbed, until you archive them. The
+  The Grabbed toggle lists the episodes you grabbed. The
   Users page counts each user's grabs.
 
 ### Retention
@@ -424,15 +434,22 @@ on Kubernetes, with backups and upgrades, see `deployment/README.md`.
   hand-cut sections stay. It shows as "Cleaned up" with the date, leaves the
   private feed, and "Download again" brings it back, cut the same way.
   Downloads that never became ready (failed jobs, companions of a cancelled
-  one) go on the same clock. The check runs every minute in the background
+  one) go on the same clock.
+- An episode nobody wants goes early: once everyone who has the podcast on
+  their home page has archived it or filters it out, its files go a day
+  after it was made ready (the day leaves time to play one downloaded from
+  the Archived tab), even if the podcast keeps downloads for good. Kept
+  episodes still stay, and a podcast nobody has on their home page is left
+  to the normal clock. Leftover downloads of such episodes go at once. The
+  check runs every minute in the background
   (`podblock/app/retention.py`).
 - Keep (per user) stops an episode from being cleaned up while anyone keeps
   it: in each row's menu, in the selection bar, and on the episode page.
   Kept and ready episodes keep their fingerprints too.
 - Ready rows say "Cleaned up in 5 days"; the episode page gives the date,
   with Keep beside it.
-- Cleaned-up episodes show dimmed in the list, and in a Downloaded tab
-  (everything downloaded at some point, until archived). A note above the
+- Cleaned-up episodes show dimmed in the list, and under the Downloaded
+  toggle (everything downloaded at some point). A note above the
   list counts them, with "Archive them all"; the home page shows each
   podcast's ready and cleaned-up counts and an "Archive N cleaned-up
   episodes" button across your podcasts.

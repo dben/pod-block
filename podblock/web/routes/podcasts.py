@@ -14,8 +14,8 @@ from ..deps import admin_user, current_user, feed_url, get_db, wake_worker
 from ..templating import flash, page, plural
 
 PAGE_SIZE = 50
-VIEWS = {"active": (False, False), "archived": (True, False), "downloaded": (False, True),  # (archived, downloaded)
-         "grabbed": (False, False), "filtered": (False, False)}
+VIEWS = ("active", "archived", "filtered")  # which list
+NARROWS = ("downloaded", "grabbed")  # narrow any list; on together or alone
 TABS = ("episodes", "feed", "filters", "settings")
 
 router = APIRouter()
@@ -118,27 +118,38 @@ def add_podcast(request: Request, url: str = Form(""), user=Depends(current_user
     return RedirectResponse(f"/podcasts/{result.podcast_id}", status_code=303)
 
 
+def _list_url(podcast_id: int, view: str, narrow: set[str], q: str = "", **extra) -> str:
+    query = {"view": view if view != "active" else "", **{n: "1" for n in NARROWS if n in narrow}, "q": q, **extra}
+    query = {k: v for k, v in query.items() if v}
+    return f"/podcasts/{podcast_id}" + (f"?{urlencode(query)}" if query else "")
+
+
 @router.get("/podcasts/{podcast_id}")
 def show_podcast(request: Request, podcast_id: int, view: str = "active", q: str = "", tab: str = "",
+                 downloaded: bool = False, grabbed: bool = False,
                  page_no: int = Query(1, alias="page", ge=1), partial: bool = False,
                  user=Depends(current_user), db: sqlite3.Connection = Depends(get_db)) -> Response:
-    """The show's header, then one of its tabs: the episode list, your private feed, filters or settings."""
+    """The show's header, then one of its tabs: the episode list, your private feed, filters or settings.
+    The list is one of `VIEWS`, narrowed to the episodes downloaded, grabbed, or both."""
     pod = _podcast_or_404(db, podcast_id)
     params = request.query_params
     tab = tab if tab in TABS else "feed" if params.get("feed") else "filters" if params.get("filters") else "episodes"
+    narrow = {n for n, on in (("downloaded", downloaded), ("grabbed", grabbed)) if on}
+    if view in NARROWS:  # the old ?view=downloaded and ?view=grabbed
+        narrow.add(view)
     view = view if view in VIEWS else "active"
-    query = {k: v for k, v in (("view", view if view != "active" else ""), ("q", q)) if v}
-    context = dict(podcast=pod, view=view, q=q, page_no=page_no, tab=tab,
-                   here=f"/podcasts/{podcast_id}" + (f"?{urlencode(query)}" if query else ""))
+    context = dict(podcast=pod, view=view, q=q, page_no=page_no, tab=tab, narrow=narrow,
+                   here=_list_url(podcast_id, view, narrow, q),
+                   view_urls={v: _list_url(podcast_id, v, narrow) for v in VIEWS},
+                   narrow_urls={n: _list_url(podcast_id, view, narrow ^ {n}, q) for n in NARROWS})
     if tab == "episodes":
-        archived, downloaded = VIEWS[view]
-        rows, total = library.episodes(db, user["id"], podcast_id, archived, q, limit=PAGE_SIZE,
-                                       offset=(page_no - 1) * PAGE_SIZE, downloaded=downloaded,
-                                       filtered=view == "filtered", grabbed=view == "grabbed",
+        rows, total = library.episodes(db, user["id"], podcast_id, view == "archived", q, limit=PAGE_SIZE,
+                                       offset=(page_no - 1) * PAGE_SIZE, downloaded="downloaded" in narrow,
+                                       filtered=view == "filtered", grabbed="grabbed" in narrow,
                                        oldest_first=bool(pod["sort_oldest"]))
         more = page_no * PAGE_SIZE < total
         context.update(episodes=rows, total=total,
-                       next_url=f"/podcasts/{podcast_id}?{urlencode({**query, 'page': page_no + 1})}" if more else None)
+                       next_url=_list_url(podcast_id, view, narrow, q, page=page_no + 1) if more else None)
         if partial:
             return page(request, "_episodes.html", **context)
     if tab == "feed":
@@ -147,7 +158,8 @@ def show_podcast(request: Request, podcast_id: int, view: str = "active", q: str
                 cut_sec=library.cut_seconds(db, podcast_id),
                 subscribed=library.subscribed(db, user["id"], podcast_id),
                 filters=filters.for_podcast(db, user["id"], podcast_id),
-                counts=library.counts(db, user["id"], podcast_id), **context)
+                counts=library.counts(db, user["id"], podcast_id, "downloaded" in narrow, "grabbed" in narrow),
+                **context)
 
 
 @router.post("/podcasts/{podcast_id}/settings")

@@ -91,6 +91,29 @@ def test_archive_a_selection_and_undo(client, web):
     assert "Episode 2" in client.get(f"/podcasts/{pod}").text
 
 
+def test_lists_narrow_to_downloaded_and_grabbed(client, web):
+    pod = add(client, web, *(item(n) for n in range(1, 5)))
+    two, three = ids_of(client, pod, "ep-2", "ep-3")
+    db = connect(client.db_path)
+    db.execute("UPDATE episodes SET state = 'expired' WHERE id IN (?, ?)", (two, three))
+    db.commit()
+    client.post(f"/podcasts/{pod}/episodes", data={"action": "archive", "ids": [three]}, headers=JSON)
+
+    def shown(query):
+        page = client.get(f"/podcasts/{pod}?{query}", headers=HTML).text
+        return [n for n in range(1, 10) if f">Episode {n}<" in page], page
+
+    assert shown("downloaded=1")[0] == [2] and shown("view=downloaded")[0] == [2]  # the old address still works
+    found, page = shown("view=archived&downloaded=1")
+    assert found == [3]
+    assert 'data-count="active">1<' in page and 'data-count="archived">1<' in page  # counts narrow too
+    assert f'href="/podcasts/{pod}?downloaded=1"' in page  # the other lists keep it on
+    assert f'href="/podcasts/{pod}?view=archived" role="button" aria-pressed="true"' in page  # turns it off
+    found, page = shown("view=archived&downloaded=1&grabbed=1")
+    assert found == [] and "Nothing archived is downloaded and grabbed" in page
+    assert '<input type="hidden" name="grabbed" value="1">' in page  # searching keeps them on
+
+
 def test_archive_this_and_older(client, web):
     pod = add(client, web, *(item(n) for n in range(1, 6)))
     (three,) = ids_of(client, pod, "ep-3")
