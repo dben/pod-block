@@ -83,10 +83,10 @@ def fake_audio(seconds, seed):
 
 def make_episodes(root):
     """Five episodes as MP3s, by the address the feed gives each: a shared jingle, then show, a shared ad, more
-    show. Needs ffmpeg."""
+    show. Then three of another show (11 to 13) with the same jingle and ad. Needs ffmpeg."""
     jingle, ad = fake_audio(JINGLE, 99), fake_audio(AD, 98)
     files = {}
-    for n in range(1, 6):
+    for n in (*range(1, 6), 11, 12, 13):
         samples = np.concatenate([jingle, fake_audio(FILLER, n), ad, fake_audio(FILLER, 100 + n)])
         pcm = (np.clip(samples, -1, 1) * 32767).astype("<i2").tobytes()
         path = root / f"{n}.mp3"

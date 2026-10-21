@@ -29,11 +29,12 @@ class TypeChange(BaseModel):
 
 
 class Addition(BaseModel):
-    """A stretch cut by hand; with `as_block`, saved as a block, to be looked for in other episodes too."""
+    """A stretch cut by hand; with `as_block`, saved as a block of this podcast, to be looked for in its other
+    episodes too, as `type`: local, intro or outro."""
     start: float
     end: float
     as_block: bool = False
-    type: str = "repeated"
+    type: str = "show"
 
 
 class Edits(BaseModel):
@@ -41,6 +42,7 @@ class Edits(BaseModel):
     types: list[TypeChange] = []
     add: list[Addition] = []
     remove: list[int] = []  # hand-made cuts to undo, by id
+    delete: list[int] = []  # blocks marked by hand to delete, by id
 
 
 def _episode(db: sqlite3.Connection, user_id: int, episode_id: int) -> sqlite3.Row:

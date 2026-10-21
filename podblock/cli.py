@@ -30,7 +30,7 @@ from .pipeline import (
     prune,
     refingerprint,
 )
-from .report import MIN_SECTION_SEC, build_sections
+from .report import MIN_SECTION_SEC, SKIPPED, build_sections
 from .store import TYPES, Store, StoreError
 
 
@@ -102,7 +102,8 @@ def cmd_report(args, store: Store, paths: Paths) -> None:
         podcast = podcast_arg(store, args.podcast)
         bed = outro_start(args, store, podcast, fp.loudness)
         matches = store.scan(fp, params, podcast_id=podcast, heard=True)
-        show(args, report_data(args, store, Path(args.target).name, fp.duration, matches, outro_bed_start=bed))
+        show(args, report_data(args, store, Path(args.target).name, fp.duration, matches, outro_bed_start=bed,
+                               podcast_id=podcast))
         return
     else:
         sys.exit("Give an episode id, file or URL, or --feed URL [--index N].")
@@ -141,8 +142,8 @@ def outro_start(args, store: Store, podcast: int | None, loudness) -> float | No
 
 
 def report_data(args, store: Store, title: str, duration: float, matches,
-                ep_id: int | None = None, outro_bed_start: float | None = None) -> dict:
-    sections = build_sections(matches, store.types(), duration, fill_gaps=args.fill_gaps,
+                ep_id: int | None = None, outro_bed_start: float | None = None, podcast_id: int | None = None) -> dict:
+    sections = build_sections(matches, store.types(podcast_id), duration, fill_gaps=args.fill_gaps,
                               outro_bed_start=outro_bed_start, min_section=args.min_section,
                               pinned=store.hand_typed())
     return {"episode_id": ep_id, "title": title, "duration": round(duration, 2),
@@ -250,13 +251,14 @@ def print_breaks(breaks: list[AdBreak], indent: str = "") -> None:
 
 
 def cmd_breaks(args, store: Store, paths: Paths) -> None:
-    types = store.types()
     episodes = store.fingerprinted_episodes()
     if args.episode_ids:
         episodes = [e for e in episodes if e["id"] in args.episode_ids]
     for ep in episodes:
         print(f"#{ep['id']} {ep['title']} ({fmt_time(ep['duration'] or 0)})")
-        print_breaks(find_breaks(store.occurrences_for_episode(ep["id"]), types), indent="  ")
+        types = store.types(ep["podcast_id"])
+        matches = [m for m in store.occurrences_for_episode(ep["id"]) if types.get(m.segment_id) not in SKIPPED]
+        print_breaks(find_breaks(matches, types), indent="  ")
 
 
 def cmd_type(args, store: Store, paths: Paths) -> None:

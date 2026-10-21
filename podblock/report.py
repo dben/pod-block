@@ -14,6 +14,9 @@ match another episode (a laugh, a catchphrase, a sting) are rarely worth
 cutting. Ad breaks, intros, outros, show blocks and blocks typed by hand
 (`pinned`) are kept whatever their length. Short blocks stay in the store
 all the same: bumpers are short, and they are how breaks are found.
+
+Blocks kept (`kept`, for one podcast) or flagged as false positives
+(`ignored`) are never cut and mark no breaks; `skipped` lists where they play.
 """
 
 from __future__ import annotations
@@ -21,12 +24,13 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 
 from .breaks import BUMPER_TYPES, find_breaks
-from .store import INTRO, OUTRO, REPEATED, SHOW, TYPES, SegmentMatch
+from .store import IGNORED, INTRO, KEPT, OUTRO, REPEATED, SHOW, TYPES, SegmentMatch
 
 BREAK = "break"
 JOIN_SEC = 2.0  # parts this close always merge
 MIN_SECTION_SEC = 15.0  # shorter sections are left in, unless they are breaks or typed by hand
 ORDER = [INTRO, OUTRO, BREAK, *TYPES]  # how a section's types are listed
+SKIPPED = (KEPT, IGNORED)  # never cut
 
 
 @dataclass
@@ -70,6 +74,7 @@ def build_sections(matches: list[SegmentMatch], types: dict[int, str], duration:
                    min_section: float = MIN_SECTION_SEC, pinned: set[int] = frozenset()) -> list[Section]:
     """`outro_bed_start` is where a talked-over music-bed outro begins, if one was found.
     `pinned` blocks (typed by hand) make a section stay however short it is."""
+    matches = [m for m in matches if types.get(m.segment_id) not in SKIPPED]
     # Bumpers only mark breaks; hosts often talk over them, so they are left out.
     parts = [Part(m.start, m.end, types.get(m.segment_id, REPEATED), m.segment_id) for m in matches
              if types.get(m.segment_id) not in BUMPER_TYPES]
@@ -102,3 +107,18 @@ def build_sections(matches: list[SegmentMatch], types: dict[int, str], duration:
     keeps = {INTRO, OUTRO, SHOW, BREAK}
     return [s for s in sections if s.length >= min_section
             or any(p.type in keeps or p.block in pinned for p in s.parts)]
+
+
+def skipped(matches: list[SegmentMatch], types: dict[int, str], kind: str,
+            sections: list[Section] = ()) -> list[dict]:
+    """Where blocks of a SKIPPED `kind` play, as spans (touching matches joined) with their blocks; leaving out
+    spans that `sections` cut anyway."""
+    spans: list[dict] = []
+    for m in sorted((m for m in matches if types.get(m.segment_id) == kind), key=lambda m: m.start):
+        if spans and m.start - spans[-1]["end"] <= JOIN_SEC:
+            spans[-1]["end"] = max(spans[-1]["end"], m.end)
+            spans[-1]["blocks"] = sorted({*spans[-1]["blocks"], m.segment_id})
+        else:
+            spans.append({"start": m.start, "end": m.end, "blocks": [m.segment_id]})
+    return [{"start": round(sp["start"], 2), "end": round(sp["end"], 2), "blocks": sp["blocks"]} for sp in spans
+            if not any(s.start <= sp["start"] and sp["end"] <= s.end for s in sections)]

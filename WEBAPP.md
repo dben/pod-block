@@ -11,14 +11,15 @@ built, and what could come next.
 | Topic | Decision |
 | --- | --- |
 | Database | One database for the detector and the app: the app's tables and columns go in `podblock.sqlite` beside the detector's. If we move off SQLite, both move to the same host together. |
-| Marking blocks | Marking a block intro, outro, show or ignored on one episode changes the block itself, for every episode, as `podblock type` does. |
-| Block types | `show` (Local in the app): a block checked only against its own podcast's episodes, never other feeds'. `ignored`: a false positive, never reported, so never cut. Both are choices in the timeline. Every section a report lists is cut. |
+| Marking blocks | Intro, Outro and Keep on the timeline are the podcast's own type for the block (`podcast_types`), used in that podcast's episodes only; other podcasts keep the block's own type. Removing one goes back to that. Not a repeat (`ignored`) changes the block itself, for every podcast, as `podblock type` does. Only overrides, not copies of the block: a copy would match twice and count twice against the cap on common hashes. |
+| Block types | `show` (Local in the app): a block checked only against its own podcast's episodes, never other feeds'. In the app it is only for sections marked by hand and saved as blocks; those are always of one podcast, and can be deleted. `kept`: a podcast's own type, never cut there. `ignored`: a false positive, never cut anywhere; reports list where one plays (`not_repeats`) so it can be undone. Every section a report lists is cut. |
+| Old hand types | Intros, outros and Local blocks typed by hand before podcasts had their own types went back to automatic when the store was upgraded. False positives stayed. |
 | Comparison episodes | When a show has fewer than 4 fingerprinted episodes, a download also pulls the episodes published after the chosen one, nearest first, and older ones only when it reaches the newest episode. These are fully processed too: shows often run in parts, so they are likely next anyway. |
 | Retention | Counts from when an episode was processed, not its publish date. A keep pin stops the clock. An episode everyone with the podcast has archived or filtered goes early, whatever the retention setting. |
 | Users | Built for a few users. The admin logs in with the API key and adds the others, with user names and passwords. Feeds, downloads, processing, blocks and podcast settings are shared, and any user can add a feed, download and edit timelines. Removing a podcast is the admin's, since it changes things for everyone. Archived, kept, filters, which podcasts are on the home page, and private feeds are per user. |
 | Downloads | By hand, apart from the comparison episodes above and podcasts set to download new episodes on their own. |
 | Short repeats | Sections under 15 seconds aren't cut (`report.MIN_SECTION_SEC`; the CLI's `--min-section`), unless they are ad breaks, intros, outros, show blocks or blocks typed by hand. Short blocks are still stored, since bumpers are short and are how breaks are found. |
-| Intro and outro marks | Marking a section Intro types only its last block, and Outro only its first: the report runs those to the ends anyway, and a section's other blocks are often ads that also play in mid-roll breaks. Keep and Local type every block in the section. |
+| Intro and outro marks | Marking a section Intro types only its last block, and Outro only its first: the report runs those to the ends anyway, and a section's other blocks are often ads that also play in mid-roll breaks. Keep and Not a repeat type every block in the section, and its bumpers. |
 | Grabs | A grab is a user getting an episode: through their private feed or omni feed, by playing it in its page's player (not the timeline's), or with its Download button. Hits within 10 minutes of the last one, or starting partway into the file, are the same grab, since apps stream and download at once and seek with byte ranges. A play on the page counts after the longer of 5 minutes and 5% of the episode (90% of one shorter than that). |
 | Keeping it generic | No real feed URLs, show names or audio in the repo, its history or its tests. Real feeds for trying things by hand live in the environment variable `PODBLOCK_TEST_FEEDS` (space-separated), set in the cloud environment's settings. |
 
@@ -275,16 +276,26 @@ on Kubernetes, with backups and upgrades, see `deployment/README.md`.
   from there. The main play button and the space bar play on with no end. "Skip cuts" jumps over
   everything that would be cut, unsaved changes included, to hear the
   joins.
-- Set a section to Intro, Outro, Local, Keep, or back to how it was
-  found. This changes its blocks everywhere (see Decisions for which
-  blocks), so other ready episodes they play in are cut again. Keep on an
-  ad break also marks its bumpers as false hits, so the break stays.
+- Set a section to Intro, Outro or Keep (this show), to Not a repeat (every
+  show), or back to how it was found. See Decisions
+  for which blocks take it. Other ready episodes the blocks play in are
+  cut again: this show's, or every show's for Not a repeat. Keep on an ad
+  break keeps its bumpers too, so the break stays.
+- Sections of this show's own types, and blocks marked by hand, show a
+  "Custom (this show)" pill. Remove puts a section back as it was found;
+  Delete deletes a block marked by hand. Kept sections stay on the
+  timeline, in grey, and aren't cut.
+- Matches marked Not a repeat aren't on the timeline: they are invalid
+  matches, not part of the episode's cuts. When an episode has any, a
+  collapsed "Not a repeat" list under the sections shows them, each with
+  "Cut again". A section set to Not a repeat moves there at once, with
+  Undo, before it is saved. Kept sections stay on the timeline.
 - Add a section by hand: drag across the waveform (even over a section
   already there), or on a phone tap "Add section" at the player's place.
   Drag its edges, or type times and nudge them a second at a time or set
   them to the player's place. Choose to cut it here only, or to catch it in
-  other episodes too (saved as a block of the chosen type, and the show's
-  other ready episodes are checked again). Hand-cut sections can be put
+  this show's other episodes too (saved as a Local, Intro or Outro block of
+  this show, and its other ready episodes are checked again). Hand-cut sections can be put
   back.
 - Nothing is written until Save, in a bar that counts the unsaved changes;
   Discard puts it all back, and leaving the page asks first. Saving queues
@@ -471,6 +482,24 @@ on Kubernetes, with backups and upgrades, see `deployment/README.md`.
 - Pages work without JavaScript where it costs little: adding, refreshing,
   paging, searching and archiving all work as plain forms and links. The
   timeline needs it.
+
+### Writing
+
+Labels and hints are short and plain, so a page can be scanned.
+
+- Cut text that says what the page already shows: a Downloads page doesn't
+  need a line saying it lists downloads.
+- Say what to do, not how it works inside. Why podcast apps sort by date,
+  or how rewind episodes upset finding repeats, belongs here, not on screen.
+- Put what matters first. A warning starts with "Caution:", rather than
+  sitting in the middle of a paragraph.
+- Prefer a label to a sentence, with scope in brackets: "Keep (this show)",
+  "Custom (this show)". A count goes in a badge ("3 users"), not a sentence.
+- Keep a hint only for a fact the label can't carry ("0 keeps them
+  forever."), or for a pending change with a wide effect ("Won't be cut in
+  any show"). Anything longer goes in a tooltip.
+- Buttons name the action ("Delete", "Cut again"), and a pending change
+  can be taken back with Undo.
 
 ## Data model
 
