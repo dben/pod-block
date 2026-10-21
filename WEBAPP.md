@@ -245,8 +245,9 @@ on Kubernetes, with backups and upgrades, see `deployment/README.md`.
   queued to be cut again; those whose cut wouldn't change are done in
   moments. A re-cut never sets off more re-cuts.
 - The episode page shows the status (queued and running ones update
-  themselves), a player and a download for the cut file, how much was cut,
-  the timeline, and the show notes.
+  themselves), a player and a download for the cut file, and how much was
+  cut, with the show notes beside it (below it on a phone), then the
+  timeline across the full width.
 
 ### Timeline editor
 

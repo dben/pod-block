@@ -528,7 +528,10 @@ a.podcast-card:hover { background: var(--surface-2); }
 .ep-head-art { flex: none; width: 120px; height: 120px; border-radius: 14px; object-fit: cover; box-shadow: 0 10px 30px rgb(0 0 0 / 0.5); }
 .ep-head-info { display: grid; gap: 8px; min-width: 0; }
 .ep-head-info h1 { font-size: 1.6rem; overflow-wrap: anywhere; }
-.ep-page { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 360px); gap: 20px; align-items: start; }
+.ep-page { display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; }
+.ep-page > .card { min-width: 0; }
+.ep-top { display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; align-items: start; }
+.ep-top.has-notes { grid-template-columns: minmax(0, 1fr) minmax(0, 400px); }
 .ep-main { display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; min-width: 0; }
 .ep-main > .card { min-width: 0; }
 .status-card, .sections-card, .notes-card { display: grid; gap: 12px; padding: 20px; }
@@ -558,7 +561,7 @@ a.podcast-card:hover { background: var(--surface-2); }
 .notes.open p { display: block; }
 
 @media (max-width: 900px) {
-  .ep-page { grid-template-columns: minmax(0, 1fr); }
+  .ep-top.has-notes { grid-template-columns: minmax(0, 1fr); }
 }
 @media (max-width: 720px) {
   .ep-head { align-items: flex-start; gap: 14px; }
@@ -589,7 +592,6 @@ a.podcast-card:hover { background: var(--surface-2); }
   --wave: #3a9e95;
   --wave-faint: #2a5f5a;
 }
-.ep-page-wide { grid-template-columns: minmax(0, 1fr); }
 .k-intro { --c: var(--type-intro); }
 .k-outro { --c: var(--type-outro); }
 .k-break { --c: var(--type-ad); }
