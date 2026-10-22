@@ -343,8 +343,8 @@
 
   // ---- captions beside the episode's player -------------------------------------
   // A browser draws no captions for audio, so the player's track is read here and its
-  // cues shown in a box under it: the one being said, and the one before, dimmed.
-  // Whether they show is remembered.
+  // cues shown in a box under it: the one being said, and the one before, dimmed, each
+  // with who says it when the transcript names them. Whether they show is remembered.
 
   const CAPTIONS_KEY = "podblock.captions";
   for (const box of $$("[data-captions]")) {
@@ -359,13 +359,22 @@
     const lines = [];  // the cues shown, oldest first
 
     const text = (cue) => cue.getCueAsHTML?.().textContent ?? cue.text.replace(/<[^>]*>/g, "");
+    const voice = (cue) => (cue.getCueAsHTML ? cue.getCueAsHTML().querySelector("span[title]")?.title
+      : cue.text.match(/^<v(?:\.[^\s>]*)?\s+([^>]+)>/)?.[1])?.trim();
     const draw = () => {
       box.hidden = !on || !started;
       if (toggle) toggle.setAttribute("aria-pressed", on);
       const now = Array.from(track.activeCues || []);
       box.replaceChildren(...lines.map((cue) => {
         const p = document.createElement("p");
-        p.textContent = text(cue);
+        const who = voice(cue);
+        if (who) {
+          const name = document.createElement("span");
+          name.className = "captions-who";
+          name.textContent = who;
+          p.append(name);
+        }
+        p.append(text(cue).trim());
         p.classList.toggle("now", now.includes(cue));
         return p;
       }));

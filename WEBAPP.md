@@ -262,7 +262,8 @@ on Kubernetes, with backups and upgrades, see `deployment/README.md`.
   timeline across the full width. An episode with a timed transcript (its
   feed's, or captions from the transcription service) shows it under the
   player as it plays, moved to fit the cut: the line being said, and the
-  one before it, dimmed. The Captions button hides them; the browser
+  one before it, dimmed, each with who says it when the transcript names
+  them. The Captions button hides them; the browser
   remembers that.
 
 ### Timeline editor

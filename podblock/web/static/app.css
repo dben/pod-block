@@ -547,6 +547,8 @@ a.podcast-card:hover { background: var(--surface-2); }
 .captions[hidden] { display: none; }
 .captions p { margin: 0; white-space: pre-line; overflow-wrap: anywhere; color: var(--faint); transition: color 0.2s; }
 .captions p.now { color: var(--text); }
+.captions-who { margin-right: 8px; font-size: 0.8em; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; }
+.captions p.now .captions-who { color: var(--accent); }
 [data-captions-toggle][aria-pressed="true"] { color: var(--text); background: var(--surface-3); }
 
 .section-list { list-style: none; margin: 0; padding: 0; display: grid; }
