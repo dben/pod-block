@@ -90,19 +90,26 @@ def enqueue_task(db: sqlite3.Connection, kind: str, user_id: int | None, payload
     return cur.lastrowid
 
 
-def claim(db: sqlite3.Connection) -> sqlite3.Row | None:
+def claim(db: sqlite3.Connection, kinds: tuple[str, ...] | None = None, besides: tuple[str, ...] = ()
+          ) -> sqlite3.Row | None:
     """Take the oldest queued job whose episode no running job holds, mark it running and have it hold its
-    episode; None when there is none."""
-    if db.execute("SELECT 1 FROM jobs WHERE state = 'queued' LIMIT 1").fetchone() is None:
+    episode; None when there is none. Only jobs of `kinds`, when given, and none of `besides`."""
+    which, of = "", (*(kinds or ()), *besides)
+    if kinds is not None:
+        which += f" AND kind IN ({', '.join('?' * len(kinds))})"
+    if besides:
+        which += f" AND kind NOT IN ({', '.join('?' * len(besides))})"
+    if db.execute(f"SELECT 1 FROM jobs WHERE state = 'queued'{which} LIMIT 1", of).fetchone() is None:
         return None  # a read, so an idle worker looking every few seconds takes no write lock
     with transaction(db):
         row = db.execute(
             f"""UPDATE jobs SET state = 'running', started_at = ?, attempts = attempts + 1, step = 'Starting',
                       progress = NULL, error = NULL
                WHERE id = (SELECT j.id FROM jobs j LEFT JOIN episodes e ON e.id = j.episode_id
-                           WHERE j.state = 'queued' AND (e.id IS NULL OR NOT {HELD}) ORDER BY j.id LIMIT 1)
+                           WHERE j.state = 'queued' AND (e.id IS NULL OR NOT {HELD}){which}
+                           ORDER BY j.id LIMIT 1)
                  AND state = 'queued'
-               RETURNING *""", (time.time(),)).fetchone()
+               RETURNING *""", (time.time(), *of)).fetchone()
         if row is not None and row["episode_id"]:
             db.execute("UPDATE episodes SET held_by = ? WHERE id = ?", (row["id"], row["episode_id"]))
     return row
@@ -179,8 +186,9 @@ def active_count(db: sqlite3.Connection) -> int:
 
 
 def listing(db: sqlite3.Connection, recent: int = 30) -> dict[str, list[sqlite3.Row]]:
-    base = """SELECT j.*, e.title AS episode_title, e.podcast_id, p.name AS podcast_name
-              FROM jobs j LEFT JOIN episodes e ON e.id = j.episode_id LEFT JOIN podcasts p ON p.id = e.podcast_id"""
+    base = """SELECT j.*, e.id AS about_id, e.title AS episode_title, e.podcast_id, p.name AS podcast_name
+              FROM jobs j LEFT JOIN episodes e ON e.id = COALESCE(j.episode_id, json_extract(j.payload, '$.episode'))
+              LEFT JOIN podcasts p ON p.id = e.podcast_id"""  # a task such as `captions` names its episode
     return {
         "running": db.execute(f"{base} WHERE j.state = 'running' ORDER BY j.id").fetchall(),
         "queued": db.execute(f"{base} WHERE j.state = 'queued' ORDER BY j.id").fetchall(),

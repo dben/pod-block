@@ -1,7 +1,8 @@
 """Work that runs apart from any request: feed refreshes, clean-up, and the job queue.
 
 `Background` is that work: one thread refreshes feeds when they are due and
-cleans up old downloads, and `workers` threads take jobs from the queue.
+cleans up old downloads, `workers` threads take jobs from the queue, and one
+more takes `captions` jobs, which mostly wait on the transcription service.
 
 It runs in a process of its own, `podblock worker` (`run_worker`), which the
 web app starts as its child and starts again if it dies (`JobProcess`). So a
@@ -24,7 +25,7 @@ import sys
 import threading
 import time
 
-from . import following, jobs, locks, processing, retention
+from . import captions, following, jobs, locks, processing, retention
 from .config import Settings
 from .db import connect, prepare
 from .states import CANCELLED, DONE, FAILED
@@ -37,7 +38,9 @@ WORKER_LOCK = "worker.lock"  # held by the one process running jobs, beside the 
 RESTART_MAX = 60  # seconds: the longest wait before starting a job process that keeps dying
 PARENT_CHECK = 2  # seconds between checks that the web app that started a worker is still there
 
-RUNNERS = {"process": processing.run, "edit": processing.run_edit, "unlearn": processing.run_unlearn}
+RUNNERS = {"process": processing.run, "edit": processing.run_edit, "unlearn": processing.run_unlearn,
+           captions.KIND: captions.run}
+LANES = {"jobs": {"besides": (captions.KIND,)}, "captions": {"kinds": (captions.KIND,)}}  # which threads take what
 
 
 def run_job(settings: Settings, db, job) -> str:
@@ -77,8 +80,11 @@ class Background:
         self._stop = threading.Event()
         self._wake = threading.Event()
         self._threads = [threading.Thread(target=self._refresh, name="podblock-refresh", daemon=True)]
-        self._threads += [threading.Thread(target=self._work, name=f"podblock-worker-{n}", daemon=True)
-                          for n in range(max(0, workers))]
+        self._threads += [threading.Thread(target=self._work, args=("jobs",), name=f"podblock-worker-{n}",
+                                           daemon=True) for n in range(max(0, workers))]
+        if workers > 0:  # captions wait on the transcriber, so they have a thread of their own
+            self._threads.append(threading.Thread(target=self._work, args=("captions",), name="podblock-captions",
+                                                  daemon=True))
         self.held: int | None = None  # the worker lock, when it runs in the web app's own process
 
     def start(self) -> None:
@@ -120,12 +126,12 @@ class Background:
                 log.exception("refreshing feeds or cleaning up failed")
             self._stop.wait(self.tick)
 
-    def _work(self) -> None:
+    def _work(self, lane: str) -> None:
         while not self._stop.is_set():
             try:
                 db = connect(self.settings.db_path)
                 try:
-                    while not self._stop.is_set() and (job := jobs.claim(db)) is not None:
+                    while not self._stop.is_set() and (job := jobs.claim(db, **LANES[lane])) is not None:
                         run_job(self.settings, db, job)
                 finally:
                     db.close()

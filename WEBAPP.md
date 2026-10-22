@@ -32,7 +32,7 @@ built, and what could come next.
 | Timeline and player | `static/timeline.js`, no library | a canvas over the part in view, with waveform data worked out on the server |
 | Styling | hand-written CSS with custom properties | dark by default, mobile first, no build step |
 | Database | `podblock.sqlite`, through `sqlite3` as the detector's `Store` does | one file on a volume; the app's tables are added by numbered steps in `podblock/app/db.py` |
-| Background work | a worker process, `podblock worker`, that `serve` starts and restarts; inside it, threads (`PODBLOCK_WORKERS`, default 1) take jobs from a table in the database, and one more refreshes feeds and cleans up | survives restarts, needs no broker; a crash or memory spike in a job can't take the pages down; the two share only the database, so the worker can move to its own container later |
+| Background work | a worker process, `podblock worker`, that `serve` starts and restarts; inside it, threads (`PODBLOCK_WORKERS`, default 1) take jobs from a table in the database, one more takes captions jobs, and one more refreshes feeds and cleans up | survives restarts, needs no broker; a crash or memory spike in a job can't take the pages down; the two share only the database, so the worker can move to its own container later |
 | Audio cutting | `podblock/cut.py`: one ffmpeg decodes to raw samples, Python drops the cut stretches and fades each join, a second ffmpeg encodes | flat memory whatever the length, cuts on the exact sample, real fades; one decode and one encode |
 
 ## How it fits together
@@ -91,7 +91,7 @@ Three layers, each importing only the ones below it
 | Layer | Where | What |
 | --- | --- | --- |
 | Web app | `podblock/web/` | `app.py` puts the FastAPI app together; `routes/` has one module per part of the site, each parsing a request, calling the app and rendering; `deps.py` is what routes ask for (the database, the user); `templating.py`, `templates/` and `static/` are the pages |
-| App | `podblock/app/` | everything else the app does, with no HTTP in it: following feeds (`following.py`), the job queue (`jobs.py`) and what the jobs do (`processing.py`), the states episodes and jobs move through (`states.py`), the worker process that runs them (`worker.py`), private feeds (`private_feeds.py`), users, filters, grabs, retention, and the database's tables and transactions (`db.py`) |
+| App | `podblock/app/` | everything else the app does, with no HTTP in it: following feeds (`following.py`), the job queue (`jobs.py`) and what the jobs do (`processing.py`, `captions.py`), the states episodes and jobs move through (`states.py`), the worker process that runs them (`worker.py`), private feeds (`private_feeds.py`), users, filters, grabs, retention, and the database's tables and transactions (`db.py`) |
 | Detector | `podblock/*.py` | fingerprinting, matching, the block store, reports and cutting; the command line (`cli.py`) starts all three |
 
 The worker process imports only the app and the detector, so it runs
@@ -115,6 +115,7 @@ Others:
 | `PODBLOCK_SECURE_COOKIES` | `true` to send the session cookie over HTTPS only; set it behind TLS |
 | `PODBLOCK_PUBLIC_URL` | base URL for links in the private feed, e.g. `https://pods.example.com`; falls back to the address the request came to |
 | `PODBLOCK_WORKERS` | threads running jobs (default 1). Fingerprinting takes about 0.3 GB and one core per thread |
+| `PODBLOCK_WHISPER_URL` | the transcription service, e.g. `http://pod-block-whisper:9000`; when set, downloads without a timed transcript get captions (`whisper/README.md`) |
 | `PODBLOCK_JOBS` | where jobs run: `process` (default, a `podblock worker` that `serve` starts), `threads` (inside `serve`) or `none` (run `podblock worker` yourself; only one may run) |
 | `FORWARDED_ALLOW_IPS` | Uvicorn's own: which proxies to trust for `X-Forwarded-*` headers; set it to the ingress's address range |
 
@@ -231,6 +232,16 @@ on Kubernetes, with backups and upgrades, see `deployment/README.md`.
   moves back by everything cut before it; a time inside a cut moves to the
   join; a chapter or cue left with nothing (a sponsor chapter, an ad read)
   goes. Transcripts with no times (HTML, plain text) are left out.
+- With `PODBLOCK_WHISPER_URL` set, an episode left with no timed transcript
+  gets a `captions` job once it is cut (`podblock/app/captions.py`). It sends
+  the download to the transcription service (`whisper/`) and saves what comes
+  back as WebVTT, `rel="captions"`, among the episode's transcripts, so it is
+  shifted and served like a feed's own. The job names its episode in its
+  payload rather than holding it, so the episode stays ready and editable
+  meanwhile, and captions jobs take a worker thread of their own. When the
+  service has speakers on, the turns it finds are saved beside the captions
+  (`podblock/app/speakers.py`), for `podblock speakers` to set beside the
+  repeats; they don't go into the captions or the cuts yet.
 - Each join gets a chapter saying what was cut and how much: "1:32 ad break
   cut", or, inside a chapter of the source's, "Interview (after 1:32 ad
   break cut)". An episode with no chapters of its own gets a "Start"
@@ -616,10 +627,9 @@ only looks at fingerprinted ones, so they don't affect it.
   blocks where the same short piece keeps turning up at their edges; look
   for short repeats just inside the ends of known ads; let the user mark a
   bumper on the timeline (a Bumper type that splits it out of its block).
-- Captions and transcripts with faster-whisper: transcribe each episode
-  (int8 on a CPU), shift the times to the cut audio, and serve them in the
-  private feed as `podcast:transcript` (SRT or WebVTT). The text could also
-  help name ad blocks and find repeats that differ in sound but not words.
+- Use the captions' text to name ad blocks and find repeats that differ in
+  sound but not words; show it on the timeline. An OpenVINO backend for the
+  transcription service, for Intel iGPUs (`whisper/README.md`).
 - OPML import and export.
 - When one episode of a job's group repeats from end to end (an unfiltered
   rewind, say), the whole job fails, the other episodes with it. It could

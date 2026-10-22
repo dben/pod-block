@@ -77,6 +77,40 @@ its settings on GitHub.
   scheme and host from the ingress; it is safe here because the Service is
   only reachable inside the cluster.
 
+## Optional: captions
+
+pod-block runs fine without this. To add captions to the private feeds, run
+the transcription service from [`whisper/`](../whisper/) beside it:
+
+```sh
+kubectl apply -k deployment/whisper/
+```
+
+Then uncomment `PODBLOCK_WHISPER_URL` in `kustomization.yaml` and apply it
+again. Each episode downloaded after that gets a captions job once it is cut.
+It's ready in the feed straight away; the captions follow when the job is
+done.
+
+Before you apply it, change these in `whisper/kustomization.yaml`:
+
+- **`WHISPER_THREADS`**: the cores it may use.
+- **`WHISPER_MODEL`**: `large-v3-turbo` takes about 0.4 of an episode's
+  length on 4 cores; `small` about half that, with more mistakes in names.
+- **`WHISPER_SPEAKERS`**: `true` also records who speaks when, for
+  `podblock speakers`. Adds about 0.17 of the episode's length.
+
+It is its own Deployment, Service and volume (`pod-block-whisper-models`,
+5 GiB, for the downloaded models), with its own labels, so it never mixes
+with pod-block's pods. It runs as uid 1000 with a read-only root file system,
+like pod-block, and asks for 1 CPU and 2 GiB, limited to 6 GiB. It is busy
+only while it transcribes. The image is `ghcr.io/dben/pod-block-whisper`,
+with the same tags as pod-block's. [`whisper/README.md`](../whisper/README.md)
+covers its settings, speed and speaker labels.
+
+To take it out again, comment out `PODBLOCK_WHISPER_URL`, apply, then
+`kubectl delete -k deployment/whisper/`. Captions already made stay until
+their episode's download is cleaned up.
+
 ## Backups
 
 The data volume holds everything that matters: feeds, episode metadata,

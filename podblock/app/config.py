@@ -34,6 +34,7 @@ class Settings:
     jobs: str = "process"  # where: a child process (`podblock worker`), threads of this one, or "none" (run
     #                        `podblock worker` yourself)
     workers: int = 1  # threads running jobs
+    whisper_url: str | None = None  # the transcription service (whisper/); when set, downloads get captions
 
     @property
     def db_path(self) -> Path:
@@ -57,4 +58,5 @@ class Settings:
             secure_cookies=_flag("PODBLOCK_SECURE_COOKIES"),
             workers=int(os.environ.get("PODBLOCK_WORKERS") or 1),
             jobs=_choice("PODBLOCK_JOBS", JOBS),
+            whisper_url=(os.environ.get("PODBLOCK_WHISPER_URL") or "").rstrip("/") or None,
         )
