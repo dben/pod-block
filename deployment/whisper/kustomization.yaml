@@ -16,7 +16,10 @@ images:
 configMapGenerator:
   - name: pod-block-whisper
     literals:
-      - WHISPER_MODEL=small  # tiny, base, small, medium, large-v3-turbo; bigger is better and slower
+      - WHISPER_MODEL=large-v3-turbo  # or small: about twice as quick, more mistakes in names (whisper/README.md)
       - WHISPER_COMPUTE_TYPE=int8
-      - WHISPER_THREADS=4  # CHANGE: the cores it may use; match the CPU limit if you set one
+      - WHISPER_THREADS=6  # CHANGE: the cores it may use (an i5-8500T has 6); match the CPU limit if you set one
       - WHISPER_BEAM_SIZE=5  # 1 is about twice as quick
+      - WHISPER_BATCH=8  # pieces of an episode transcribed at once; 0 for one after another
+      - WHISPER_SPEAKERS=false  # true: also find who speaks when, for `podblock speakers` (not in captions yet)
+      - SPEAKER_THRESHOLD=0.8  # higher, fewer speakers; try others with `podblock speakers ID --threshold`

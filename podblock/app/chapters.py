@@ -203,10 +203,12 @@ def gather(db: sqlite3.Connection, ep: sqlite3.Row, stem: Path) -> None:
                    (json.dumps(chapters), json.dumps(transcripts), ep["id"]))
 
 
-def forget(ep: sqlite3.Row) -> None:
-    """Delete an episode's saved transcripts, as its download goes."""
+def forget(ep: sqlite3.Row | dict) -> None:
+    """Delete an episode's saved transcripts, and the speaker turns saved with captions, as its download goes."""
     for t in json.loads(ep["transcripts"] or "[]"):
-        Path(t["path"]).unlink(missing_ok=True)
+        for path in (t["path"], t.get("speakers")):
+            if path:
+                Path(path).unlink(missing_ok=True)
 
 
 # ---- chapters for the cut ------------------------------------------------------

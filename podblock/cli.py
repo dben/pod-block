@@ -261,6 +261,48 @@ def cmd_breaks(args, store: Store, paths: Paths) -> None:
         print_breaks(find_breaks(matches, types), indent="  ")
 
 
+def cmd_speakers(args, store: Store, paths: Paths) -> None:
+    from .app import captions, speakers  # the app's own: what the captions job saved, and the service it asks
+
+    ep = store.episode(args.episode_id)
+    if ep is None:
+        sys.exit(f"No episode #{args.episode_id}.")
+    ep = dict(ep)
+    saved_report = store.saved_report(ep["id"])
+    sections = json.loads(saved_report)["sections"] if saved_report else []
+    tuning = {k: getattr(args, k) for k in ("threshold", "count", "min_on", "min_off") if getattr(args, k) is not None}
+    found = None if tuning or args.again else speakers.saved(ep) if "transcripts" in ep else None
+    if found is None:
+        url = (args.whisper or os.environ.get("PODBLOCK_WHISPER_URL") or "").rstrip("/")
+        audio = next((Path(p) for p in (ep.get("original_path"), ep.get("audio_path")) if p and Path(p).exists()),
+                     None)
+        if not url:
+            sys.exit("No speakers saved for it; give --whisper URL (or set PODBLOCK_WHISPER_URL) to ask the service.")
+        if audio is None:
+            sys.exit("No speakers saved for it, and its audio is gone; download it again.")
+
+        class Say:
+            def step(self, text):
+                print(f"{text}...", file=sys.stderr)
+
+            def progress(self, fraction):
+                pass
+
+        try:
+            heard = captions.ask(Say(), url, "speakers", audio, tuning)
+        except captions.CaptionError as e:
+            sys.exit(f"podblock: {e}")
+        found = {"options": heard["options"], "turns": heard["speakers"] or []}
+    if not saved_report:
+        print("No report saved for it, so the repeats can't be compared; `podblock report` makes one.\n")
+    if args.json:
+        print(json.dumps({**found, "speakers": speakers.summary(found["turns"], sections),
+                          "sections": speakers.by_section(found["turns"], sections)}, indent=2))
+    else:
+        print(f"#{ep['id']} {ep['title']} ({fmt_time(ep['duration'] or 0)})")
+        print(speakers.report(found["turns"], sections, found.get("options")))
+
+
 def cmd_type(args, store: Store, paths: Paths) -> None:
     if store.segment(args.segment_id) is None:
         sys.exit(f"No segment #{args.segment_id}")
@@ -457,6 +499,18 @@ def main(argv: list[str] | None = None) -> None:
     p = sub.add_parser("show", help="show where a block occurs")
     p.add_argument("segment_id", type=int)
     p.set_defaults(func=cmd_show)
+
+    p = sub.add_parser("speakers", help="who speaks when in an episode, beside its repeats: the turns saved with "
+                                        "its captions, or asked of the transcription service with the options given")
+    p.add_argument("episode_id", type=int)
+    p.add_argument("--threshold", type=float, help="how different two voices must be to count as two (higher, fewer)")
+    p.add_argument("--count", type=int, help="the number of speakers, when known")
+    p.add_argument("--min-on", type=float, help="the shortest turn kept, in seconds")
+    p.add_argument("--min-off", type=float, help="join one speaker's turns closer than this, in seconds")
+    p.add_argument("--again", action="store_true", help="ask the service again with its own defaults")
+    p.add_argument("--whisper", help="the service's address (default: $PODBLOCK_WHISPER_URL)")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_speakers)
 
     p = sub.add_parser("type", help="set a block's type; intro, outro and show apply to its own "
                                     "podcast only, the rest to every podcast; ignored marks a false "

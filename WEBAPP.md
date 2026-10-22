@@ -238,7 +238,10 @@ on Kubernetes, with backups and upgrades, see `deployment/README.md`.
   back as WebVTT, `rel="captions"`, among the episode's transcripts, so it is
   shifted and served like a feed's own. The job names its episode in its
   payload rather than holding it, so the episode stays ready and editable
-  meanwhile, and captions jobs take a worker thread of their own.
+  meanwhile, and captions jobs take a worker thread of their own. When the
+  service has speakers on, the turns it finds are saved beside the captions
+  (`podblock/app/speakers.py`), for `podblock speakers` to set beside the
+  repeats; they don't go into the captions or the cuts yet.
 - Each join gets a chapter saying what was cut and how much: "1:32 ad break
   cut", or, inside a chapter of the source's, "Interview (after 1:32 ad
   break cut)". An episode with no chapters of its own gets a "Start"

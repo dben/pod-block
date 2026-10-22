@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from podblock.app import captions, chapters, jobs, worker
+from podblock.app import captions, chapters, jobs, speakers, worker
 from podblock.app.config import Settings
 
 
@@ -60,6 +60,18 @@ def load_server():
     return module
 
 
+class FakeSpeakers:
+    """Two voices: a guest reading the ad, then the host."""
+
+    def __init__(self):
+        self.calls = []
+
+    def run(self, samples, opts, progress):
+        self.calls.append(opts)
+        progress(0.5)
+        return [[0.9, 3.0, 0], [11.5, 19.0, 1]]
+
+
 class FakeModel:
     supported_languages = ["en", "fr"]
 
@@ -67,8 +79,8 @@ class FakeModel:
         self.calls = []
         self.fail = False
 
-    def transcribe(self, path, language=None, **options):
-        self.calls.append({"bytes": Path(path).read_bytes(), "language": language, **options})
+    def transcribe(self, samples, language=None, **options):
+        self.calls.append({"bytes": samples, "language": language, **options})
         if self.fail:
             raise RuntimeError("out of memory")
         segs = [segment(1, "An ad you will hear again."), segment(12, "The show itself starts here.")]
@@ -80,9 +92,11 @@ class FakeModel:
 def service():
     server_module = load_server()
     server_module.model = FakeModel()
+    server_module.decode = lambda path: Path(path).read_bytes()  # the "samples" the stand-in models get
     server = server_module.ThreadingHTTPServer(("127.0.0.1", 0), server_module.Handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    yield SimpleNamespace(url=f"http://127.0.0.1:{server.server_port}", model=server_module.model)
+    yield SimpleNamespace(url=f"http://127.0.0.1:{server.server_port}", model=server_module.model,
+                          module=server_module)
     server.shutdown()
 
 
@@ -139,3 +153,32 @@ def test_a_failure_in_the_service_fails_the_job(db, setup, service):
     assert "out of memory" in db.execute("SELECT error FROM jobs").fetchone()[0]
     assert episode(db)["transcripts"] == "[]" and episode(db)["state"] == "ready"
     assert not (setup.media_dir / "transcripts").exists()
+
+
+def test_speaker_turns_are_saved_with_the_captions_and_compared_with_the_repeats(db, setup, service):
+    service.module.speakers = FakeSpeakers()
+    db.execute("INSERT INTO reports VALUES (1, 0, ?)",
+               (json.dumps({"sections": [{"start": 1.0, "end": 11.0, "types": ["repeat"]}]}),))
+    db.commit()
+    captions.queue(db, setup, [1], None)
+    assert worker.run_job(setup, db, jobs.claim(db, kinds=(captions.KIND,))) == "done"
+    found = speakers.saved(episode(db))
+    assert found["turns"] == [[0.9, 3.0, 0], [11.5, 19.0, 1]]
+    assert found["options"] == {"threshold": 0.8, "count": 0, "min_on": 0.3, "min_off": 0.5}
+    assert "<v" not in chapters.transcript(episode(db), "vtt")  # not in the captions, for now
+
+    short = {"lone_share": 0.3, "lone_min": 1}  # a short episode
+    people = speakers.summary(found["turns"], [{"start": 1.0, "end": 11.0}], **short)
+    assert [(p["speaker"], round(p["in_repeats"], 2), p["lone"]) for p in people] == [(1, 0.0, False), (0, 0.95, True)]
+    text = speakers.report(found["turns"], [{"start": 1.0, "end": 11.0, "types": ["repeat"]}], **short)
+    assert "S0 100%  <- lone voice" in text
+
+    # Other options, for the speakers alone; the stand-in hears the same either way.
+    heard = captions.ask(SimpleNamespace(step=lambda t: None, progress=lambda f: None), service.url, "speakers",
+                         Path(episode(db)["original_path"]), {"threshold": 0.6, "count": 2})
+    assert service.module.speakers.calls[-1] == {"threshold": 0.6, "count": 2, "min_on": 0.3, "min_off": 0.5}
+    assert heard["speakers"] and not heard["segments"]
+
+    from podblock.app import retention
+    retention.clear(db, episode(db))
+    assert not list((setup.media_dir / "transcripts").iterdir())  # the turns go with the download

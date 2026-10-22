@@ -30,6 +30,7 @@ podblock report --feed "$FEED"        # repeated sections in the newest episode
 | `podcast P [--outro-bed]` | Show or change a podcast's settings (see "Outros read over music" below). |
 | `breaks [EPISODE_ID...]` | Ad breaks found in stored episodes. |
 | `show ID` | Where a block occurs. |
+| `speakers EPISODE_ID [--threshold T] [--count N]` | Who speaks when in an episode, beside its repeats: the turns saved with its captions, or, given options, asked of the transcription service (`--whisper URL`, else `$PODBLOCK_WHISPER_URL`). See `whisper/README.md`. |
 | `type ID TYPE` | Set a block's type by hand (see "Block types" in `README.md`). `auto` hands it back to automatic tagging. |
 | `label ID TEXT` | Give a block a name. |
 | `export ID [-o file.mp3]` | Cut a block out of its source episode, to listen to it. |

@@ -13,6 +13,10 @@ The job works on no one episode (`jobs.enqueue_task`, the episode in its
 payload), so the episode stays ready, and in the feeds, while it runs, and an
 edit can be saved meanwhile. Captions jobs run in a thread of their own
 (worker.py), so a long transcription doesn't hold up downloads.
+
+When the service has speakers turned on, it also says who speaks when; those
+turns are saved beside the captions (`speakers.py`) for `podblock speakers`
+to compare with the repeats found. They don't go into the captions yet.
 """
 
 from __future__ import annotations
@@ -26,6 +30,7 @@ from pathlib import Path
 
 import requests
 
+from . import chapters, speakers
 from .config import Settings
 from .db import transaction
 from .jobs import Context, enqueue_task
@@ -151,15 +156,18 @@ def _language(db: sqlite3.Connection, podcast_id: int | None) -> str | None:
     return code if re.fullmatch(r"[a-z]{2,3}", code) else None
 
 
-def transcribe(ctx: Context, url: str, audio: Path, language: str | None) -> tuple[str | None, list[dict]]:
-    """Send the audio to the service and read back what it heard: its language, and the segments."""
-    found, segments, duration, done = None, [], None, False
+def ask(ctx, url: str, what: str, audio: Path, params: dict | None = None) -> dict:
+    """Send the audio to the service's `what` ("transcribe" or "speakers") and read back what it found:
+    {language, duration, segments, speakers, options}, the last two when it says who speaks when. `ctx` is told
+    each step and how far through (a job's Context, or anything with `step` and `progress`)."""
+    found: dict = {"language": None, "duration": None, "segments": [], "speakers": None, "options": None}
+    done = False
     try:
         with audio.open("rb") as body, requests.post(
-                f"{url}/transcribe", data=body, params={"language": language} if language else None,
-                headers={"Content-Type": "application/octet-stream"}, stream=True, timeout=TIMEOUT) as resp:
+                f"{url}/{what}", data=body, params=params, headers={"Content-Type": "application/octet-stream"},
+                stream=True, timeout=TIMEOUT) as resp:
             resp.raise_for_status()
-            ctx.step("Transcribing")
+            ctx.step("Transcribing" if what == "transcribe" else "Finding who speaks when")
             for raw in resp.iter_lines():
                 if not raw:
                     continue
@@ -170,16 +178,23 @@ def transcribe(ctx: Context, url: str, audio: Path, language: str | None) -> tup
                     raise CaptionError(f"the transcriber failed: {line['error']}")
                 elif line.get("done"):
                     done = True
-                elif "language" in line:
-                    found, duration = line["language"], line.get("duration")
                 elif "start" in line:
-                    segments.append(line)
+                    found["segments"].append(line)
+                    duration = found["duration"]
                     ctx.progress(min(1.0, line["end"] / duration) if duration else None)
+                elif line.get("step") == "speakers" and what == "transcribe":  # a second step, after the words
+                    ctx.step("Finding who speaks when")
+                elif "progress" in line:
+                    ctx.progress(line["progress"])
+                elif "speakers" in line:
+                    found["speakers"], found["options"] = line["speakers"], line.get("options")
+                elif "duration" in line:
+                    found["language"], found["duration"] = line.get("language"), line["duration"]
     except requests.RequestException as e:
         raise CaptionError(f"couldn't reach the transcriber at {url} ({type(e).__name__}: {e})") from None
     if not done:
         raise CaptionError("the transcriber stopped part way through")
-    return found, segments
+    return found
 
 
 def run(ctx: Context, settings: Settings) -> None:
@@ -194,20 +209,29 @@ def run(ctx: Context, settings: Settings) -> None:
     if not ep["original_path"] or not Path(ep["original_path"]).exists():
         raise CaptionError("its download is gone; download it again for captions")
     ctx.step("Sending the audio to the transcriber")
-    language, segments = transcribe(ctx, settings.whisper_url, Path(ep["original_path"]),
-                                    _language(ctx.db, ep["podcast_id"]))
+    language = _language(ctx.db, ep["podcast_id"])
+    heard = ask(ctx, settings.whisper_url, "transcribe", Path(ep["original_path"]),
+                {"language": language} if language else None)
     stem = settings.media.transcripts(ep)
     path = stem.with_name(stem.name + ".captions.vtt")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".part")
-    tmp.write_text(webvtt(cues(segments)), encoding="utf-8")
-    tmp.replace(path)
+    _write(path, webvtt(cues(heard["segments"])))
     saved = {"format": "vtt", "path": str(path), "rel": "captions", "made": "whisper",
-             **({"language": language} if language else {})}
+             **({"language": heard["language"]} if heard["language"] else {})}
+    if heard["speakers"] is not None:
+        saved["speakers"] = str(speakers.save(stem, heard["speakers"], heard["options"]))
     with transaction(ctx.db):
         now = ctx.db.execute("SELECT original_path, transcripts FROM episodes WHERE id = ?", (episode_id,)).fetchone()
         if now is None or now["original_path"] != ep["original_path"] or json.loads(now["transcripts"] or "[]"):
-            path.unlink(missing_ok=True)  # cleaned up meanwhile, or the feed's transcripts were read again
+            chapters.forget({"transcripts": json.dumps([saved])})  # cleaned up meanwhile, or the feed's were read
             return
         ctx.db.execute("UPDATE episodes SET transcripts = ? WHERE id = ?", (json.dumps([saved]), episode_id))
-    log.info("captions for episode %d: %d segments, %s", episode_id, len(segments), language or "language unknown")
+    log.info("captions for episode %d: %d segments, %s%s", episode_id, len(heard["segments"]),
+             heard["language"] or "language unknown",
+             f", {len({t[2] for t in heard['speakers']})} speakers" if heard["speakers"] else "")
+
+
+def _write(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".part")
+    tmp.write_text(text, encoding="utf-8")
+    tmp.replace(path)

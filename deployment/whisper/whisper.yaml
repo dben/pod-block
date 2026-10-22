@@ -38,9 +38,9 @@ spec:
           resources:
             requests:
               cpu: "1"
-              memory: 1Gi
+              memory: 2Gi
             limits:
-              memory: 3Gi  # small: about 1 GB, plus the episode's audio decoded (about 0.25 GB an hour)
+              memory: 6Gi  # large-v3-turbo: about 2 GB; the decoded audio (0.25 GB an hour); speakers: 0.5 GB
           startupProbe:  # the first start downloads the model
             httpGet:
               path: /healthz
