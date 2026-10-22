@@ -22,7 +22,7 @@
 </section>
 
 <div class="ep-page">
-  <div class="ep-top{% if notes %} has-notes{% endif %}">
+  <div class="ep-top{% if notes %} has-notes{% if e.state == 'ready' %} crop-notes{% endif %}{% endif %}">
     <div class="ep-main">
       {% if e.skip_processing %}
       <p class="cleanup-note"><span class="muted">A filter from processing matches this episode, so it isn't used
@@ -96,9 +96,10 @@
     {% if notes %}
     <section class="card notes-card">
       <h2>Show notes</h2>
-      <div class="notes" x-data="{ open: false }" :class="open && 'open'">
-        <p>{{ notes }}</p>
-        {% if notes|length > 600 %}<button class="link-btn" type="button" x-cloak @click="open = !open" x-text="open ? 'Less' : 'More'">More</button>{% endif %}
+      <div class="notes" x-data="{ open: false, more: false }" :class="{ open, cropped: more && !open }"
+           x-init="new ResizeObserver(() => { if (!open) more = $refs.text.scrollHeight > $refs.text.clientHeight + 1 }).observe($refs.text)">
+        <p x-ref="text">{{ notes }}</p>
+        <button class="link-btn" type="button" x-cloak x-show="more || open" @click="open = !open" x-text="open ? 'Less' : 'More'">More</button>
       </div>
     </section>
     {% endif %}
