@@ -142,3 +142,23 @@ def test_what_counts_as_a_resume_and_a_play():
     assert grabs.play_needed(4 * 3600) == 720  # 5% of four hours beats five minutes
     assert grabs.play_needed(120) == 108  # a short one: most of it
     assert grabs.play_needed(None) == 300
+
+
+def test_the_page_player_gets_captions_from_any_timed_transcript(tmp_path):
+    def ep(fmt, body):
+        path = tmp_path / f"t.{fmt}"
+        path.write_text(body)
+        return {"transcripts": json.dumps([{"format": fmt, "path": str(path)}]), "cut_spec": json.dumps(KEEP),
+                "cut_duration": 30}
+
+    assert chapters.captions(ep("vtt", VTT)) == chapters._shift_cues(VTT, Shift(KEEP), srt=False)
+    srt = "1\r\n00:00:12,000 --> 00:00:15,000\r\nGone\r\n\r\n2\r\n00:00:41,250 --> 00:00:43,000\r\nKept\r\n"
+    assert chapters.captions(ep("srt", srt)) == "WEBVTT\n\n2\n00:00:21.250 --> 00:00:23.000\nKept\n"
+    doc = {"segments": [{"startTime": 12, "endTime": 14, "body": "ad"},
+                        {"startTime": 41.5, "body": "kept <here>", "speaker": "A & B"},
+                        {"startTime": 43, "endTime": 44, "body": " "},
+                        {"startTime": 44, "endTime": 45, "body": "last"}]}
+    assert chapters.captions(ep("json", json.dumps(doc))) == (
+        "WEBVTT\n\n00:00:21.500 --> 00:00:24.000\n<v A &amp; B>kept &lt;here&gt;\n\n"
+        "00:00:24.000 --> 00:00:25.000\nlast\n")
+    assert chapters.captions({"transcripts": "[]", "cut_spec": "[]", "cut_duration": 30}) is None

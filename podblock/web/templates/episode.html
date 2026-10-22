@@ -40,14 +40,19 @@
           {{ e.cut_duration|duration }} left.</p>
         {% endif %}
         {% if e.state_note %}<p class="alert alert-error">{{ e.state_note }}</p>{% endif %}
-        <audio class="player" controls preload="none" src="/episodes/{{ e.id }}/audio"
-               data-grab="/episodes/{{ e.id }}/played" data-grab-after="{{ play_needed }}"></audio>
+        <audio class="player" id="player" controls preload="none" src="/episodes/{{ e.id }}/audio"
+               data-grab="/episodes/{{ e.id }}/played" data-grab-after="{{ play_needed }}">
+          {%- if captions %}<track kind="captions" label="Captions" src="/episodes/{{ e.id }}/captions.vtt"
+            {%- if captions.language %} srclang="{{ captions.language }}"{% endif %} default>{% endif -%}
+        </audio>
+        {% if captions %}<div class="captions" data-captions="#player" hidden></div>{% endif %}
         <div class="row-actions">
           <a class="btn btn-primary btn-sm" href="/episodes/{{ e.id }}/audio?download=1">
             <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11m0 0-4-4m4 4 4-4M5 20h14"/></svg>Download file</a>
           <form method="post" action="/episodes/{{ e.id }}/process">
             <button class="btn btn-ghost btn-sm" type="submit">Process again</button>
           </form>
+          {% if captions %}<button class="btn btn-ghost btn-sm" type="button" data-captions-toggle aria-pressed="true" hidden>Captions</button>{% endif %}
         </div>
         {% set ex = expires(e) %}
         <div class="keep-row">

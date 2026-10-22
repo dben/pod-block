@@ -11,7 +11,7 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Resp
 from pydantic import BaseModel
 
 from ... import cut
-from ...app import grabs, jobs, library, processing, states
+from ...app import chapters, grabs, jobs, library, processing, states
 from ...app.text import show_notes
 from ..deps import current_user, get_db, wake_worker
 from ..templating import flash, page
@@ -78,6 +78,7 @@ def show_episode(request: Request, episode_id: int, user=Depends(current_user),
                 "peaks": f"/episodes/{episode_id}/peaks", "save": f"/episodes/{episode_id}/edits"}
     return page(request, "episode.html", title=ep["title"], nav="podcasts", user=user, episode=ep,
                 podcast=podcast, report=report, job=job, notes=show_notes(ep["item_xml"]), timeline=data,
+                captions=next(iter(chapters.transcripts(ep)), None),
                 play_needed=round(grabs.play_needed(ep["cut_duration"] or ep["duration"])))
 
 
@@ -139,6 +140,16 @@ def cut_audio(request: Request, episode_id: int, download: bool = False, user=De
     if download:
         grabs.record(db, user["id"], episode_id, "download", resumed=grabs.resumed(request.headers.get("range")))
     return response
+
+
+@router.get("/episodes/{episode_id}/captions.vtt")
+def episode_captions(episode_id: int, user=Depends(current_user), db: sqlite3.Connection = Depends(get_db)) -> Response:
+    """The captions for the page's player: the episode's transcript as WebVTT, moved to fit the cut."""
+    ep = _episode(db, user["id"], episode_id)
+    text = chapters.captions(ep)
+    if text is None:
+        raise HTTPException(404, "No captions for this episode")
+    return Response(text.encode(), media_type="text/vtt; charset=utf-8", headers={"Cache-Control": "no-cache"})
 
 
 @router.post("/episodes/{episode_id}/played")

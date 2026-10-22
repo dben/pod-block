@@ -259,7 +259,11 @@ on Kubernetes, with backups and upgrades, see `deployment/README.md`.
 - The episode page shows the status (queued and running ones update
   themselves), a player and a download for the cut file, and how much was
   cut, with the show notes beside it (below it on a phone), then the
-  timeline across the full width.
+  timeline across the full width. An episode with a timed transcript (its
+  feed's, or captions from the transcription service) shows it under the
+  player as it plays, moved to fit the cut: the line being said, and the
+  one before it, dimmed. The Captions button hides them; the browser
+  remembers that.
 
 ### Timeline editor
 
@@ -592,6 +596,7 @@ only looks at fingerprinted ones, so they don't affect it.
 | `GET /episodes/{id}` | yes | episode page and timeline |
 | `GET /episodes/{id}/row`, `/status` | yes | pieces of pages that poll while an episode is processed |
 | `GET /episodes/{id}/audio[?download=1]` | yes | cut audio, with byte ranges; a download counts as a grab |
+| `GET /episodes/{id}/captions.vtt` | yes | the episode's transcript as WebVTT, moved to fit the cut, for the page's player |
 | `POST /episodes/{id}/played` | yes | the page's player played enough to count as a grab |
 | `GET /episodes/{id}/original` | yes | original audio, with byte ranges |
 | `GET /episodes/{id}/peaks` | yes | the waveform, made on first ask |
