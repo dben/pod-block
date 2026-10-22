@@ -162,3 +162,12 @@ def test_the_page_player_gets_captions_from_any_timed_transcript(tmp_path):
         "WEBVTT\n\n00:00:21.500 --> 00:00:24.000\n<v A &amp; B>kept &lt;here&gt;\n\n"
         "00:00:24.000 --> 00:00:25.000\nlast\n")
     assert chapters.captions({"transcripts": "[]", "cut_spec": "[]", "cut_duration": 30}) is None
+
+
+def test_captions_get_the_voice_heard_most_in_each_cue():
+    vtt = ("WEBVTT\n\n00:00:00.000 --> 00:00:04.000\nHello\nthere\n\n00:00:04.000 --> 00:00:06.000\nYes\n\n"
+           "00:00:20.000 --> 00:00:21.000\nNobody\n\n00:00:22.000 --> 00:00:23.000\n<v Named>Kept as it is\n")
+    turns = [[0, 1, 7], [1, 4.5, 3], [4.5, 6, 7], [10, 19, 3], [22, 23, 7]]  # 3 talks most, so is A
+    assert chapters._voices(vtt, turns) == (
+        "WEBVTT\n\n00:00:00.000 --> 00:00:04.000\n<v A>Hello\nthere\n\n00:00:04.000 --> 00:00:06.000\n<v B>Yes\n\n"
+        "00:00:20.000 --> 00:00:21.000\nNobody\n\n00:00:22.000 --> 00:00:23.000\n<v Named>Kept as it is\n")

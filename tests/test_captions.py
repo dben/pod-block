@@ -165,7 +165,9 @@ def test_speaker_turns_are_saved_with_the_captions_and_compared_with_the_repeats
     found = speakers.saved(episode(db))
     assert found["turns"] == [[0.9, 3.0, 0], [11.5, 19.0, 1]]
     assert found["options"] == {"threshold": 0.8, "count": 0, "min_on": 0.3, "min_off": 0.5}
-    assert "<v" not in chapters.transcript(episode(db), "vtt")  # not in the captions, for now
+    assert "<v" not in chapters.transcript(episode(db), "vtt")  # not in the feeds' captions, for now
+    # The page's player gets them, lettered by how much each talks.
+    assert "00:00:02.000 --> 00:00:03.500\n<v A>The show itself starts here." in chapters.captions(episode(db))
 
     short = {"lone_share": 0.3, "lone_min": 1}  # a short episode
     people = speakers.summary(found["turns"], [{"start": 1.0, "end": 11.0}], **short)
