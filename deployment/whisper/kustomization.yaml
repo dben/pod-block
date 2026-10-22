@@ -1,0 +1,22 @@
+# The transcription service, for captions: `kubectl apply -k deployment/whisper/`, then set
+# PODBLOCK_WHISPER_URL in ../kustomization.yaml. Its own folder and labels, so pod-block's Service never
+# picks its pods. See whisper/README.md.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: pod-block
+labels:
+  - pairs:
+      app.kubernetes.io/name: pod-block-whisper
+    includeSelectors: true
+resources:
+  - whisper.yaml
+images:
+  - name: ghcr.io/dben/pod-block-whisper
+    newTag: latest  # CHANGE: pin a sha-… tag
+configMapGenerator:
+  - name: pod-block-whisper
+    literals:
+      - WHISPER_MODEL=small  # tiny, base, small, medium, large-v3-turbo; bigger is better and slower
+      - WHISPER_COMPUTE_TYPE=int8
+      - WHISPER_THREADS=4  # CHANGE: the cores it may use; match the CPU limit if you set one
+      - WHISPER_BEAM_SIZE=5  # 1 is about twice as quick

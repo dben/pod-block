@@ -22,7 +22,7 @@ from ..fingerprint import fingerprint_file
 from ..matcher import MatchParams
 from ..pipeline import Paths, episode_report, find_common_blocks, load_fingerprint, rescan
 from ..store import BUMPER, BUMPER_IN, BUMPER_OUT, IGNORED, INTRO, KEPT, OUTRO, PODCAST_TYPES, SHOW, Store
-from . import chapters
+from . import captions, chapters
 from .config import Settings
 from .db import transaction
 from .jobs import Cancelled, Context, enqueue, settle_episode, take_along
@@ -200,6 +200,7 @@ def run(ctx: Context, settings: Settings) -> None:
             ensure_peaks(ctx.db, settings, ep_id)
             with transaction(ctx.db):
                 ctx.db.execute("UPDATE episodes SET state = 'ready', state_note = NULL WHERE id = ?", (ep_id,))
+        captions.queue(ctx.db, settings, group, ctx.job["requested_by"])
         recut = json.loads(ctx.job["payload"] or "{}").get("recut")
         if added and not recut:  # new repeats may play in the show's other ready episodes; cut those again
             others = [r["id"] for r in ctx.db.execute(  # (a re-cut never sets off more re-cuts)

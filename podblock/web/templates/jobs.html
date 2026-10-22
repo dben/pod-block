@@ -21,7 +21,7 @@
     <li class="card job job-{{ j.state }}">
       <div class="job-body">
         <p class="job-title">
-          {% if j.episode_id %}<a href="/episodes/{{ j.episode_id }}">{{ j.episode_title or 'Untitled' }}</a>{% else %}{{ {'unlearn': 'Forget repeats found in filtered episodes'}.get(j.kind, j.kind|capitalize) }}{% endif %}
+          {% if j.about_id %}{% if j.kind == 'captions' %}Captions: {% endif %}<a href="/episodes/{{ j.about_id }}">{{ j.episode_title or 'Untitled' }}</a>{% else %}{{ {'unlearn': 'Forget repeats found in filtered episodes'}.get(j.kind, j.kind|capitalize) }}{% endif %}
         </p>
         <p class="muted job-meta">
           {% if j.podcast_name %}<span>{{ j.podcast_name }}</span>{% endif %}

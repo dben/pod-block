@@ -1099,3 +1099,14 @@ def test_the_home_page_shows_the_space_downloads_take(env):
     bob.post("/login", data={"username": "bob", "password": "password1"})
     page = bob.get("/").text
     assert "used by downloads" in page and 'href="/downloads"' not in page  # the page is the admin's
+
+
+def test_a_download_queues_captions_and_a_missing_transcriber_fails_only_them(env):
+    env.settings.whisper_url = "http://127.0.0.1:9"  # nothing listens there
+    jobs.enqueue(env.db, "process", [env.ids["ep-5"]], None)
+    worker.run_queue(env.settings)  # the download's group, then each one's captions
+    rows = env.db.execute("SELECT kind, state, error FROM jobs ORDER BY id").fetchall()
+    assert rows[0]["kind"] == "process" and rows[0]["state"] == "done"
+    assert {r["kind"] for r in rows[1:]} == {"captions"} and len(rows) > 1
+    assert all(r["state"] == "failed" and "couldn't reach the transcriber" in r["error"] for r in rows[1:])
+    assert episode(env, "ep-5")["state"] == "ready"
