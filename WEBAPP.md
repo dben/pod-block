@@ -373,6 +373,9 @@ on Kubernetes, with backups and upgrades, see `deployment/README.md`.
   episode becomes cleaned up, as retention does it, so it can be downloaded
   again and cut the same way. Episodes being processed are left alone.
   Reprocess in the selection bar downloads and cuts the selected again.
+  With a transcriber set, Transcribe queues captions for the selected even
+  if they have a transcript: the new captions, with speakers when the
+  service finds them, replace it, the feed's included, and its files go.
 
 ### Filters
 
@@ -634,6 +637,7 @@ only looks at fingerprinted ones, so they don't affect it.
 | `POST /users/{id}/password`, `POST /users/{id}/remove` | admin | new password; remove |
 | `GET /downloads?sort=` | admin | every download on disk, with sizes |
 | `POST /downloads/delete` | admin | delete the files of `ids` |
+| `POST /downloads/transcribe` | admin | transcribe `ids` again, replacing any transcript they have |
 
 ## Future features
 

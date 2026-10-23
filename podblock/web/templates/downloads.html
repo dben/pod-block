@@ -91,6 +91,10 @@
   <span class="bulk-count"><b data-selected-count>0</b> selected</span>
   <div class="bulk-actions">
     <button class="btn btn-ghost btn-sm" type="submit" formaction="/downloads/reprocess">Reprocess</button>
+    {% if transcriber %}
+    <button class="btn btn-ghost btn-sm" type="submit" formaction="/downloads/transcribe"
+            title="Transcribe again, replacing any transcript they have, the feed's included">Transcribe</button>
+    {% endif %}
     <button class="btn btn-primary btn-sm btn-danger" type="submit"
             data-confirm="Delete the selected downloads? Ready ones leave everyone's private feeds until someone downloads them again.">Delete</button>
     <button class="btn btn-ghost btn-sm" type="button" data-clear>Clear</button>

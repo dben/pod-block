@@ -17,6 +17,10 @@ edit can be saved meanwhile. Captions jobs run in a thread of their own
 Each word's time is saved beside the captions too, for the show's intro and
 outro phrases (`phrases.py`); hearing one queues the episode to be cut again.
 
+An episode can also be transcribed again on purpose (`queue(force=True)`, the
+downloads page's Transcribe again): the new captions then replace whatever it
+had, its feed's transcripts included.
+
 When the service has speakers turned on, it also says who speaks when; those
 turns are saved beside the captions (`speakers.py`) for `podblock speakers`
 to compare with the repeats found. They don't go into the captions yet.
@@ -55,23 +59,26 @@ class CaptionError(Exception):
     pass
 
 
-def wanted(ep: sqlite3.Row, settings: Settings) -> bool:
-    """Whether an episode should get captions: the service is set, it has a download, and no timed transcript."""
+def wanted(ep: sqlite3.Row, settings: Settings, force: bool = False) -> bool:
+    """Whether an episode should get captions: the service is set, it has a download, and no timed transcript
+    (or, with `force`, whatever it has)."""
     return bool(settings.whisper_url and ep["original_path"] and Path(ep["original_path"]).exists()
-                and not json.loads(ep["transcripts"] or "[]"))
+                and (force or not json.loads(ep["transcripts"] or "[]")))
 
 
-def queue(db: sqlite3.Connection, settings: Settings, episode_ids: list[int], user_id: int | None) -> list[int]:
-    """Queue captions for the episodes that want them and don't have a captions job already. Returns those."""
+def queue(db: sqlite3.Connection, settings: Settings, episode_ids: list[int], user_id: int | None,
+          force: bool = False) -> list[int]:
+    """Queue captions for the episodes that want them and don't have a captions job already. Returns those.
+    With `force`, the captions replace any transcript the episode has: its feed's, or earlier captions."""
     queued = []
     for ep_id in dict.fromkeys(episode_ids):
         ep = db.execute("SELECT * FROM episodes WHERE id = ?", (ep_id,)).fetchone()
-        if ep is None or not wanted(ep, settings):
+        if ep is None or not wanted(ep, settings, force):
             continue
         if db.execute(f"SELECT 1 FROM jobs WHERE kind = ? AND state IN ({sql(ACTIVE)}) "
                       "AND json_extract(payload, '$.episode') = ?", (KIND, ep_id)).fetchone():
             continue
-        enqueue_task(db, KIND, user_id, json.dumps({"episode": ep_id}))
+        enqueue_task(db, KIND, user_id, json.dumps({"episode": ep_id, **({"force": True} if force else {})}))
         queued.append(ep_id)
     return queued
 
@@ -201,13 +208,14 @@ def ask(ctx, url: str, what: str, audio: Path, params: dict | None = None) -> di
 
 
 def run(ctx: Context, settings: Settings) -> None:
-    episode_id = json.loads(ctx.job["payload"] or "{}").get("episode")
+    payload = json.loads(ctx.job["payload"] or "{}")
+    episode_id, force = payload.get("episode"), bool(payload.get("force"))
     if not settings.whisper_url:
         raise CaptionError("no transcriber is set (PODBLOCK_WHISPER_URL)")
     ep = ctx.db.execute("SELECT * FROM episodes WHERE id = ?", (episode_id,)).fetchone()
     if ep is None:
         raise CaptionError("the episode is gone")
-    if json.loads(ep["transcripts"] or "[]"):
+    if json.loads(ep["transcripts"] or "[]") and not force:
         return  # it has one already: from its feed, or an earlier captions job
     if not ep["original_path"] or not Path(ep["original_path"]).exists():
         raise CaptionError("its download is gone; download it again for captions")
@@ -226,15 +234,26 @@ def run(ctx: Context, settings: Settings) -> None:
         saved["speakers"] = str(speakers.save(stem, heard["speakers"], heard["options"]))
     with transaction(ctx.db):
         now = ctx.db.execute("SELECT original_path, transcripts FROM episodes WHERE id = ?", (episode_id,)).fetchone()
-        if now is None or now["original_path"] != ep["original_path"] or json.loads(now["transcripts"] or "[]"):
-            chapters.forget({"transcripts": json.dumps([saved])})  # cleaned up meanwhile, or the feed's were read
+        before = json.loads(ep["transcripts"] or "[]")
+        if (now is None or now["original_path"] != ep["original_path"]
+                or json.loads(now["transcripts"] or "[]") != before):  # cleaned up meanwhile, or the feed's were read
+            _forget([saved], keep=json.loads(now["transcripts"] or "[]") if now else [])
             return
         ctx.db.execute("UPDATE episodes SET transcripts = ? WHERE id = ?", (json.dumps([saved]), episode_id))
+    _forget(before, keep=[saved])  # what these replace
     log.info("captions for episode %d: %d segments, %s%s", episode_id, len(heard["segments"]),
              heard["language"] or "language unknown",
              f", {len({t[2] for t in heard['speakers']})} speakers" if heard["speakers"] else "")
     phrases.requeue(ctx.db, ep["podcast_id"], ctx.job["requested_by"], [episode_id],
                     note="Waiting to be cut again: an intro or outro phrase was heard")
+
+
+def _forget(transcripts: list[dict], keep: list[dict]) -> None:
+    """Delete these transcripts' files, but not the ones `keep` names: new captions are written over old ones."""
+    kept = {t.get(k) for t in keep for k in ("path", "speakers", "words")}
+    gone = [{k: (t.get(k) if t.get(k) not in kept else None) for k in ("path", "speakers", "words")}
+            for t in transcripts]
+    chapters.forget({"transcripts": json.dumps(gone)})
 
 
 def _write(path: Path, text: str) -> None:

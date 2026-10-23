@@ -462,9 +462,9 @@ a.podcast-card:hover { background: var(--surface-2); }
 
 .bulkbar {
   position: sticky; bottom: 16px; z-index: 25;
-  display: flex; align-items: center; gap: 12px;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px 12px;  /* the actions drop below when they don't fit */
   width: min(100%, 560px); margin: 16px auto 0; padding: 10px 10px 10px 14px;
-  background: var(--surface-3); border: 1px solid var(--border-strong); border-radius: 999px;
+  background: var(--surface-3); border: 1px solid var(--border-strong); border-radius: 28px;
   box-shadow: 0 16px 40px rgb(0 0 0 / 0.55);
 }
 .js .bulkbar { position: fixed; left: 50%; bottom: 20px; margin: 0; transform: translate(-50%, 140%); opacity: 0;
@@ -473,9 +473,13 @@ a.podcast-card:hover { background: var(--surface-2); }
 .bulk-all { display: grid; place-items: center; width: 28px; height: 28px; }
 .bulk-all input { width: 20px; height: 20px; accent-color: var(--accent); cursor: pointer; }
 .bulk-count { font-weight: 600; white-space: nowrap; }
-.bulk-actions { display: flex; gap: 8px; margin-left: auto; }
+.bulk-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-left: auto; }
 @media (max-width: 720px) {
   .js .bulkbar { bottom: calc(var(--tabbar-h) + 12px + env(safe-area-inset-bottom)); }
+}
+@media (max-width: 480px) {
+  .bulk-actions { gap: 6px; }
+  .bulk-actions .btn { padding-inline: 10px; }
 }
 
 /* ---- toasts --------------------------------------------------------------- */

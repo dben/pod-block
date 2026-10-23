@@ -203,3 +203,46 @@ def test_captions_keep_each_words_time_and_an_intro_phrase_heard_cuts_again(db, 
     from podblock.app import retention
     retention.clear(db, episode(db))
     assert not list((setup.media_dir / "transcripts").iterdir())  # the word times go with the download
+
+
+def test_transcribing_again_replaces_the_feeds_transcript_and_earlier_captions(db, setup, service, tmp_path):
+    feeds = tmp_path / "media/transcripts/feed.srt"
+    feeds.parent.mkdir(parents=True)
+    feeds.write_text("1\n00:00:01,000 --> 00:00:02,000\nThe feed's own\n")
+    db.execute("UPDATE episodes SET transcripts = ? WHERE id = 1",
+               (json.dumps([{"format": "srt", "path": str(feeds)}]),))
+    db.commit()
+    assert captions.queue(db, setup, [1], None) == []  # it has one
+    assert captions.queue(db, setup, [1], None, force=True) == [1]
+    assert captions.queue(db, setup, [1], None, force=True) == []  # one is waiting already
+    assert worker.run_job(setup, db, jobs.claim(db, kinds=(captions.KIND,))) == "done"
+    (saved,) = chapters.transcripts(episode(db))
+    assert saved["made"] == "whisper" and not feeds.exists()
+    files = {saved["path"], saved["words"]}
+
+    captions.queue(db, setup, [1], None, force=True)  # again: written over the same files, which stay
+    assert worker.run_job(setup, db, jobs.claim(db, kinds=(captions.KIND,))) == "done"
+    assert [t["path"] for t in chapters.transcripts(episode(db))] == [saved["path"]]
+    assert all(Path(f).exists() for f in files) and len(service.model.calls) == 2
+
+
+def test_the_downloads_page_queues_episodes_to_transcribe_again(db, setup):
+    pytest.importorskip("fastapi")
+    from dataclasses import replace
+
+    from fastapi.testclient import TestClient
+
+    from podblock.web.app import create_app
+    client = TestClient(create_app(replace(setup, api_key="k", background=False)), follow_redirects=False)
+    client.post("/login", data={"key": "k"})
+    db.execute("UPDATE episodes SET transcripts = '[{\"format\": \"vtt\", \"path\": \"x\"}]' WHERE id = 1")
+    db.commit()
+    assert 'formaction="/downloads/transcribe"' in client.get("/downloads").text
+    res = client.post("/downloads/transcribe", data={"ids": [1, 2]})
+    assert res.status_code == 303 and res.headers["location"] == "/downloads"
+    (job,) = db.execute("SELECT kind, payload FROM jobs").fetchall()
+    assert tuple(job) == (captions.KIND, '{"episode": 1, "force": true}')
+
+    off = TestClient(create_app(replace(setup, api_key="k", background=False, whisper_url=None)))
+    off.post("/login", data={"key": "k"})
+    assert "/downloads/transcribe" not in off.get("/downloads").text  # no transcriber, no button
