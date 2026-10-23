@@ -9,7 +9,7 @@ import segno
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 
-from ...app import directory, filters, following, library, private_feeds, storage
+from ...app import directory, filters, following, library, phrases, private_feeds, storage
 from ..deps import admin_user, current_user, feed_url, get_db, wake_worker
 from ..templating import flash, page, plural
 
@@ -154,6 +154,10 @@ def show_podcast(request: Request, podcast_id: int, view: str = "active", q: str
             return page(request, "_episodes.html", **context)
     if tab == "feed":
         context.update(private_addresses=_addresses(request, private_feeds.feed_token(db, user["id"], podcast_id)))
+    if tab == "settings":
+        intro, outro = phrases.of_podcast(db, podcast_id)
+        context.update(intro_phrases=params.get("intro", "\n".join(intro)),
+                       outro_phrases=params.get("outro", "\n".join(outro)))
     return page(request, "podcast.html", title=pod["name"], nav="podcasts", user=user,
                 cut_sec=library.cut_seconds(db, podcast_id),
                 subscribed=library.subscribed(db, user["id"], podcast_id),
@@ -176,6 +180,23 @@ def podcast_settings(request: Request, podcast_id: int, retention_days: int = Fo
     else:
         flash(request, "Saved." + (" Process episodes again to cut them with the new gap." if new_gap else ""))
     return RedirectResponse(f"/podcasts/{podcast_id}?tab=settings#tabs", status_code=303)
+
+
+@router.post("/podcasts/{podcast_id}/phrases")
+def podcast_phrases(request: Request, podcast_id: int, intro: str = Form(""), outro: str = Form(""),
+                    user=Depends(current_user), db: sqlite3.Connection = Depends(get_db)) -> Response:
+    """Save the phrases that end the show's intro and begin its outro, and cut its episodes again to fit."""
+    _podcast_or_404(db, podcast_id)
+    try:
+        queued = phrases.save(db, podcast_id, phrases.parse(intro), phrases.parse(outro), user["id"])
+    except phrases.PhraseError as e:
+        flash(request, str(e), "error")
+        typed = urlencode({"tab": "settings", "intro": intro, "outro": outro})
+        return RedirectResponse(f"/podcasts/{podcast_id}?{typed}#phrases", status_code=303)
+    if queued:
+        wake_worker(request)
+    flash(request, "Saved." + (f" Cutting {plural(queued, 'episode')} again to fit." if queued else ""))
+    return RedirectResponse(f"/podcasts/{podcast_id}?tab=settings#phrases", status_code=303)
 
 
 @router.post("/podcasts/{podcast_id}/filters")

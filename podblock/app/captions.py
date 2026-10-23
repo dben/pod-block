@@ -14,6 +14,9 @@ payload), so the episode stays ready, and in the feeds, while it runs, and an
 edit can be saved meanwhile. Captions jobs run in a thread of their own
 (worker.py), so a long transcription doesn't hold up downloads.
 
+Each word's time is saved beside the captions too, for the show's intro and
+outro phrases (`phrases.py`); hearing one queues the episode to be cut again.
+
 When the service has speakers turned on, it also says who speaks when; those
 turns are saved beside the captions (`speakers.py`) for `podblock speakers`
 to compare with the repeats found. They don't go into the captions yet.
@@ -30,7 +33,7 @@ from pathlib import Path
 
 import requests
 
-from . import chapters, speakers
+from . import chapters, phrases, speakers
 from .config import Settings
 from .db import transaction
 from .jobs import Context, enqueue_task
@@ -215,7 +218,9 @@ def run(ctx: Context, settings: Settings) -> None:
     stem = settings.media.transcripts(ep)
     path = stem.with_name(stem.name + ".captions.vtt")
     _write(path, webvtt(cues(heard["segments"])))
-    saved = {"format": "vtt", "path": str(path), "rel": "captions", "made": "whisper",
+    timed = stem.with_name(stem.name + ".words.json")  # each word's time, for finding intro and outro phrases
+    _write(timed, json.dumps([w for seg in heard["segments"] for w in _words(seg)], separators=(",", ":")))
+    saved = {"format": "vtt", "path": str(path), "rel": "captions", "made": "whisper", "words": str(timed),
              **({"language": heard["language"]} if heard["language"] else {})}
     if heard["speakers"] is not None:
         saved["speakers"] = str(speakers.save(stem, heard["speakers"], heard["options"]))
@@ -228,6 +233,8 @@ def run(ctx: Context, settings: Settings) -> None:
     log.info("captions for episode %d: %d segments, %s%s", episode_id, len(heard["segments"]),
              heard["language"] or "language unknown",
              f", {len({t[2] for t in heard['speakers']})} speakers" if heard["speakers"] else "")
+    phrases.requeue(ctx.db, ep["podcast_id"], ctx.job["requested_by"], [episode_id],
+                    note="Waiting to be cut again: an intro or outro phrase was heard")
 
 
 def _write(path: Path, text: str) -> None:

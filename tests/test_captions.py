@@ -184,3 +184,22 @@ def test_speaker_turns_are_saved_with_the_captions_and_compared_with_the_repeats
     from podblock.app import retention
     retention.clear(db, episode(db))
     assert not list((setup.media_dir / "transcripts").iterdir())  # the turns go with the download
+
+
+def test_captions_keep_each_words_time_and_an_intro_phrase_heard_cuts_again(db, setup, service):
+    from podblock.app import phrases
+    db.execute("UPDATE episodes SET duration = 20 WHERE id = 1")
+    db.execute("UPDATE podcasts SET intro_phrases = ? WHERE id = 1", (json.dumps(["You will hear AGAIN"]),))
+    db.commit()
+    captions.queue(db, setup, [1], None)
+    assert worker.run_job(setup, db, jobs.claim(db, kinds=(captions.KIND,))) == "done"
+    assert phrases.words(episode(db))[:3] == [(1.0, 1.3, "an"), (1.3, 1.6, "ad"), (1.6, 1.9, "you")]
+    assert phrases.for_episode(db, episode(db)) == [
+        {"type": "intro", "start": 0.0, "end": 3.05, "phrase": "You will hear AGAIN"}]
+    queued = db.execute("SELECT kind, episode_id, payload FROM jobs WHERE state = 'queued'").fetchall()
+    assert [tuple(r) for r in queued] == [("process", 1, '{"recut": true}')]
+    assert episode(db)["state_note"] == "Waiting to be cut again: an intro or outro phrase was heard"
+
+    from podblock.app import retention
+    retention.clear(db, episode(db))
+    assert not list((setup.media_dir / "transcripts").iterdir())  # the word times go with the download

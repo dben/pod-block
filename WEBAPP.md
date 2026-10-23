@@ -241,7 +241,20 @@ on Kubernetes, with backups and upgrades, see `deployment/README.md`.
   meanwhile, and captions jobs take a worker thread of their own. When the
   service has speakers on, the turns it finds are saved beside the captions
   (`podblock/app/speakers.py`), for `podblock speakers` to set beside the
-  repeats; they don't go into the captions or the cuts yet.
+  repeats; they don't go into the captions or the cuts yet. Each word's
+  time is saved beside the captions too, for intro and outro phrases.
+- Intro and outro phrases (`podblock/app/phrases.py`): a podcast can list
+  phrases that end its intro and phrases that begin its outro. An episode
+  with a timed transcript is searched for them each time it is cut,
+  ignoring case and punctuation. An intro phrase heard in the first third
+  cuts from the start through its first hearing; an outro phrase heard in
+  the last third cuts from its last hearing to the end. Captions place the
+  cut between words; a feed's transcript, timed by cue, places it by where
+  the words fall in their cue. Captions arrive after the first cut, so
+  hearing a phrase in them queues the episode to be cut again, and saving
+  new phrases queues the ready episodes they cut differently. The timeline
+  shows these cuts as Intro (phrase) and Outro (phrase), changed only
+  through the phrases.
 - Each join gets a chapter saying what was cut and how much: "1:32 ad break
   cut", or, inside a chapter of the source's, "Interview (after 1:32 ad
   break cut)". An episode with no chapters of its own gets a "Start"
@@ -492,8 +505,8 @@ on Kubernetes, with backups and upgrades, see `deployment/README.md`.
   downloaded is left alone.
 - The Settings tab sets days before clean-up, how often to check the feed
   (15 minutes to a week), how close two repeats must be to be combined,
-  oldest first, and whether new episodes download on their own. Settings
-  are shared.
+  oldest first, and whether new episodes download on their own, and lists
+  the show's intro and outro phrases. Settings are shared.
 
 ### Look and feel
 
@@ -543,7 +556,8 @@ podcasts  + author, description, image_url, link, language, categories (JSON), e
             followed, refresh_minutes, feed_etag, feed_last_modified,
             last_refreshed_at, last_error, added_at,
             public_token,                                    -- guards audio links
-            retention_days, auto_download, fill_gaps, sort_oldest
+            retention_days, auto_download, fill_gaps, sort_oldest,
+            intro_phrases, outro_phrases                     -- JSON lists (phrases.py)
 episodes  + pub_ts, summary, image_url, link, audio_type, audio_length, feed_duration,
             season, episode_number, episode_type, explicit,
             item_xml,                                        -- raw <item>
@@ -554,7 +568,8 @@ episodes  + pub_ts, summary, image_url, link, audio_type, audio_length, feed_dur
             peaks_path,                                      -- the waveform
             source_chapters, transcripts,                    -- the source's, as found when first cut
             cut_chapters,                                    -- the chapters written into the cut file
-            held_by                                          -- the running job working on it
+            held_by,                                         -- the running job working on it
+            phrase_cuts,                                     -- the intro and outro its phrases cut, as last cut
             ready_at, expired_at                             -- the retention clock
 
 jobs(id, kind, episode_id, state, step, progress, error, cancel_requested, attempts,
@@ -594,6 +609,7 @@ only looks at fingerprinted ones, so they don't affect it.
 | `POST /podcasts/{id}/settings` | yes | clean-up days, refresh interval, gap, auto-download, `sort` (newest or oldest) |
 | `POST /podcasts/{id}/subscribe` | yes | `on` = true or false: put it on your home page or take it off |
 | `POST /podcasts/{id}/feed-token` | yes | new address for your own private feed |
+| `POST /podcasts/{id}/phrases` | yes | the show's `intro` and `outro` phrases, one a line; queues the episodes they cut differently |
 | `POST /podcasts/{id}/filters` | yes | add a filter: `pattern`, `scope` (podcast or all), `processing` |
 | `POST /podcasts/{id}/remove` | admin | stop following |
 | `POST /filters/{id}/remove` | owner or admin | remove a filter |

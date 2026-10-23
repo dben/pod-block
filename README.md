@@ -88,7 +88,8 @@ feeds or audio files and it lists what repeats. See [`CLI.md`](CLI.md).
   podcasts.
 - **Captions.** Optional: run the [`whisper/`](whisper/) container beside
   it and each download gets captions in the private feed and under the
-  episode page's player, made on the CPU.
+  episode page's player, made on the CPU. A show can also list phrases
+  that end its intro or start its outro; everything past them is cut.
 - **Stays small.** Downloads are cleaned up a week after they are cut (set
   per podcast), unless you keep them.
 

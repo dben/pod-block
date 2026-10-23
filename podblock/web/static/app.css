@@ -833,6 +833,7 @@ button.transcript-time:hover { color: var(--accent); text-decoration: underline;
 .settings-form .field { flex: 1 1 240px; }
 .settings-form .btn { align-self: flex-end; margin-bottom: 22px; }
 .input-with-unit { display: flex; align-items: center; gap: 10px; }
+textarea.phrase-input { padding: 10px 14px; resize: vertical; line-height: 1.4; }
 .input-with-unit .input { max-width: 120px; }
 select.input { appearance: auto; }
 @media (max-width: 720px) {

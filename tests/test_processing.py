@@ -1025,6 +1025,37 @@ def test_chapters_and_transcripts_fit_the_cut_audio(env):
     assert not saved.exists() and episode(env, "ep-3")["source_chapters"] is None
 
 
+def test_an_outro_phrase_in_the_transcript_cuts_it_and_everything_after(env):
+    with_extras(env)
+    res = env.client.post(f"/podcasts/{env.pod}/phrases", data={"intro": "", "outro": "AFTER the ad.\n"})
+    assert res.status_code == 303
+    processed(env)
+    three = episode(env, "ep-3")
+    total = JINGLE + AD + 2 * FILLER
+    assert json.loads(three["phrase_cuts"]) == [
+        {"type": "outro", "start": 79.75, "end": pytest.approx(total, abs=0.5), "phrase": "AFTER the ad."}]
+    assert three["cut_duration"] == pytest.approx(79.75 - JINGLE - AD, abs=3)
+    assert episode(env, "ep-2")["phrase_cuts"] == "[]"  # no transcript to hear it in
+    assert "After the ad" not in env.client.get(f"/episodes/{three['id']}/captions.vtt").text
+
+    page = env.client.get(f"/episodes/{three['id']}").text
+    data = json.loads(re.search(r'id="timeline-data"[^>]*>(.*?)</script>', page, re.S)[1])
+    assert [(p["id"], p["type"], p["start"]) for p in data["phrases"]] == [("p0", "outro", 79.75)]
+    settings = env.client.get(f"/podcasts/{env.pod}?tab=settings").text
+    assert ">AFTER the ad.</textarea>" in settings
+
+    # Taking the phrase away cuts again only the episode it changes.
+    res = env.client.post(f"/podcasts/{env.pod}/phrases", data={"intro": "", "outro": ""})
+    assert res.status_code == 303 and episode(env, "ep-3")["state"] == "queued"
+    assert episode(env, "ep-2")["state"] == "ready"
+    worker.run_queue(env.settings)
+    assert episode(env, "ep-3")["cut_duration"] == pytest.approx(total - JINGLE - AD, abs=3)
+
+    bad = env.client.post(f"/podcasts/{env.pod}/phrases", data={"intro": "?!", "outro": "kept"})
+    assert bad.status_code == 303 and "outro=kept" in bad.headers["location"]
+    assert ">kept</textarea>" in env.client.get(bad.headers["location"]).text  # what was typed, to fix
+
+
 def test_episodes_cut_before_chapters_get_them_when_cut_again(env):
     processed(env)
     env.db.execute("UPDATE episodes SET cut_chapters = NULL, source_chapters = NULL")  # as cut by an older version

@@ -177,6 +177,24 @@
   </form>
 </section>
 
+<section class="card settings-panel" id="phrases">
+  <h2>Intro and outro phrases</h2>
+  <p class="muted">Listened for in captions and transcripts. One phrase a line; case and punctuation don't matter.</p>
+  <form class="settings-form" method="post" action="/podcasts/{{ podcast.id }}/phrases">
+    <label class="field">
+      <span>Intro ends with</span>
+      <textarea class="input phrase-input" name="intro" rows="4" placeholder="let's get into it">{{ intro_phrases }}</textarea>
+      <small class="hint">Cuts from the start through the phrase. First third of the episode only.</small>
+    </label>
+    <label class="field">
+      <span>Outro starts with</span>
+      <textarea class="input phrase-input" name="outro" rows="4" placeholder="that's all for this week">{{ outro_phrases }}</textarea>
+      <small class="hint">Cuts from the phrase to the end. Last third of the episode only.</small>
+    </label>
+    <button class="btn btn-primary btn-sm" type="submit">Save phrases</button>
+  </form>
+</section>
+
 {% if user.is_admin %}
 <section class="card danger-zone">
   <div>
