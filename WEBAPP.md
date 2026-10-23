@@ -248,7 +248,8 @@ on Kubernetes, with backups and upgrades, see `deployment/README.md`.
   with a timed transcript is searched for them each time it is cut,
   ignoring case and punctuation. An intro phrase heard in the first third
   cuts from the start through its first hearing; an outro phrase heard in
-  the last third cuts from its last hearing to the end. Captions place the
+  the last third cuts from its last hearing to the end. Hearings under 20
+  seconds apart count as one, so a chant repeated is cut whole. Captions place the
   cut between words; a feed's transcript, timed by cue, places it by where
   the words fall in their cue. Captions arrive after the first cut, so
   hearing a phrase in them queues the episode to be cut again, and saving

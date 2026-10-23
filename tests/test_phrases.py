@@ -59,3 +59,17 @@ def test_captions_word_times_win_over_their_cues(tmp_path):
     timed.write_text(json.dumps([[1.0, 1.4, " That's"], [1.5, 2.0, " it."]]))
     ep = {"transcripts": json.dumps([{"format": "vtt", "path": str(vtt), "words": str(timed)}])}
     assert phrases.words(ep) == [(1.0, 1.4, "thats"), (1.5, 2.0, "it")]
+
+
+def test_a_chant_sung_over_and_over_is_cut_whole():
+    chant = "we are we are the youth of the nation"
+    heard = [*said(0, "and that is the end of the story"),
+             *said(800, "thanks everybody"),
+             *said(880, chant), *said(886, "youth of the nation"), *said(891, chant), *said(897, "yeah")]
+    found = phrases.find(heard, 900, [], ["We are, we are, the youth of the nation", "youth of the nation"])
+    assert found == [{"type": "outro", "start": pytest.approx(879.75), "end": 900,
+                      "phrase": "We are, we are, the youth of the nation"}]
+
+    intro = [*said(0, chant), *said(5, chant), *said(10, "welcome to the show"), *said(60, chant)]
+    assert phrases.find(intro, 900, [chant], [])[0]["end"] == pytest.approx(9.65)  # through the second, not the third
+    assert phrases.find(said(880, "youth of a nation"), 900, [], [chant]) == []  # every word has to match

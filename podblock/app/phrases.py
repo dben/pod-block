@@ -10,7 +10,9 @@ service), it is searched for them:
 - an outro phrase heard in the last third cuts from the phrase's first word
   to the end, at its last hearing.
 
-So a phrase said again mid-episode cuts nothing. Matching ignores case and
+Hearings less than CHAIN seconds apart count as one, so a chant sung over
+and over is cut whole, and so is a host saying the line twice. A phrase
+said again mid-episode cuts nothing. Matching ignores case and
 punctuation ("Let's get into it!" is "lets get into it"), word for word.
 
 Captions keep whisper's time for each word (`words.json` beside them), so
@@ -38,6 +40,7 @@ from .states import READY
 MAX_PHRASES = 20  # of each kind, per podcast
 MAX_CHARS = 100  # in a phrase
 REACH = 1 / 3  # of the episode, from its edge, where a phrase counts
+CHAIN = 20.0  # seconds between two hearings of a phrase that still make one run of it, as in a chant
 PAD = 0.25  # seconds past a phrase's edge also cut, when the next word isn't nearer: whisper's times run tight
 INTRO, OUTRO = "intro", "outro"
 
@@ -134,6 +137,11 @@ def _hits(said: list[str], phrase: list[str]) -> list[int]:
     return [i for i in range(len(said) - n + 1) if said[i:i + n] == phrase]
 
 
+def _all_hits(said: list[str], phrases: list[str]) -> list[tuple[int, int, str]]:
+    """Every hearing of any of the phrases, in order, as (index of its first word, of its last, phrase)."""
+    return sorted((i, i + len(tokens(p)) - 1, p) for p in phrases for i in _hits(said, tokens(p)))
+
+
 def find(heard: list[tuple[float, float, str]], duration: float, intro: list[str],
          outro: list[str]) -> list[dict]:
     """The cuts the phrases make: at most one intro and one outro, as {type, start, end, phrase}."""
@@ -141,24 +149,23 @@ def find(heard: list[tuple[float, float, str]], duration: float, intro: list[str
         return []
     said = [w for _, _, w in heard]
     found = []
-    first = None  # (index of the phrase's last word, phrase)
-    for phrase in intro:
-        hits = _hits(said, tokens(phrase))
-        last = hits[0] + len(tokens(phrase)) - 1 if hits else None
-        if last is not None and heard[last][1] <= duration * REACH and (first is None or last < first[0]):
-            first = (last, phrase)
-    if first is not None:
-        at, phrase = first
+    hits = [h for h in _all_hits(said, intro) if heard[h[1]][1] <= duration * REACH]
+    if hits:
+        at, phrase = hits[0][1], hits[0][2]
+        for first, last, _ in hits[1:]:  # said again straight after: a chant, or a host repeating it
+            if heard[first][0] - heard[at][1] > CHAIN:
+                break
+            at = max(at, last)
         nxt = heard[at + 1][0] if at + 1 < len(heard) else duration
         end = min(max(heard[at][1], min(heard[at][1] + PAD, nxt)), duration)
         found.append({"type": INTRO, "start": 0.0, "end": round(end, 2), "phrase": phrase})
-    final = None  # (index of the phrase's first word, phrase)
-    for phrase in outro:
-        hits = _hits(said, tokens(phrase))
-        if hits and heard[hits[-1]][0] >= duration * (1 - REACH) and (final is None or hits[-1] > final[0]):
-            final = (hits[-1], phrase)
-    if final is not None:
-        at, phrase = final
+    hits = [h for h in _all_hits(said, outro) if heard[h[0]][0] >= duration * (1 - REACH)]
+    if hits:
+        at, phrase = hits[-1][0], hits[-1][2]
+        for first, last, said_as in reversed(hits[:-1]):
+            if heard[at][0] - heard[last][1] > CHAIN:
+                break
+            at, phrase = min(at, first), said_as
         prev = heard[at - 1][1] if at > 0 else 0.0
         start = max(min(heard[at][0], max(heard[at][0] - PAD, prev)), 0.0)
         if not found or start > found[0]["end"]:
