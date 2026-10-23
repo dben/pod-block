@@ -30,7 +30,7 @@ ROOT = Path(__file__).parent.parent / "podblock"
 SHIPPED = ["9e41bd10322d1b18", "25b49003da210e9e", "a3b543510a6e79fe", "52c4ef83a590799a", "95f4530505c45b89",
            "da86379def3017da", "579499483c73fce2", "8584ad1da8ec8f0d", "0ecaa28be5177004", "3d3d0fb58e988193",
            "894c592d023cff02", "2279df03ba58202e", "6746b5025296d568", "03af274d2e0e3f79", "a4894b75bb3c8de0",
-           "5dc3b8c724b904c2"]
+           "5dc3b8c724b904c2", "6b5eaf907368114f"]
 
 
 def tables(db: sqlite3.Connection) -> set[str]:

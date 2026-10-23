@@ -22,7 +22,7 @@ from ..fingerprint import fingerprint_file
 from ..matcher import MatchParams
 from ..pipeline import Paths, episode_report, find_common_blocks, load_fingerprint, rescan
 from ..store import BUMPER, BUMPER_IN, BUMPER_OUT, IGNORED, INTRO, KEPT, OUTRO, PODCAST_TYPES, SHOW, Store
-from . import captions, chapters
+from . import captions, chapters, phrases
 from .config import Settings
 from .db import transaction
 from .jobs import Cancelled, Context, enqueue, settle_episode, take_along
@@ -100,9 +100,12 @@ def _fill_gaps(db: sqlite3.Connection, podcast_id: int | None) -> float:
     return row["fill_gaps"] if row is not None else FILL_GAPS
 
 
-def cuts(db: sqlite3.Connection, episode_id: int, report: dict) -> list[tuple[float, float]]:
-    """Everything to cut from an episode: the report's sections and the ones cut by hand."""
+def cuts(db: sqlite3.Connection, episode_id: int, report: dict,
+         phrase_cuts: list[dict] = ()) -> list[tuple[float, float]]:
+    """Everything to cut from an episode: the report's sections, the intro and outro its phrases mark, and the
+    ones cut by hand."""
     found = [(s["start"], s["end"]) for s in report["sections"]]
+    found += [(p["start"], p["end"]) for p in phrase_cuts]
     found += [(r["start"], r["end"]) for r in db.execute("SELECT start, end FROM edits WHERE episode_id = ?",
                                                          (episode_id,))]
     return found
@@ -110,21 +113,22 @@ def cuts(db: sqlite3.Connection, episode_id: int, report: dict) -> list[tuple[fl
 
 def _render(ctx: Context, settings: Settings, episode_id: int, report: dict) -> None:
     ep = _episode(ctx.db, episode_id)
-    keep = cut.keep_spans(cuts(ctx.db, episode_id, report), ep["duration"])
-    if not keep:
-        raise ProcessError("the whole episode was found to repeat, so nothing would be left")
-    spec = json.dumps([[round(a, 2), round(b, 2)] for a, b in keep])
-    if ep["source_chapters"] is None:
+    if ep["source_chapters"] is None:  # with the feed's transcripts, for its phrases
         ctx.step("Reading chapters", episode_id)
         chapters.gather(ctx.db, ep, settings.media.transcripts(ep))
         ep = _episode(ctx.db, episode_id)
+    said = phrases.for_episode(ctx.db, ep)
+    keep = cut.keep_spans(cuts(ctx.db, episode_id, report, said), ep["duration"])
+    if not keep:
+        raise ProcessError("the whole episode was found to repeat, so nothing would be left")
+    spec = json.dumps([[round(a, 2), round(b, 2)] for a, b in keep])
     edits = ctx.db.execute("SELECT start, end FROM edits WHERE episode_id = ?", (episode_id,)).fetchall()
-    marks = chapters.build(json.loads(spec), chapters.cuts(report, edits), json.loads(ep["source_chapters"]))
+    marks = chapters.build(json.loads(spec), chapters.cuts(report, edits, said), json.loads(ep["source_chapters"]))
     if (spec == ep["cut_spec"] and json.dumps(marks) == ep["cut_chapters"] and ep["cut_path"]
             and Path(ep["cut_path"]).exists()):
         with transaction(ctx.db):  # nothing to cut differently
-            ctx.db.execute("UPDATE episodes SET state = 'ready', state_note = NULL, "
-                           "ready_at = COALESCE(ready_at, ?) WHERE id = ?", (time.time(), episode_id))
+            ctx.db.execute("UPDATE episodes SET state = 'ready', state_note = NULL, phrase_cuts = ?, "
+                           "ready_at = COALESCE(ready_at, ?) WHERE id = ?", (json.dumps(said), time.time(), episode_id))
         return
     ctx.step("Cutting", episode_id)
     try:
@@ -137,10 +141,10 @@ def _render(ctx: Context, settings: Settings, episode_id: int, report: dict) -> 
     with transaction(ctx.db):
         ctx.db.execute(
             """UPDATE episodes SET state = 'ready', state_note = NULL, cut_path = ?, cut_type = ?, cut_duration = ?,
-                      cut_bytes = ?, cut_spec = ?, cut_chapters = ?, processed_at = ?,
+                      cut_bytes = ?, cut_spec = ?, cut_chapters = ?, phrase_cuts = ?, processed_at = ?,
                       ready_at = COALESCE(ready_at, ?), expired_at = NULL, ever_downloaded = 1 WHERE id = ?""",
-            (str(out.path), out.mime, out.duration, out.size, spec, json.dumps(marks), time.time(), time.time(),
-             episode_id))
+            (str(out.path), out.mime, out.duration, out.size, spec, json.dumps(marks), json.dumps(said), time.time(),
+             time.time(), episode_id))
 
 
 def ensure_peaks(db: sqlite3.Connection, settings: Settings, episode_id: int) -> Path | None:
@@ -423,12 +427,15 @@ def run_edit(ctx: Context, settings: Settings) -> None:
 
 def timeline(db: sqlite3.Connection, episode_id: int, report: dict | None) -> dict:
     """What the episode page's timeline draws: each cut section, what it is, and the blocks and bumpers in it;
-    the sections kept in this podcast; and the false positives that play in it, for a list of their own.
-    `custom` marks a section of this podcast's own types or blocks; `own` lists its blocks marked by hand."""
-    podcast = db.execute("SELECT podcast_id FROM episodes WHERE id = ?", (episode_id,)).fetchone()[0]
+    the sections kept in this podcast; the intro and outro its phrases cut; and the false positives that play in
+    it, for a list of their own. `custom` marks a section that is what it is because of this podcast's own types
+    or blocks (an Outro block that also opens an episode is cut there as a plain repeat, so that one isn't);
+    `own` lists its blocks marked by hand."""
+    ep = _episode(db, episode_id)
+    podcast = ep["podcast_id"]
     store = Store.on(db)
     types = store.types(podcast)
-    custom = set(store.podcast_types(podcast)) if podcast is not None else set()
+    mine = store.podcast_types(podcast) if podcast is not None else {}
     own = {r[0] for r in db.execute("SELECT id FROM segments WHERE by_hand = 1")}
     bumpers = [r for r in db.execute(
         "SELECT o.segment_id, o.start, o.end FROM occurrences o JOIN segments s ON s.id = o.segment_id "
@@ -448,11 +455,12 @@ def timeline(db: sqlite3.Connection, episode_id: int, report: dict | None) -> di
             set_to = SHOW if SHOW in has else "auto"
         near = [{"block": r["segment_id"], "start": r["start"], "end": r["end"]} for r in bumpers
                 if r["start"] <= s["end"] + 5 and r["end"] >= s["start"] - 5]
+        is_break = "break" in s["types"]
+        custom = (set_to in {mine.get(b) for b in blocks} or bool(own & set(blocks))
+                  or (is_break and any(b["block"] in mine for b in near)))
         sections.append({"id": f"r{i}", "start": s["start"], "end": s["end"], "value": set_to,
-                         "is_break": "break" in s["types"], "blocks": blocks,
-                         "bumpers": near if "break" in s["types"] else [],
-                         "custom": bool(custom & {*blocks, *(b["block"] for b in near)} or own & set(blocks)),
-                         "own": sorted(own & set(blocks))})
+                         "is_break": is_break, "blocks": blocks, "bumpers": near if is_break else [],
+                         "custom": custom, "own": sorted(own & set(blocks))})
     for i, k in enumerate((report or {}).get("kept", [])):
         blocks = [b for b in k["blocks"] if b in types]
         sections.append({"id": f"k{i}", "start": k["start"], "end": k["end"], "value": KEPT, "is_break": False,
@@ -461,5 +469,6 @@ def timeline(db: sqlite3.Connection, episode_id: int, report: dict | None) -> di
                    for i, x in enumerate((report or {}).get("not_repeats", []))]
     manual = [{"id": f"m{r['id']}", "edit": r["id"], "start": r["start"], "end": r["end"]}
               for r in db.execute("SELECT * FROM edits WHERE episode_id = ? ORDER BY start", (episode_id,))]
-    return {"sections": sections, "manual": manual, "not_repeats": not_repeats}
+    said = [{"id": f"p{i}", **p} for i, p in enumerate(phrases.saved(ep))]
+    return {"sections": sections, "manual": manual, "not_repeats": not_repeats, "phrases": said}
 

@@ -227,6 +227,12 @@ MIGRATIONS = [
     """
     ALTER TABLE episodes ADD COLUMN held_by INTEGER;  -- the running job working on it: its own, or taken along
     """,
+    # 16: phrases that end a show's intro or begin its outro, and the cuts they made in each episode (phrases.py)
+    """
+    ALTER TABLE podcasts ADD COLUMN intro_phrases TEXT;  -- JSON list
+    ALTER TABLE podcasts ADD COLUMN outro_phrases TEXT;  -- JSON list
+    ALTER TABLE episodes ADD COLUMN phrase_cuts TEXT;  -- JSON list of {type, start, end, phrase}, as last cut
+    """,
 ]
 
 

@@ -205,18 +205,21 @@ def gather(db: sqlite3.Connection, ep: sqlite3.Row, stem: Path) -> None:
 
 
 def forget(ep: sqlite3.Row | dict) -> None:
-    """Delete an episode's saved transcripts, and the speaker turns saved with captions, as its download goes."""
+    """Delete an episode's saved transcripts, and the speaker turns and word times saved with captions, as its
+    download goes."""
     for t in json.loads(ep["transcripts"] or "[]"):
-        for path in (t["path"], t.get("speakers")):
+        for path in (t["path"], t.get("speakers"), t.get("words")):
             if path:
                 Path(path).unlink(missing_ok=True)
 
 
 # ---- chapters for the cut ------------------------------------------------------
 
-def cuts(report: dict | None, edits: list) -> list[tuple[float, float, set[str]]]:
-    """What was cut where: each section of the report with its types, and each stretch cut by hand."""
+def cuts(report: dict | None, edits: list, phrase_cuts: list[dict] = ()) -> list[tuple[float, float, set[str]]]:
+    """What was cut where: each section of the report with its types, each stretch cut by hand, and each intro
+    or outro its phrases cut."""
     found = [(s["start"], s["end"], set(s["types"])) for s in (report or {}).get("sections", [])]
+    found += [(p["start"], p["end"], {p["type"]}) for p in phrase_cuts]
     return found + [(r["start"], r["end"], {"manual"}) for r in edits]
 
 
@@ -272,7 +275,8 @@ def for_episode(db: sqlite3.Connection, ep: sqlite3.Row) -> list[dict]:
         return json.loads(ep["cut_chapters"])
     saved = db.execute("SELECT report FROM reports WHERE episode_id = ?", (ep["id"],)).fetchone()
     edits = db.execute("SELECT start, end FROM edits WHERE episode_id = ?", (ep["id"],)).fetchall()
-    return build(keep_of(ep), cuts(json.loads(saved["report"]) if saved else None, edits),
+    return build(keep_of(ep), cuts(json.loads(saved["report"]) if saved else None, edits,
+                                   json.loads(ep["phrase_cuts"] or "[]")),
                  json.loads(ep["source_chapters"] or "[]"))
 
 

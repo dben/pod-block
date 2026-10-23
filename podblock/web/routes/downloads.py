@@ -7,7 +7,7 @@ import sqlite3
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import RedirectResponse, Response
 
-from ...app import jobs, library, storage
+from ...app import captions, jobs, library, storage
 from ..deps import admin_user, get_db, wake_worker
 from ..templating import filesize, flash, page, plural
 
@@ -23,7 +23,8 @@ def downloads_page(request: Request, sort: str = "size", user=Depends(admin_user
     items = storage.on_disk(db, sort)
     return page(request, "downloads.html", title="Downloads", nav="downloads", user=user, items=items, sort=sort,
                 sorts=SORTS, total=sum(d["total"] for d in items), originals=sum(d["original"] for d in items),
-                cuts=sum(d["cut"] for d in items), disk=storage.disk(request.app.state.settings.media_dir))
+                cuts=sum(d["cut"] for d in items), disk=storage.disk(request.app.state.settings.media_dir),
+                transcriber=bool(request.app.state.settings.whisper_url))
 
 
 @router.post("/downloads/delete")
@@ -50,4 +51,19 @@ def reprocess_downloads(request: Request, ids: list[int] = Form([]), next: str =
     skipped = len(ids) - len(queued)
     note = f" {skipped:,} already queued." if skipped else ""
     flash(request, f"Queued {plural(len(queued), 'episode')}.{note}" if queued else "Those are already queued.")
+    return RedirectResponse(next if next.startswith("/downloads") else "/downloads", status_code=303)
+
+
+@router.post("/downloads/transcribe")
+def transcribe_downloads(request: Request, ids: list[int] = Form([]), next: str = Form("/downloads"),
+                         user=Depends(admin_user), db: sqlite3.Connection = Depends(get_db)) -> Response:
+    """Transcribe the episodes picked again, replacing any transcript they have, their feed's included."""
+    ids = list(dict.fromkeys(ids))[:library.MAX_IDS]
+    queued = captions.queue(db, request.app.state.settings, ids, user["id"], force=True)
+    if queued:
+        wake_worker(request)
+    skipped = len(ids) - len(queued)
+    note = f" {skipped:,} skipped: already queued, or no download." if skipped else ""
+    flash(request, f"Queued {plural(len(queued), 'episode')} to transcribe.{note}" if queued
+          else "Nothing queued: those are already queued, have no download, or no transcriber is set.")
     return RedirectResponse(next if next.startswith("/downloads") else "/downloads", status_code=303)

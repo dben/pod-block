@@ -296,6 +296,16 @@ def test_keep_and_intro_are_this_shows_own_and_come_off_again(env):
     assert env.db.execute("SELECT type FROM segments WHERE id = ?", (row["segment_id"],)).fetchone()[0] == "repeated"
 
 
+def test_a_shows_outro_block_playing_at_the_start_is_a_plain_repeat_there(env):
+    processed(env)
+    first = report_of(env, "ep-3")["sections"][0]
+    assert first["start"] < 0.5
+    env.db.execute("INSERT INTO podcast_types VALUES (?, ?, 'outro', 0)", (env.pod, first["blocks"][0]))
+    env.db.commit()
+    shown = processing.timeline(env.db, env.ids["ep-3"], report_of(env, "ep-3"))["sections"][0]
+    assert shown["value"] == "auto" and not shown["custom"]  # nothing of the show's to remove here
+
+
 def test_not_a_repeat_is_for_every_show_and_listed_to_undo(env):
     processed(env)
     pod_b, b = other_show(env)
@@ -1023,6 +1033,37 @@ def test_chapters_and_transcripts_fit_the_cut_audio(env):
     assert saved.exists()
     env.client.post("/downloads/delete", data={"ids": [three["id"]]})
     assert not saved.exists() and episode(env, "ep-3")["source_chapters"] is None
+
+
+def test_an_outro_phrase_in_the_transcript_cuts_it_and_everything_after(env):
+    with_extras(env)
+    res = env.client.post(f"/podcasts/{env.pod}/phrases", data={"intro": "", "outro": "/after (the|an) ad/\n"})
+    assert res.status_code == 303
+    processed(env)
+    three = episode(env, "ep-3")
+    total = JINGLE + AD + 2 * FILLER
+    assert json.loads(three["phrase_cuts"]) == [
+        {"type": "outro", "start": 79.75, "end": pytest.approx(total, abs=0.5), "phrase": "/after (the|an) ad/"}]
+    assert three["cut_duration"] == pytest.approx(79.75 - JINGLE - AD, abs=3)
+    assert episode(env, "ep-2")["phrase_cuts"] == "[]"  # no transcript to hear it in
+    assert "After the ad" not in env.client.get(f"/episodes/{three['id']}/captions.vtt").text
+
+    page = env.client.get(f"/episodes/{three['id']}").text
+    data = json.loads(re.search(r'id="timeline-data"[^>]*>(.*?)</script>', page, re.S)[1])
+    assert [(p["id"], p["type"], p["start"]) for p in data["phrases"]] == [("p0", "outro", 79.75)]
+    settings = env.client.get(f"/podcasts/{env.pod}?tab=settings").text
+    assert ">/after (the|an) ad/</textarea>" in settings
+
+    # Taking the phrase away cuts again only the episode it changes.
+    res = env.client.post(f"/podcasts/{env.pod}/phrases", data={"intro": "", "outro": ""})
+    assert res.status_code == 303 and episode(env, "ep-3")["state"] == "queued"
+    assert episode(env, "ep-2")["state"] == "ready"
+    worker.run_queue(env.settings)
+    assert episode(env, "ep-3")["cut_duration"] == pytest.approx(total - JINGLE - AD, abs=3)
+
+    bad = env.client.post(f"/podcasts/{env.pod}/phrases", data={"intro": "/(oops/", "outro": "kept"})
+    assert bad.status_code == 303 and "outro=kept" in bad.headers["location"]
+    assert ">kept</textarea>" in env.client.get(bad.headers["location"]).text  # what was typed, to fix
 
 
 def test_episodes_cut_before_chapters_get_them_when_cut_again(env):
