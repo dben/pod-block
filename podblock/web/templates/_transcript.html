@@ -1,0 +1,11 @@
+{% for p in paragraphs %}
+{% set prev = loop.previtem if not loop.first else none %}
+<p class="transcript-para">
+  {%- if seek %}<button class="transcript-time mono" type="button" data-seek="{{ p.start }}" title="Play from here">{{ p.start|clock }}</button>
+  {%- else %}<span class="transcript-time mono">{{ p.start|clock }}</span>{% endif %}
+  {%- if p.voice and (not prev or prev.voice != p.voice) %}<span class="captions-who">{{ p.voice }}</span>{% endif %}
+  {{- p.text -}}
+</p>
+{% else %}
+<p class="muted">No transcript.</p>
+{% endfor %}

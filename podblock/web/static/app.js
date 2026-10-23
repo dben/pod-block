@@ -60,7 +60,7 @@
   });
 
   document.addEventListener("submit", (e) => {
-    const msg = e.target.dataset.confirm;
+    const msg = e.submitter?.dataset.confirm || e.target.dataset.confirm;
     if (msg && !confirm(msg)) e.preventDefault();
   }, true);
 
@@ -397,4 +397,13 @@
     }
     draw();
   }
+
+  // A time in the transcript plays the episode from there.
+  document.addEventListener("click", (e) => {
+    const at = e.target.closest("[data-seek]");
+    const audio = at && document.getElementById("player");
+    if (!audio) return;
+    audio.currentTime = Number(at.dataset.seek);
+    audio.play().catch(() => {});
+  });
 })();

@@ -83,15 +83,16 @@
   {% endfor %}
 </ul>
 
-<form id="bulk" class="bulkbar" method="post" action="/downloads/delete"
-      data-confirm="Delete the selected downloads? Ready ones leave everyone's private feeds until someone downloads them again.">
+<form id="bulk" class="bulkbar" method="post" action="/downloads/delete">
   <input type="hidden" name="next" value="{{ request.url.path }}{% if sort != 'size' %}?sort={{ sort }}{% endif %}">
   <label class="bulk-all" title="Select all shown">
     <input type="checkbox" data-select-all aria-label="Select all shown">
   </label>
   <span class="bulk-count"><b data-selected-count>0</b> selected</span>
   <div class="bulk-actions">
-    <button class="btn btn-primary btn-sm btn-danger" type="submit">Delete</button>
+    <button class="btn btn-ghost btn-sm" type="submit" formaction="/downloads/reprocess">Reprocess</button>
+    <button class="btn btn-primary btn-sm btn-danger" type="submit"
+            data-confirm="Delete the selected downloads? Ready ones leave everyone's private feeds until someone downloads them again.">Delete</button>
     <button class="btn btn-ghost btn-sm" type="button" data-clear>Clear</button>
   </div>
 </form>

@@ -6,7 +6,8 @@
   </div>
 </div>
 
-<form class="card add-user" method="post" action="/users">
+{# Not a login: the data- attributes tell 1Password, LastPass, Bitwarden and Dashlane to leave these be. #}
+<form class="card add-user" method="post" action="/users" data-form-type="other">
   <h2>Add a user</h2>
   {% if error %}<p class="alert alert-error" role="alert">{{ error }}</p>{% endif %}
   <div class="add-user-fields">
@@ -14,11 +15,13 @@
       <span>User name</span>
       <input class="input" type="text" name="username" value="{{ username or '' }}" required maxlength="40"
              pattern="[A-Za-z0-9][A-Za-z0-9._\-]*" title="Letters, digits, dots, dashes or underscores"
-             autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
+             autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"
+             data-1p-ignore data-lpignore="true" data-bwignore data-form-type="other">
     </label>
     <label class="field">
       <span>Password</span>
-      <input class="input" type="password" name="password" required minlength="{{ min_password }}" autocomplete="new-password">
+      <input class="input" type="password" name="password" required minlength="{{ min_password }}" autocomplete="new-password"
+             data-1p-ignore data-lpignore="true" data-bwignore data-form-type="other">
     </label>
     <button class="btn btn-primary" type="submit">Add</button>
   </div>
@@ -41,11 +44,11 @@
     <div class="user-actions">
       <details class="user-reset">
         <summary class="btn btn-ghost btn-sm">Reset password</summary>
-        <form class="user-reset-pop" method="post" action="/users/{{ u.id }}/password">
+        <form class="user-reset-pop" method="post" action="/users/{{ u.id }}/password" data-form-type="other">
           <label class="field">
             <span>New password for {{ u.username }}</span>
             <input class="input" type="password" name="password" required minlength="{{ min_password }}"
-                   autocomplete="new-password">
+                   autocomplete="new-password" data-1p-ignore data-lpignore="true" data-bwignore data-form-type="other">
           </label>
           <button class="btn btn-primary btn-sm" type="submit">Set password</button>
           <p class="hint">Logs them out until they use it.</p>

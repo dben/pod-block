@@ -266,7 +266,9 @@ on Kubernetes, with backups and upgrades, see `deployment/README.md`.
   them. Captions from the transcription service letter the voices it
   found by how much each talks (A: most, often the host); the feeds'
   captions leave them out. The Captions button hides them; the browser
-  remembers that.
+  remembers that. Below the timeline, a folded Transcript card loads the
+  same captions when opened, in paragraphs by voice; on a ready episode
+  each paragraph's time plays from there.
 
 ### Timeline editor
 
@@ -354,6 +356,7 @@ on Kubernetes, with backups and upgrades, see `deployment/README.md`.
   in the episode list: the download, cut file and waveform go, and a ready
   episode becomes cleaned up, as retention does it, so it can be downloaded
   again and cut the same way. Episodes being processed are left alone.
+  Reprocess in the selection bar downloads and cuts the selected again.
 
 ### Filters
 
