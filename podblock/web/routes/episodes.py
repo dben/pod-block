@@ -152,6 +152,14 @@ def episode_captions(episode_id: int, user=Depends(current_user), db: sqlite3.Co
     return Response(text.encode(), media_type="text/vtt; charset=utf-8", headers={"Cache-Control": "no-cache"})
 
 
+@router.get("/episodes/{episode_id}/transcript")
+def episode_transcript(request: Request, episode_id: int, user=Depends(current_user),
+                       db: sqlite3.Connection = Depends(get_db)) -> Response:
+    """The transcript card's paragraphs, loaded when it's opened."""
+    ep = _episode(db, user["id"], episode_id)
+    return page(request, "_transcript.html", paragraphs=chapters.paragraphs(ep), seek=ep["state"] == states.READY)
+
+
 @router.post("/episodes/{episode_id}/played")
 def played(episode_id: int, user=Depends(current_user), db: sqlite3.Connection = Depends(get_db)) -> Response:
     """The page's player has played enough of the episode to count as a grab (see `grabs.play_needed`)."""

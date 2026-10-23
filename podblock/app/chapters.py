@@ -427,3 +427,43 @@ def captions(ep: sqlite3.Row) -> str | None:
         voice = f"<v {_escape(str(seg['speaker']))}>" if seg.get("speaker") else ""
         out.append(f"{_stamp(start, False)} --> {_stamp(end, False)}\n{voice}{_escape(str(seg['body']).strip())}")
     return "\n\n".join(out) + "\n"
+
+
+PARAGRAPH_SEC = 45.0  # a paragraph ends where the voice changes, at a sentence's end after this long,
+PARAGRAPH_GAP = 3.0  # or at a pause this long
+VOICE = re.compile(r"^<v(?:\.[^\s>]*)?\s+([^>]+)>")
+SENTENCE_END = re.compile(r"[.?!…。？！]['\")\]]*$")
+
+
+def _unescape(text: str) -> str:
+    return text.replace("&lt;", "<").replace("&gt;", ">").replace("&nbsp;", " ").replace("&amp;", "&")
+
+
+def paragraphs(ep: sqlite3.Row) -> list[dict]:
+    """The episode page's captions (`captions`) to read through, in paragraphs: {start, voice, text}."""
+    text = captions(ep)
+    if text is None:
+        return []
+    out: list[dict] = []
+    end = None
+    for block in re.split(r"\n[ \t]*\n", text.strip()):
+        lines = block.split("\n")
+        at = next((i for i, line in enumerate(lines) if "-->" in line), None)
+        m = CUE.match(lines[at]) if at is not None else None
+        start, stop = (_clock(m[1]), _clock(m[2])) if m else (None, None)
+        words = " ".join(line.strip() for line in lines[at + 1:]) if start is not None and stop is not None else ""
+        if not words:
+            continue
+        voice = VOICE.match(words)
+        words = _unescape(re.sub(r"<[^>]*>", "", words)).strip()
+        if not words:
+            continue
+        who = voice[1].strip() if voice else None
+        last = out[-1] if out else None
+        if (last is None or who != last["voice"] or start - end >= PARAGRAPH_GAP
+                or (start - last["start"] >= PARAGRAPH_SEC and SENTENCE_END.search(last["text"]))):
+            out.append({"start": start, "voice": who, "text": words})
+        else:
+            last["text"] += " " + words
+        end = stop
+    return out

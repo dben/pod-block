@@ -680,6 +680,34 @@ def test_downloads_page_shows_sizes_and_deletes(env):
     assert episode(env, "ep-3")["state"] == "queued" and episode(env, "ep-4")["state"] == "expired"
 
 
+def test_downloads_can_be_reprocessed_in_bulk(env):
+    processed(env)
+    assert 'formaction="/downloads/reprocess"' in env.client.get("/downloads").text
+    two, five = env.ids["ep-2"], env.ids["ep-5"]
+    res = env.client.post("/downloads/reprocess", data={"ids": [two, five]})
+    assert res.status_code == 303 and res.headers["location"] == "/downloads"
+    assert episode(env, "ep-2")["state"] == "queued" and episode(env, "ep-5")["state"] == "queued"
+    assert episode(env, "ep-3")["state"] == "ready"
+    env.client.post("/downloads/reprocess", data={"ids": [two]})  # already queued: not again
+    waiting = env.db.execute("SELECT COUNT(*) FROM jobs WHERE episode_id = ? AND state = 'queued'", (two,))
+    assert waiting.fetchone()[0] == 1
+
+
+def test_the_episode_page_has_its_transcript_folded_away(env, tmp_path):
+    processed(env)
+    ep_id = env.ids["ep-3"]
+    assert "transcript-card" not in env.client.get(f"/episodes/{ep_id}").text
+    path = tmp_path / "t.vtt"
+    path.write_text("WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n<v A>Hello &amp; welcome.\n")
+    env.db.execute("UPDATE episodes SET transcripts = ?, cut_spec = '[]' WHERE id = ?",
+                   (json.dumps([{"format": "vtt", "path": str(path)}]), ep_id))
+    env.db.commit()
+    page = env.client.get(f"/episodes/{ep_id}").text
+    assert f'hx-get="/episodes/{ep_id}/transcript"' in page and "<details class=\"card transcript-card\"" in page
+    part = env.client.get(f"/episodes/{ep_id}/transcript").text
+    assert 'data-seek="1.0"' in part and '<span class="captions-who">A</span>Hello &amp; welcome.' in part
+
+
 # ---- retention ------------------------------------------------------------------------
 
 def age(env, guid, days):

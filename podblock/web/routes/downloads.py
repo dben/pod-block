@@ -7,8 +7,8 @@ import sqlite3
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import RedirectResponse, Response
 
-from ...app import storage
-from ..deps import admin_user, get_db
+from ...app import jobs, library, storage
+from ..deps import admin_user, get_db, wake_worker
 from ..templating import filesize, flash, page, plural
 
 SORTS = {"size": "Largest", "recent": "Newest", "podcast": "Podcast"}
@@ -36,4 +36,18 @@ def delete_downloads(request: Request, ids: list[int] = Form([]), next: str = Fo
             if done.skipped else "")
     flash(request, f"Deleted {plural(done.deleted, 'download')}, freeing {filesize(done.freed)}.{note}"
           if done.deleted else "Nothing deleted." + note)
+    return RedirectResponse(next if next.startswith("/downloads") else "/downloads", status_code=303)
+
+
+@router.post("/downloads/reprocess")
+def reprocess_downloads(request: Request, ids: list[int] = Form([]), next: str = Form("/downloads"),
+                        user=Depends(admin_user), db: sqlite3.Connection = Depends(get_db)) -> Response:
+    """Download and cut the episodes picked again; ones already queued are left as they are."""
+    ids = list(dict.fromkeys(ids))[:library.MAX_IDS]
+    queued = jobs.enqueue(db, "process", ids, user["id"], skip_ready=False)
+    if queued:
+        wake_worker(request)
+    skipped = len(ids) - len(queued)
+    note = f" {skipped:,} already queued." if skipped else ""
+    flash(request, f"Queued {plural(len(queued), 'episode')}.{note}" if queued else "Those are already queued.")
     return RedirectResponse(next if next.startswith("/downloads") else "/downloads", status_code=303)

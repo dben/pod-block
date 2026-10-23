@@ -551,6 +551,16 @@ a.podcast-card:hover { background: var(--surface-2); }
 .captions-who::after { content: ":"; }
 .captions p.now .captions-who { color: var(--accent); }
 [data-captions-toggle][aria-pressed="true"] { color: var(--text); background: var(--surface-3); }
+.transcript-card { padding: 20px; }
+.transcript-card > summary { cursor: pointer; width: fit-content; }
+.transcript-card > summary::marker { color: var(--faint); }
+.transcript-card > summary h2 { display: inline; }
+.transcript { display: grid; gap: 12px; margin-top: 14px; max-height: 70vh; overflow-y: auto; overscroll-behavior: contain; }
+.transcript-para { margin: 0; color: #c9cfda; overflow-wrap: anywhere; }
+.transcript-time { margin-right: 10px; padding: 0; border: 0; background: none; font-size: 0.82rem; color: var(--faint); }
+button.transcript-time { cursor: pointer; }
+button.transcript-time:hover { color: var(--accent); text-decoration: underline; }
+.transcript-para .captions-who { color: var(--accent); }
 
 .section-list { list-style: none; margin: 0; padding: 0; display: grid; }
 .section {

@@ -192,6 +192,14 @@
     <p class="hint">The download is gone, so there is no timeline to edit. Download it again to get one.</p>
   </section>
   {% endif %}
+
+  {% if captions %}
+  <details class="card transcript-card" hx-get="/episodes/{{ e.id }}/transcript" hx-trigger="toggle once"
+           hx-target="find .transcript">
+    <summary><h2>Transcript</h2></summary>
+    <div class="transcript"><p class="muted">Loading…</p></div>
+  </details>
+  {% endif %}
 </div>
 {% if timeline %}
 <div class="savebar" data-tl="savebar" hidden>

@@ -171,3 +171,21 @@ def test_captions_get_the_voice_heard_most_in_each_cue():
     assert chapters._voices(vtt, turns) == (
         "WEBVTT\n\n00:00:00.000 --> 00:00:04.000\n<v A>Hello\nthere\n\n00:00:04.000 --> 00:00:06.000\n<v B>Yes\n\n"
         "00:00:20.000 --> 00:00:21.000\nNobody\n\n00:00:22.000 --> 00:00:23.000\n<v Named>Kept as it is\n")
+
+
+def test_the_transcript_reads_in_paragraphs_by_voice(tmp_path):
+    path = tmp_path / "t.vtt"
+    path.write_text("WEBVTT\n\nNOTE made here\n\n"
+                    "00:00:00.000 --> 00:00:02.000\n<v A>Hello\nthere.\n\n"
+                    "00:00:02.000 --> 00:00:03.000\n<v A>Still me.\n\n"
+                    "00:00:03.000 --> 00:00:04.000\n<v B>Me &amp; you.\n\n"
+                    "00:00:10.000 --> 00:00:11.000\n<v B>Later.\n\n"
+                    "00:00:11.000 --> 00:00:12.000\nNo one\n")
+    ep = {"transcripts": json.dumps([{"format": "vtt", "path": str(path)}]), "cut_spec": "[]", "cut_duration": 30}
+    assert chapters.paragraphs(ep) == [
+        {"start": 0.0, "voice": "A", "text": "Hello there. Still me."},
+        {"start": 3.0, "voice": "B", "text": "Me & you."},
+        {"start": 10.0, "voice": "B", "text": "Later."},  # after a pause
+        {"start": 11.0, "voice": None, "text": "No one"},
+    ]
+    assert chapters.paragraphs({"transcripts": "[]", "cut_spec": "[]", "cut_duration": 30}) == []
