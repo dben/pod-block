@@ -428,13 +428,14 @@ def run_edit(ctx: Context, settings: Settings) -> None:
 def timeline(db: sqlite3.Connection, episode_id: int, report: dict | None) -> dict:
     """What the episode page's timeline draws: each cut section, what it is, and the blocks and bumpers in it;
     the sections kept in this podcast; the intro and outro its phrases cut; and the false positives that play in
-    it, for a list of their own. `custom` marks a section of this podcast's own types or blocks; `own` lists its
-    blocks marked by hand."""
+    it, for a list of their own. `custom` marks a section that is what it is because of this podcast's own types
+    or blocks (an Outro block that also opens an episode is cut there as a plain repeat, so that one isn't);
+    `own` lists its blocks marked by hand."""
     ep = _episode(db, episode_id)
     podcast = ep["podcast_id"]
     store = Store.on(db)
     types = store.types(podcast)
-    custom = set(store.podcast_types(podcast)) if podcast is not None else set()
+    mine = store.podcast_types(podcast) if podcast is not None else {}
     own = {r[0] for r in db.execute("SELECT id FROM segments WHERE by_hand = 1")}
     bumpers = [r for r in db.execute(
         "SELECT o.segment_id, o.start, o.end FROM occurrences o JOIN segments s ON s.id = o.segment_id "
@@ -454,11 +455,12 @@ def timeline(db: sqlite3.Connection, episode_id: int, report: dict | None) -> di
             set_to = SHOW if SHOW in has else "auto"
         near = [{"block": r["segment_id"], "start": r["start"], "end": r["end"]} for r in bumpers
                 if r["start"] <= s["end"] + 5 and r["end"] >= s["start"] - 5]
+        is_break = "break" in s["types"]
+        custom = (set_to in {mine.get(b) for b in blocks} or bool(own & set(blocks))
+                  or (is_break and any(b["block"] in mine for b in near)))
         sections.append({"id": f"r{i}", "start": s["start"], "end": s["end"], "value": set_to,
-                         "is_break": "break" in s["types"], "blocks": blocks,
-                         "bumpers": near if "break" in s["types"] else [],
-                         "custom": bool(custom & {*blocks, *(b["block"] for b in near)} or own & set(blocks)),
-                         "own": sorted(own & set(blocks))})
+                         "is_break": is_break, "blocks": blocks, "bumpers": near if is_break else [],
+                         "custom": custom, "own": sorted(own & set(blocks))})
     for i, k in enumerate((report or {}).get("kept", [])):
         blocks = [b for b in k["blocks"] if b in types]
         sections.append({"id": f"k{i}", "start": k["start"], "end": k["end"], "value": KEPT, "is_break": False,

@@ -296,6 +296,16 @@ def test_keep_and_intro_are_this_shows_own_and_come_off_again(env):
     assert env.db.execute("SELECT type FROM segments WHERE id = ?", (row["segment_id"],)).fetchone()[0] == "repeated"
 
 
+def test_a_shows_outro_block_playing_at_the_start_is_a_plain_repeat_there(env):
+    processed(env)
+    first = report_of(env, "ep-3")["sections"][0]
+    assert first["start"] < 0.5
+    env.db.execute("INSERT INTO podcast_types VALUES (?, ?, 'outro', 0)", (env.pod, first["blocks"][0]))
+    env.db.commit()
+    shown = processing.timeline(env.db, env.ids["ep-3"], report_of(env, "ep-3"))["sections"][0]
+    assert shown["value"] == "auto" and not shown["custom"]  # nothing of the show's to remove here
+
+
 def test_not_a_repeat_is_for_every_show_and_listed_to_undo(env):
     processed(env)
     pod_b, b = other_show(env)
