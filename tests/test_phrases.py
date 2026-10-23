@@ -73,3 +73,20 @@ def test_a_chant_sung_over_and_over_is_cut_whole():
     intro = [*said(0, chant), *said(5, chant), *said(10, "welcome to the show"), *said(60, chant)]
     assert phrases.find(intro, 900, [chant], [])[0]["end"] == pytest.approx(9.65)  # through the second, not the third
     assert phrases.find(said(880, "youth of a nation"), 900, [], [chant]) == []  # every word has to match
+
+
+def test_a_phrase_between_slashes_is_a_regular_expression_over_whole_words():
+    chant = "/(we are )*the youth of (the|a) nation/"
+    assert phrases.parse(f"{chant}\n{chant}\nyouth of the nation") == [chant, "youth of the nation"]
+    for bad in ("/(unclosed/", "/(we are )*/", "/x?/"):
+        with pytest.raises(phrases.PhraseError):
+            phrases.parse(bad)
+
+    heard = [*said(0, "the end of the story"), *said(880, "We are, we are, the youth of a nation!")]
+    found = phrases.find(heard, 900, [], [chant])
+    assert found == [{"type": "outro", "start": pytest.approx(879.75), "end": 900, "phrase": chant}]
+    assert phrases.find(said(880, "we are the youth of the nations"), 900, [], [chant]) == []  # whole words
+    assert phrases.find(said(880, "the youth of the nation"), 900, [], ["/YOUTH OF/"])[0]["start"] == \
+        pytest.approx(880.4)  # ignoring case; not into "the"
+    sprawl = said(700, "thanks " + "word " * 40 + "nation")
+    assert phrases.find(sprawl, 900, [], ["/thanks.*nation/"]) == []  # too many words for one match

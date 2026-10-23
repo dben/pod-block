@@ -179,7 +179,8 @@
 
 <section class="card settings-panel" id="phrases">
   <h2>Intro and outro phrases</h2>
-  <p class="muted">Listened for in captions and transcripts. One phrase a line; case and punctuation don't matter.</p>
+  <p class="muted">Listened for in captions and transcripts. One phrase a line; case and punctuation don't matter.
+    Between slashes, a regular expression over the words: <code>/youth of (the|a) nation/</code>.</p>
   <form class="settings-form" method="post" action="/podcasts/{{ podcast.id }}/phrases">
     <label class="field">
       <span>Intro ends with</span>

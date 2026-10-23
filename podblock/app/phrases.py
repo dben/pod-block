@@ -15,6 +15,12 @@ and over is cut whole, and so is a host saying the line twice. A phrase
 said again mid-episode cuts nothing. Matching ignores case and
 punctuation ("Let's get into it!" is "lets get into it"), word for word.
 
+A phrase between slashes is a regular expression instead, matched against
+the same words: lower case, without punctuation, one space apart. It
+matches whole words only, and at most MAX_WORDS of them at once, so
+`/youth of (the|a) nation/` matches "the youth of the nation" but not
+"youth of the nations".
+
 Captions keep whisper's time for each word (`words.json` beside them), so
 cuts land between words; a feed's transcript only times whole cues, so
 there each word's time is guessed from where it falls in its cue.
@@ -27,6 +33,8 @@ queues the episode to be cut again; so does changing the phrases.
 
 from __future__ import annotations
 
+import bisect
+import functools
 import json
 import re
 import sqlite3
@@ -39,6 +47,7 @@ from .states import READY
 
 MAX_PHRASES = 20  # of each kind, per podcast
 MAX_CHARS = 100  # in a phrase
+MAX_WORDS = 30  # a regular expression's match spans at most this many words
 REACH = 1 / 3  # of the episode, from its edge, where a phrase counts
 CHAIN = 20.0  # seconds between two hearings of a phrase that still make one run of it, as in a chant
 PAD = 0.25  # seconds past a phrase's edge also cut, when the next word isn't nearer: whisper's times run tight
@@ -54,6 +63,15 @@ def tokens(text: str) -> list[str]:
     return re.findall(r"\w+", re.sub(r"['’ʼ]", "", text.casefold()))
 
 
+@functools.lru_cache(maxsize=256)
+def pattern(phrase: str) -> re.Pattern | None:
+    """A phrase between slashes as the regular expression it matches the words with; None for a plain phrase.
+    Raises re.error for one that isn't valid."""
+    if len(phrase) < 3 or not (phrase.startswith("/") and phrase.endswith("/")):
+        return None
+    return re.compile(rf"(?<!\S)(?:{phrase[1:-1]})(?!\S)", re.IGNORECASE)
+
+
 def parse(text: str) -> list[str]:
     """Phrases from a box of them, one a line. Blank lines and repeats go."""
     found: dict[tuple, str] = {}
@@ -63,6 +81,15 @@ def parse(text: str) -> list[str]:
             continue
         if len(line) > MAX_CHARS:
             raise PhraseError(f"Phrases can be at most {MAX_CHARS} characters.")
+        try:
+            compiled = pattern(line)
+        except re.error as e:
+            raise PhraseError(f"“{line}” isn't a valid regular expression: {e}.") from None
+        if compiled is not None:
+            if compiled.search("") or compiled.search(" "):
+                raise PhraseError(f"“{line}” matches nothing at all; it needs a word.")
+            found.setdefault(("/", line), line)
+            continue
         if not tokens(line):
             raise PhraseError(f"“{line}” has no words to listen for.")
         found.setdefault(tuple(tokens(line)), line)
@@ -137,9 +164,36 @@ def _hits(said: list[str], phrase: list[str]) -> list[int]:
     return [i for i in range(len(said) - n + 1) if said[i:i + n] == phrase]
 
 
+def _regex_hits(said: list[str], compiled: re.Pattern) -> list[tuple[int, int]]:
+    """Where a regular expression matches the words, as (index of the first word, of the last)."""
+    text = " ".join(said)
+    starts = [0]
+    for w in said[:-1]:
+        starts.append(starts[-1] + len(w) + 1)
+    found = []
+    for m in compiled.finditer(text):
+        if m.end() <= m.start():
+            continue
+        first = bisect.bisect_right(starts, m.start()) - 1
+        last = bisect.bisect_right(starts, m.end() - 1) - 1
+        if last - first < MAX_WORDS:
+            found.append((first, last))
+    return found
+
+
 def _all_hits(said: list[str], phrases: list[str]) -> list[tuple[int, int, str]]:
     """Every hearing of any of the phrases, in order, as (index of its first word, of its last, phrase)."""
-    return sorted((i, i + len(tokens(p)) - 1, p) for p in phrases for i in _hits(said, tokens(p)))
+    found = []
+    for p in phrases:
+        try:
+            compiled = pattern(p)
+        except re.error:
+            continue
+        if compiled is not None:
+            found += [(a, b, p) for a, b in _regex_hits(said, compiled)]
+        else:
+            found += [(i, i + len(tokens(p)) - 1, p) for i in _hits(said, tokens(p))]
+    return sorted(found)
 
 
 def find(heard: list[tuple[float, float, str]], duration: float, intro: list[str],
