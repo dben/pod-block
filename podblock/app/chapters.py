@@ -36,6 +36,7 @@ import requests
 
 from .. import cut
 from ..feed import PODCAST, PSC, USER_AGENT
+from . import speakers
 from .db import transaction
 from .text import web_url
 
@@ -347,12 +348,19 @@ def _shift_json(text: str, shift: Shift) -> str:
     return json.dumps({**doc, "segments": segments}, ensure_ascii=False)
 
 
-def transcript(ep: sqlite3.Row, fmt: str) -> str | None:
-    """An episode's transcript in one format, with its times moved to fit the cut audio; None if it has none."""
+def _read(ep: sqlite3.Row, fmt: str) -> str | None:
+    """An episode's saved transcript in one format, as the source had it."""
     saved = next((t for t in json.loads(ep["transcripts"] or "[]") if t["format"] == fmt), None)
     if saved is None or not Path(saved["path"]).exists():
         return None
-    text = Path(saved["path"]).read_bytes().decode("utf-8-sig", errors="replace")
+    return Path(saved["path"]).read_bytes().decode("utf-8-sig", errors="replace")
+
+
+def transcript(ep: sqlite3.Row, fmt: str) -> str | None:
+    """An episode's transcript in one format, with its times moved to fit the cut audio; None if it has none."""
+    text = _read(ep, fmt)
+    if text is None:
+        return None
     shift = Shift(keep_of(ep))
     return _shift_json(text, shift) if fmt == "json" else _shift_cues(text, shift, srt=fmt == "srt")
 
@@ -360,3 +368,62 @@ def transcript(ep: sqlite3.Row, fmt: str) -> str | None:
 def transcripts(ep: sqlite3.Row) -> list[dict]:
     """An episode's saved transcripts: format, and the source's language and rel."""
     return [t for t in json.loads(ep["transcripts"] or "[]") if Path(t["path"]).exists()]
+
+
+def _escape(text: str) -> str:
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _letter(i: int) -> str:
+    return chr(ord("A") + i) if i < 26 else str(i + 1)
+
+
+def _voices(text: str, turns: list) -> str:
+    """WebVTT with each cue given the voice heard most during it, from the transcription service's speaker turns.
+    The voices are lettered by how much they talk: A most, often the host."""
+    talk: dict = {}
+    for a, b, who in turns:
+        talk[who] = talk.get(who, 0.0) + b - a
+    letters = {who: _letter(i) for i, who in enumerate(sorted(talk, key=lambda w: -talk[w]))}
+    blocks = re.split(r"\n[ \t]*\n", text.replace("\r\n", "\n").replace("\r", "\n").strip())
+    out = []
+    for block in blocks:
+        lines = block.split("\n")
+        at = next((i for i, line in enumerate(lines) if "-->" in line), None)
+        m = CUE.match(lines[at]) if at is not None else None
+        start, end = (_clock(m[1]), _clock(m[2])) if m else (None, None)
+        if start is not None and end is not None and at + 1 < len(lines) and not lines[at + 1].startswith("<v"):
+            heard: dict = {}
+            for a, b, who in turns:
+                if a < end and b > start:
+                    heard[who] = heard.get(who, 0.0) + min(b, end) - max(a, start)
+            if heard:
+                lines[at + 1] = f"<v {letters[max(heard, key=heard.get)]}>{lines[at + 1]}"
+        out.append("\n".join(lines))
+    return "\n\n".join(out) + "\n"
+
+
+def captions(ep: sqlite3.Row) -> str | None:
+    """An episode's timed transcript as WebVTT that fits the cut audio, for the episode page's player: its WebVTT,
+    else its SRT or JSON turned into WebVTT. None if it has none. Captions from the transcription service get the
+    speakers it found, lettered (`_voices`)."""
+    have = {t["format"] for t in transcripts(ep)}
+    if "vtt" in have:
+        turns = (speakers.saved(ep) or {}).get("turns")
+        if not turns:
+            return transcript(ep, "vtt")
+        return _shift_cues(_voices(_read(ep, "vtt"), turns), Shift(keep_of(ep)), srt=False)
+    if "srt" in have:  # SRT's cue numbers read as WebVTT cue names; the times are written the WebVTT way
+        return "WEBVTT\n\n" + _shift_cues(_read(ep, "srt"), Shift(keep_of(ep)), srt=False)
+    if "json" not in have:
+        return None
+    segments = [s for s in json.loads(transcript(ep, "json")).get("segments", []) if str(s.get("body") or "").strip()]
+    out = ["WEBVTT"]
+    for i, seg in enumerate(segments):
+        start = seg["startTime"]
+        end = seg.get("endTime", segments[i + 1]["startTime"] if i + 1 < len(segments) else start + 5)
+        if end - start < 0.01:
+            continue
+        voice = f"<v {_escape(str(seg['speaker']))}>" if seg.get("speaker") else ""
+        out.append(f"{_stamp(start, False)} --> {_stamp(end, False)}\n{voice}{_escape(str(seg['body']).strip())}")
+    return "\n\n".join(out) + "\n"

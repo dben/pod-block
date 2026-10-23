@@ -973,6 +973,18 @@ def test_chapters_and_transcripts_fit_the_cut_audio(env):
     assert chapters._clock(cues[1][0]) == pytest.approx(shift(80), abs=0.01)
     assert anon.get(links[0].get("url").replace("http://testserver", "").replace(".vtt", ".srt")).status_code == 404
 
+    # The episode page's player shows them as it plays.
+    page = env.client.get(f"/episodes/{three['id']}").text
+    track = f'src="/episodes/{three["id"]}/captions.vtt" srclang="en" default>'
+    assert '<track kind="captions" label="Captions" ' + track in page
+    assert 'data-captions="#player"' in page
+    mine = env.client.get(f"/episodes/{three['id']}/captions.vtt")
+    assert mine.status_code == 200 and mine.headers["content-type"].startswith("text/vtt") and mine.text == vtt.text
+    two = episode(env, "ep-2")["id"]
+    assert "<track" not in env.client.get(f"/episodes/{two}").text
+    assert env.client.get(f"/episodes/{two}/captions.vtt").status_code == 404
+    assert TestClient(env.client.app).get(f"/episodes/{three['id']}/captions.vtt").status_code == 401
+
     # Episodes without chapters of their own get one at each cut.
     two = json.loads(episode(env, "ep-2")["cut_chapters"])
     assert [c["start"] for c in two] == pytest.approx([0, shift.joins()[1][0]], abs=2)

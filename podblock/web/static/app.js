@@ -340,4 +340,61 @@
       }
     });
   }
+
+  // ---- captions beside the episode's player -------------------------------------
+  // A browser draws no captions for audio, so the player's track is read here and its
+  // cues shown in a box under it: the one being said, and the one before, dimmed, each
+  // with who says it when the transcript names them. Whether they show is remembered.
+
+  const CAPTIONS_KEY = "podblock.captions";
+  for (const box of $$("[data-captions]")) {
+    const audio = document.querySelector(box.dataset.captions);
+    const track = audio?.textTracks[0];
+    const toggle = document.querySelector("[data-captions-toggle]");
+    if (!track) continue;
+    track.mode = "hidden";  // its cues fire, and nothing else draws them
+    let on = true;
+    try { on = localStorage.getItem(CAPTIONS_KEY) !== "off"; } catch {}
+    let started = false;
+    const lines = [];  // the cues shown, oldest first
+
+    const text = (cue) => cue.getCueAsHTML?.().textContent ?? cue.text.replace(/<[^>]*>/g, "");
+    const voice = (cue) => (cue.getCueAsHTML ? cue.getCueAsHTML().querySelector("span[title]")?.title
+      : cue.text.match(/^<v(?:\.[^\s>]*)?\s+([^>]+)>/)?.[1])?.trim();
+    const draw = () => {
+      box.hidden = !on || !started;
+      if (toggle) toggle.setAttribute("aria-pressed", on);
+      const now = Array.from(track.activeCues || []);
+      box.replaceChildren(...lines.map((cue) => {
+        const p = document.createElement("p");
+        const who = voice(cue);
+        if (who) {
+          const name = document.createElement("span");
+          name.className = "captions-who";
+          name.textContent = who;
+          p.append(name);
+        }
+        p.append(text(cue).trim());
+        p.classList.toggle("now", now.includes(cue));
+        return p;
+      }));
+    };
+
+    track.addEventListener("cuechange", () => {
+      for (const cue of track.activeCues || []) if (!lines.includes(cue)) lines.push(cue);
+      lines.splice(0, Math.max(0, lines.length - 2));
+      draw();
+    });
+    audio.addEventListener("play", () => { started = true; draw(); });
+    audio.addEventListener("seeking", () => { lines.length = 0; draw(); });
+    if (toggle) {
+      toggle.hidden = false;
+      toggle.addEventListener("click", () => {
+        on = !on;
+        try { localStorage.setItem(CAPTIONS_KEY, on ? "on" : "off"); } catch {}
+        draw();
+      });
+    }
+    draw();
+  }
 })();

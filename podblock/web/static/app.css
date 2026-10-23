@@ -539,6 +539,18 @@ a.podcast-card:hover { background: var(--surface-2); }
 .row-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .row-actions form { display: contents; }
 .player { width: 100%; height: 44px; color-scheme: dark; }
+.captions {
+  display: flex; flex-direction: column; justify-content: flex-end; gap: 6px; overflow: hidden;
+  height: calc(4 * 1.45em + 6px + 24px); padding: 12px 16px; border-radius: var(--radius-sm);
+  background: var(--surface-2); font-size: 1.05rem; line-height: 1.45;
+}
+.captions[hidden] { display: none; }
+.captions p { margin: 0; white-space: pre-line; overflow-wrap: anywhere; color: var(--faint); transition: color 0.2s; }
+.captions p.now { color: var(--text); }
+.captions-who { margin-right: 6px; font-weight: 700; }
+.captions-who::after { content: ":"; }
+.captions p.now .captions-who { color: var(--accent); }
+[data-captions-toggle][aria-pressed="true"] { color: var(--text); background: var(--surface-3); }
 
 .section-list { list-style: none; margin: 0; padding: 0; display: grid; }
 .section {
@@ -559,6 +571,16 @@ a.podcast-card:hover { background: var(--surface-2); }
 .type-show { background: rgb(61 220 151 / 0.14); color: var(--type-show); }
 .notes p { white-space: pre-line; overflow-wrap: anywhere; color: #c9cfda; display: -webkit-box; -webkit-line-clamp: 12; -webkit-box-orient: vertical; overflow: hidden; }
 .notes.open p { display: block; }
+.notes.cropped p { mask-image: linear-gradient(#000 calc(100% - 3em), transparent); }
+/* Beside a ready episode's card, the notes take its height: size containment keeps them out of the row's. */
+@media (min-width: 901px) {
+  .ep-top.crop-notes { align-items: stretch; }
+  .crop-notes .ep-main { align-self: start; }
+  .crop-notes .notes-card { contain: size; grid-template-rows: auto minmax(0, 1fr); }
+  .crop-notes .notes-card:has(.notes.open) { contain: none; }
+  .crop-notes .notes { display: flex; flex-direction: column; align-items: start; gap: 8px; min-height: 0; }
+  .crop-notes .notes p { display: block; flex: 1; align-self: stretch; min-height: 0; }
+}
 
 @media (max-width: 900px) {
   .ep-top.has-notes { grid-template-columns: minmax(0, 1fr); }
