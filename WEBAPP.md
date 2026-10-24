@@ -32,7 +32,7 @@ built, and what could come next.
 | Timeline and player | `static/timeline.js`, no library | a canvas over the part in view, with waveform data worked out on the server |
 | Styling | hand-written CSS with custom properties | dark by default, mobile first, no build step |
 | Database | `podblock.sqlite`, through `sqlite3` as the detector's `Store` does | one file on a volume; the app's tables are added by numbered steps in `podblock/app/db.py` |
-| Background work | a worker process, `podblock worker`, that `serve` starts and restarts; inside it, threads (`PODBLOCK_WORKERS`, default 1) take jobs from a table in the database, one more takes captions jobs, and one more refreshes feeds and cleans up | survives restarts, needs no broker; a crash or memory spike in a job can't take the pages down; the two share only the database, so the worker can move to its own container later |
+| Background work | a worker process, `podblock worker`, that `serve` starts and restarts; inside it, threads (`PODBLOCK_WORKERS`, default 1) take jobs from a table in the database, more (`PODBLOCK_CAPTION_WORKERS`, default 1) take captions jobs, and one more refreshes feeds and cleans up | survives restarts, needs no broker; a crash or memory spike in a job can't take the pages down; the two share only the database, so the worker can move to its own container later |
 | Audio cutting | `podblock/cut.py`: one ffmpeg decodes to raw samples, Python drops the cut stretches and fades each join, a second ffmpeg encodes | flat memory whatever the length, cuts on the exact sample, real fades; one decode and one encode |
 
 ## How it fits together
@@ -116,6 +116,7 @@ Others:
 | `PODBLOCK_PUBLIC_URL` | base URL for links in the private feed, e.g. `https://pods.example.com`; falls back to the address the request came to |
 | `PODBLOCK_WORKERS` | threads running jobs (default 1). Fingerprinting takes about 0.3 GB and one core per thread |
 | `PODBLOCK_WHISPER_URL` | the transcription service, e.g. `http://pod-block-whisper:9000`; when set, downloads without a timed transcript get captions (`whisper/README.md`) |
+| `PODBLOCK_CAPTION_WORKERS` | captions jobs at once (default 1); set it to the transcription service's replicas |
 | `PODBLOCK_JOBS` | where jobs run: `process` (default, a `podblock worker` that `serve` starts), `threads` (inside `serve`) or `none` (run `podblock worker` yourself; only one may run) |
 | `FORWARDED_ALLOW_IPS` | Uvicorn's own: which proxies to trust for `X-Forwarded-*` headers; set it to the ingress's address range |
 
@@ -238,7 +239,8 @@ on Kubernetes, with backups and upgrades, see `deployment/README.md`.
   back as WebVTT, `rel="captions"`, among the episode's transcripts, so it is
   shifted and served like a feed's own. The job names its episode in its
   payload rather than holding it, so the episode stays ready and editable
-  meanwhile, and captions jobs take a worker thread of their own. When the
+  meanwhile, and captions jobs take worker threads of their own
+  (`PODBLOCK_CAPTION_WORKERS`, one per transcription replica). When the
   service has speakers on, the turns it finds are saved beside the captions
   (`podblock/app/speakers.py`), for `podblock speakers` to set beside the
   repeats; they don't go into the captions or the cuts yet. Each word's

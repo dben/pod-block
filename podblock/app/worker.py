@@ -1,8 +1,9 @@
 """Work that runs apart from any request: feed refreshes, clean-up, and the job queue.
 
 `Background` is that work: one thread refreshes feeds when they are due and
-cleans up old downloads, `workers` threads take jobs from the queue, and one
-more takes `captions` jobs, which mostly wait on the transcription service.
+cleans up old downloads, `workers` threads take jobs from the queue, and
+`caption_workers` more take `captions` jobs, which mostly wait on the
+transcription service.
 
 It runs in a process of its own, `podblock worker` (`run_worker`), which the
 web app starts as its child and starts again if it dies (`JobProcess`). So a
@@ -82,9 +83,9 @@ class Background:
         self._threads = [threading.Thread(target=self._refresh, name="podblock-refresh", daemon=True)]
         self._threads += [threading.Thread(target=self._work, args=("jobs",), name=f"podblock-worker-{n}",
                                            daemon=True) for n in range(max(0, workers))]
-        if workers > 0:  # captions wait on the transcriber, so they have a thread of their own
-            self._threads.append(threading.Thread(target=self._work, args=("captions",), name="podblock-captions",
-                                                  daemon=True))
+        if workers > 0:  # captions wait on the transcriber, so they have threads of their own
+            self._threads += [threading.Thread(target=self._work, args=("captions",), name=f"podblock-captions-{n}",
+                                               daemon=True) for n in range(max(1, settings.caption_workers))]
         self.held: int | None = None  # the worker lock, when it runs in the web app's own process
 
     def start(self) -> None:

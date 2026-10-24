@@ -12,7 +12,12 @@ as it is served (`chapters.py`), so a re-cut needs no new transcript.
 The job works on no one episode (`jobs.enqueue_task`, the episode in its
 payload), so the episode stays ready, and in the feeds, while it runs, and an
 edit can be saved meanwhile. Captions jobs run in a thread of their own
-(worker.py), so a long transcription doesn't hold up downloads.
+(worker.py), so a long transcription doesn't hold up downloads;
+`PODBLOCK_CAPTION_WORKERS` runs several at once, for a service with more than
+one replica. With more than one, a job that lands on a busy replica hangs up
+and asks again, for the Service to send it to another (`ask`'s `patience`).
+A transcription cut off part way (a replica restarting, say) is asked for once
+more before the job fails.
 
 Each word's time is saved beside the captions too, for the show's intro and
 outro phrases (`phrases.py`); hearing one queues the episode to be cut again.
@@ -30,12 +35,15 @@ from __future__ import annotations
 
 import json
 import logging
+import random
 import re
 import sqlite3
 import textwrap
+import time
 from pathlib import Path
 
 import requests
+import urllib3
 
 from . import chapters, phrases, speakers
 from .config import Settings
@@ -53,10 +61,21 @@ PAUSE = 1.5  # seconds of silence that end a caption
 SENTENCE_END = re.compile(r"[.?!…。？！]['\")\]]*$")
 CLAUSE_END = re.compile(r"[,;:，、；：]['\")\]]*$")
 MIN_SENTENCE = 24  # characters a caption has before a sentence's end closes it; a clause's needs a line (LINE)
+BUSY_PATIENCE = 600.0  # seconds to keep asking for a free replica before waiting for a busy one
+BUSY_WAIT = (2.0, 30.0)  # seconds before asking again: the first wait, doubling up to the second
+RETRY_AFTER = 10.0  # seconds before asking once more when a transcription is cut off
 
 
 class CaptionError(Exception):
     pass
+
+
+class CutOff(CaptionError):
+    """The service couldn't be reached, or stopped answering part way: worth asking once more."""
+
+
+class _Busy(Exception):
+    """The replica asked is working on another episode."""
 
 
 def wanted(ep: sqlite3.Row, settings: Settings, force: bool = False) -> bool:
@@ -166,10 +185,55 @@ def _language(db: sqlite3.Connection, podcast_id: int | None) -> str | None:
     return code if re.fullmatch(r"[a-z]{2,3}", code) else None
 
 
-def ask(ctx, url: str, what: str, audio: Path, params: dict | None = None) -> dict:
+def ask(ctx, url: str, what: str, audio: Path, params: dict | None = None, patience: float = 0.0) -> dict:
     """Send the audio to the service's `what` ("transcribe" or "speakers") and read back what it found:
     {language, duration, segments, speakers, options}, the last two when it says who speaks when. `ctx` is told
-    each step and how far through (a job's Context, or anything with `step` and `progress`)."""
+    each step and how far through (a job's Context, or anything with `step` and `progress`).
+
+    For `patience` seconds, a busy replica is hung up on and the audio sent again a little later, which the
+    Service may give to another; after that it waits its turn. Cut off part way, it asks once more."""
+    give_up = time.monotonic() + patience
+    wait, retried = BUSY_WAIT[0], False
+    while True:
+        try:
+            return _ask(ctx, url, what, audio, params, leave_if_busy=time.monotonic() < give_up)
+        except _Busy:
+            ctx.step("Waiting for a free transcriber")
+            _pause(ctx, wait * random.uniform(1, 1.5))  # spread out, so jobs turned away together don't collide again
+            wait = min(wait * 2, BUSY_WAIT[1])
+        except CutOff as e:
+            if retried:
+                raise
+            retried = True
+            log.warning("%s; asking again", e)
+            ctx.step("Asking the transcriber again")
+            _pause(ctx, RETRY_AFTER)
+
+
+def _pause(ctx, seconds: float) -> None:
+    """Wait, noticing a cancel meanwhile."""
+    end = time.monotonic() + seconds
+    while (left := end - time.monotonic()) > 0:
+        time.sleep(min(left, 1.0))
+        ctx.progress(None)
+
+
+def _lines(resp: requests.Response):
+    """The answer's lines as they arrive. `iter_lines` waits for 512 bytes, which a short line such as "waiting"
+    can sit behind for minutes; urllib3 2's `read1` hands over whatever has come."""
+    read1 = getattr(resp.raw, "read1", None)
+    if read1 is None:  # pragma: no cover (urllib3 1)
+        yield from resp.iter_lines()
+        return
+    rest = b""
+    while chunk := read1(1 << 16):
+        *lines, rest = (rest + chunk).split(b"\n")
+        yield from lines
+    if rest:
+        yield rest  # cut short: every whole line ends in a newline
+
+
+def _ask(ctx, url: str, what: str, audio: Path, params: dict | None, leave_if_busy: bool) -> dict:
     found: dict = {"language": None, "duration": None, "segments": [], "speakers": None, "options": None}
     done = False
     try:
@@ -178,11 +242,16 @@ def ask(ctx, url: str, what: str, audio: Path, params: dict | None = None) -> di
                 stream=True, timeout=TIMEOUT) as resp:
             resp.raise_for_status()
             ctx.step("Transcribing" if what == "transcribe" else "Finding who speaks when")
-            for raw in resp.iter_lines():
+            for raw in _lines(resp):
                 if not raw:
                     continue
-                line = json.loads(raw)
+                try:
+                    line = json.loads(raw)
+                except ValueError:  # the last line, cut short
+                    raise CutOff("the transcriber stopped part way through a line") from None
                 if line.get("waiting"):
+                    if leave_if_busy:
+                        raise _Busy()
                     ctx.progress(None)  # also notices a cancel
                 elif "error" in line:
                     raise CaptionError(f"the transcriber failed: {line['error']}")
@@ -200,10 +269,14 @@ def ask(ctx, url: str, what: str, audio: Path, params: dict | None = None) -> di
                     found["speakers"], found["options"] = line["speakers"], line.get("options")
                 elif "duration" in line:
                     found["language"], found["duration"] = line.get("language"), line["duration"]
-    except requests.RequestException as e:
-        raise CaptionError(f"couldn't reach the transcriber at {url} ({type(e).__name__}: {e})") from None
+    except requests.HTTPError as e:
+        if e.response is not None and e.response.status_code == 503:  # loading, or stopping
+            raise CutOff(f"the transcriber at {url} isn't ready ({e})") from None
+        raise CaptionError(f"the transcriber at {url} refused it ({e})") from None
+    except (requests.RequestException, urllib3.exceptions.HTTPError) as e:
+        raise CutOff(f"couldn't reach the transcriber at {url} ({type(e).__name__}: {e})") from None
     if not done:
-        raise CaptionError("the transcriber stopped part way through")
+        raise CutOff("the transcriber stopped part way through")
     return found
 
 
@@ -222,7 +295,8 @@ def run(ctx: Context, settings: Settings) -> None:
     ctx.step("Sending the audio to the transcriber")
     language = _language(ctx.db, ep["podcast_id"])
     heard = ask(ctx, settings.whisper_url, "transcribe", Path(ep["original_path"]),
-                {"language": language} if language else None)
+                {"language": language} if language else None,
+                patience=BUSY_PATIENCE if settings.caption_workers > 1 else 0.0)
     stem = settings.media.transcripts(ep)
     path = stem.with_name(stem.name + ".captions.vtt")
     _write(path, webvtt(cues(heard["segments"])))

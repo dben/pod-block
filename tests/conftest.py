@@ -32,3 +32,11 @@ def audio_files(tmp_path_factory):
     if not shutil.which("ffmpeg"):
         pytest.skip("needs ffmpeg")
     return make_episodes(tmp_path_factory.mktemp("cdn"))
+
+
+@pytest.fixture(autouse=True)
+def quick_retries(monkeypatch):
+    """The captions job's waits before asking the transcriber again, made short."""
+    from podblock.app import captions
+    monkeypatch.setattr(captions, "RETRY_AFTER", 0.0)
+    monkeypatch.setattr(captions, "BUSY_WAIT", (0.05, 0.1))
