@@ -258,6 +258,7 @@ MIGRATIONS = [
     """
     ALTER TABLE podcasts ADD COLUMN transcript_check INTEGER;  -- NULL: on when its feed has transcripts
     ALTER TABLE episodes ADD COLUMN missing_cuts TEXT;  -- JSON list of {type, start, end}, as last cut
+    ALTER TABLE episodes ADD COLUMN missing_kept TEXT;  -- JSON list of [start, end]: stretches kept on the timeline
     """,
 ]
 

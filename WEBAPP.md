@@ -269,8 +269,12 @@ on Kubernetes, with backups and upgrades, see `deployment/README.md`.
   longer than the transcript does between the same two words, is cut when
   it lasts 20 s or more. A break found from bumpers that is mostly what the
   transcript has is dropped, but only once the transcript is known to leave
-  ads out. The feed's transcript stays the one served. The timeline shows
-  these cuts as Not in transcript; chapters call them ad breaks.
+  ads out. The download's captions are then served in place of the feed's
+  transcript, whose times run behind after each ad; the feed's stays on the
+  episode to check against. The checkbox shows only when the feed lists
+  transcripts (in its newest 20 items) or the check was turned on. The
+  timeline shows these cuts as Not in transcript, each with Don't cut this,
+  kept for that episode; chapters call them ad breaks.
 - Each join gets a chapter saying what was cut and how much: "1:32 ad break
   cut", or, inside a chapter of the source's, "Interview (after 1:32 ad
   break cut)". An episode with no chapters of its own gets a "Start"
@@ -605,6 +609,7 @@ episodes  + pub_ts, summary, image_url, link, audio_type, audio_length, feed_dur
             held_by,                                         -- the running job working on it
             phrase_cuts,                                     -- the intro and outro its phrases cut, as last cut
             missing_cuts,                                    -- what its feed's transcript leaves out, as last cut
+            missing_kept,                                    -- those kept on the timeline, as spans
             ready_at, expired_at                             -- the retention clock
 
 jobs(id, kind, episode_id, state, step, progress, error, cancel_requested, attempts,

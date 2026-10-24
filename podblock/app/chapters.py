@@ -353,9 +353,14 @@ def _shift_json(text: str, shift: Shift) -> str:
 
 
 def _read(ep: sqlite3.Row, fmt: str) -> str | None:
-    """An episode's saved transcript in one format, as the source had it."""
-    saved = next((t for t in json.loads(ep["transcripts"] or "[]") if t["format"] == fmt), None)
-    if saved is None or not Path(saved["path"]).exists():
+    """An episode's served transcript in one format, as the source had it."""
+    saved = next((t for t in transcripts(ep) if t["format"] == fmt), None)
+    return read_file(saved) if saved else None
+
+
+def read_file(saved: dict) -> str | None:
+    """A saved transcript's text."""
+    if not Path(saved["path"]).exists():
         return None
     return Path(saved["path"]).read_bytes().decode("utf-8-sig", errors="replace")
 
@@ -369,9 +374,11 @@ def transcript(ep: sqlite3.Row, fmt: str) -> str | None:
     return _shift_json(text, shift) if fmt == "json" else _shift_cues(text, shift, srt=fmt == "srt")
 
 
-def transcripts(ep: sqlite3.Row) -> list[dict]:
-    """An episode's saved transcripts: format, and the source's language and rel."""
-    return [t for t in json.loads(ep["transcripts"] or "[]") if Path(t["path"]).exists()]
+def transcripts(ep: sqlite3.Row, reference: bool = False) -> list[dict]:
+    """An episode's saved transcripts that are served: format, and the source's language and rel. With
+    `reference`, also the feed's ones kept only to check captions against (missing.py)."""
+    return [t for t in json.loads(ep["transcripts"] or "[]")
+            if Path(t["path"]).exists() and (reference or not t.get("reference"))]
 
 
 def _escape(text: str) -> str:

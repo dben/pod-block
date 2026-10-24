@@ -181,7 +181,7 @@
       <input type="checkbox" name="auto_download" value="true" {% if podcast.auto_download %}checked{% endif %}>
       Download new episodes as they appear
     </label>
-    {% if transcriber %}
+    {% if show_check %}
     <input type="hidden" name="check_shown" value="true">
     <label class="tl-check settings-check">
       <input type="checkbox" name="transcript_check" value="true" {% if transcript_check %}checked{% endif %}>

@@ -150,15 +150,16 @@ def words(ep: sqlite3.Row) -> list[tuple[float, float, str]]:
 
 
 def feed_words(ep: sqlite3.Row) -> list[tuple[float, float, str]]:
-    """The words of the episode's transcript file, as `words` gives them, each word's time guessed from its cue:
-    for a feed's transcript, its times, whatever was heard in the download."""
-    saved = chapters.transcripts(ep)
+    """The words of the episode's transcript from its feed, as `words` gives them, each word's time guessed from
+    its cue, in the feed's own times: served, or kept only for checking captions (missing.py)."""
+    saved = [t for t in chapters.transcripts(ep, reference=True) if not t.get("made")]
     for fmt in ("vtt", "srt", "json"):
-        if any(t["format"] == fmt for t in saved):
-            text = chapters._read(ep, fmt)
+        t = next((t for t in saved if t["format"] == fmt), None)
+        if t is not None:
+            text = chapters.read_file(t)
             try:
                 return _json_words(text) if fmt == "json" else _cue_words(text)
-            except (ValueError, AttributeError):
+            except (ValueError, AttributeError, TypeError):
                 return []
     return []
 

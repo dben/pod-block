@@ -143,7 +143,7 @@ def _render(ctx: Context, settings: Settings, episode_id: int, report: dict) -> 
             chapters.gather(ctx.db, ep, settings.media.transcripts(ep))
         ep = _episode(ctx.db, episode_id)
     said = phrases.for_episode(ctx.db, ep)
-    unsaid = missing.cuts(missing.fit(ctx.db, settings, ep))
+    unsaid = missing.cuts(missing.fit(ctx.db, settings, ep), missing.kept(ep))
     keep = cut.keep_spans(cuts(ctx.db, episode_id, report, said + unsaid), ep["duration"])
     if not keep:
         raise ProcessError("the whole episode was found to repeat, so nothing would be left")
@@ -332,7 +332,8 @@ def check_edits(db: sqlite3.Connection, episode_id: int, changes: dict) -> dict:
     sends it:
 
         {"types": [{"type", "blocks": [ids], "bumpers": [ids], "start", "end"}],
-         "add": [{"start", "end", "as_block", "type"}], "remove": [edit ids], "delete": [block ids]}
+         "add": [{"start", "end", "as_block", "type"}], "remove": [edit ids], "delete": [block ids],
+         "missing": [{"start", "end", "keep"}]}
 
     (the web app checks that shape). Raises Busy while the episode is being processed, and ProcessError when
     no change is left."""
@@ -369,9 +370,12 @@ def check_edits(db: sqlite3.Connection, episode_id: int, changes: dict) -> dict:
     deleted = [r["id"] for r in db.execute(
         f"SELECT id FROM segments WHERE by_hand = 1 AND id IN ({', '.join('?' * len(deleted))})",
         tuple(deleted))] if deleted else []
-    if not (types or added or removed or deleted):
+    kept = [{"start": round(max(0.0, m["start"]), 2), "end": round(min(ep["duration"] or 0.0, m["end"]), 2),
+             "keep": bool(m["keep"])} for m in changes.get("missing", [])
+            if min(ep["duration"] or 0.0, m["end"]) > max(0.0, m["start"])]
+    if not (types or added or removed or deleted or kept):
         raise ProcessError("nothing to change")
-    return {"types": types, "add": added, "remove": removed, "delete": deleted}
+    return {"types": types, "add": added, "remove": removed, "delete": deleted, "missing": kept}
 
 
 def queue_edits(db: sqlite3.Connection, episode_id: int, user_id: int | None, changes: dict) -> None:
@@ -446,6 +450,12 @@ def run_edit(ctx: Context, settings: Settings) -> None:
                                        (episode_id, a["start"], a["end"], ctx.job["requested_by"], time.time()))
                 for edit_id in changes["remove"]:
                     ctx.db.execute("DELETE FROM edits WHERE id = ? AND episode_id = ?", (edit_id, episode_id))
+                if changes.get("missing"):
+                    spans = missing.kept(_episode(ctx.db, episode_id))
+                    for m in changes["missing"]:
+                        spans = missing.keep(spans, m["start"], m["end"], m["keep"])
+                    ctx.db.execute("UPDATE episodes SET missing_kept = ? WHERE id = ?",
+                                   (json.dumps([list(k) for k in spans]), episode_id))
             with ctx.timer("repeats.rescan", count=1):
                 rescan(store, episode_id, params, heard=True)
             with ctx.timer("repeats.reports", count=1):
@@ -511,6 +521,6 @@ def timeline(db: sqlite3.Connection, episode_id: int, report: dict | None) -> di
     manual = [{"id": f"m{r['id']}", "edit": r["id"], "start": r["start"], "end": r["end"]}
               for r in db.execute("SELECT * FROM edits WHERE episode_id = ? ORDER BY start", (episode_id,))]
     said = [{"id": f"p{i}", **p} for i, p in enumerate(phrases.saved(ep))]
-    unsaid = [{"id": f"u{i}", **m} for i, m in enumerate(missing.saved(ep))]
+    unsaid = [{"id": f"u{i}", **m} for i, m in enumerate(missing.listing(ep))]
     return {"sections": sections, "manual": manual, "not_repeats": not_repeats, "phrases": said, "missing": unsaid}
 

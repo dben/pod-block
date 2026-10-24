@@ -29,8 +29,9 @@
     ...data.manual.map((m) => ({ ...m, manual: true, removed: false })),
     // Cut by the show's intro and outro phrases: shown, and changed only through the phrases.
     ...(data.phrases || []).map((p) => ({ ...p, byPhrase: true, value: p.type, saved: p.type, blocks: [], bumpers: [], own: [] })),
-    // Left out of the feed's transcript: shown, and turned off only in the show's settings.
-    ...(data.missing || []).map((m) => ({ ...m, byPhrase: true, value: m.type, saved: m.type, blocks: [], bumpers: [], own: [] })),
+    // Left out of the feed's transcript: cut, unless kept here.
+    ...(data.missing || []).map((m) => ({ ...m, byTranscript: true, value: m.type, saved: m.type, savedKept: m.kept,
+                                          blocks: [], bumpers: [], own: [] })),
   ];
   // False positives that play here: not on the timeline, only in a list of their own, to undo the flag.
   const falses = data.not_repeats.map((x) => ({ ...x, value: "ignored", saved: "ignored", bumpers: [] }));
@@ -91,17 +92,20 @@
   const toast = (text, kind) => window.podblock?.toast(text, { kind });
 
   const isNew = (s) => s.manual && s.isNew;
-  const isCut = (s) => !s.removed && !s.deleted && !(!s.manual && (s.value === "ignored" || s.value === "kept"));
+  const isCut = (s) => !s.removed && !s.deleted && !(s.byTranscript && s.kept)
+    && !(!s.manual && (s.value === "ignored" || s.value === "kept"));
   const allOwn = (s) => !s.manual && s.own.length > 0 && s.own.length === s.blocks.length;  // only blocks marked by hand
   function kind(s) {
     if (s.byPhrase) return s.type;
+    if (s.byTranscript) return s.kept ? "ignored" : "missing";
     if (s.manual) return s.removed ? "removed" : "manual";
     if (s.deleted) return "removed";
     if (s.value === "auto") return s.is_break ? "break" : "repeated";
     return s.value === "kept" ? "ignored" : s.value;
   }
   function name(s) {
-    if (s.byPhrase) return { intro: "Intro (phrase)", outro: "Outro (phrase)", missing: "Not in transcript" }[s.type];
+    if (s.byPhrase) return s.type === "intro" ? "Intro (phrase)" : "Outro (phrase)";
+    if (s.byTranscript) return s.kept ? "Kept" : "Not in transcript";
     if (s.manual) return isNew(s) ? "New section" : "Cut by hand";
     if (s.value === "auto") return s.is_break ? "Ad break" : "Repeat";
     return { intro: "Intro", outro: "Outro", show: "Local", kept: "Kept", ignored: "Not a repeat" }[s.value];
@@ -110,9 +114,13 @@
   // ---- what has changed -------------------------------------------------------
 
   function changes() {
-    const types = [], add = [], remove = [], del = [];
+    const types = [], add = [], remove = [], del = [], missing = [];
     for (const s of [...sections, ...falses]) {
       if (s.byPhrase) continue;
+      if (s.byTranscript) {
+        if (s.kept !== s.savedKept) missing.push({ start: s.start, end: s.end, keep: s.kept });
+        continue;
+      }
       if (isNew(s)) add.push({ start: s.start, end: s.end, as_block: !!s.asBlock, type: s.blockType || "show" });
       else if (s.manual && s.removed) remove.push(s.edit);
       else if (s.deleted) del.push(...s.own);
@@ -120,9 +128,12 @@
         types.push({ type: s.value, blocks: s.blocks, bumpers: s.bumpers.map((b) => b.block), start: s.start, end: s.end });
       }
     }
-    return { types, add, remove, delete: del };
+    return { types, add, remove, delete: del, missing };
   }
-  const unsaved = () => { const c = changes(); return c.types.length + c.add.length + c.remove.length + c.delete.length; };
+  const unsaved = () => {
+    const c = changes();
+    return c.types.length + c.add.length + c.remove.length + c.delete.length + c.missing.length;
+  };
 
   function refreshBar() {
     const n = unsaved();
@@ -194,8 +205,14 @@
     li.addEventListener("click", (e) => { if (!e.target.closest("button, select, input, label")) focusSection(s); });
     if (s.byPhrase) {
       li.append(h("div", { class: "tl-item-row" },
-        h("span", { class: "hint" }, s.type === "missing" ? "Not in the feed's transcript. Turn off in the show's settings."
-                                                          : `Heard “${s.phrase}”. Change it in the show's settings.`)));
+        h("span", { class: "hint" }, `Heard “${s.phrase}”. Change it in the show's settings.`)));
+    } else if (s.byTranscript) {
+      const changed = s.kept !== s.savedKept;
+      li.append(h("div", { class: "tl-item-row" },
+        editable ? h("button", { type: "button", class: "btn btn-ghost btn-xs", onclick: () => { s.kept = !s.kept; render(); } },
+          changed ? "Undo" : s.kept ? "Cut again" : "Don't cut this") : null,
+        h("span", { class: "hint" }, changed ? (s.kept ? "Will be put back" : "Will be cut")
+                                             : s.kept ? "Not in the feed's transcript, kept here" : "Not in the feed's transcript")));
     } else if (!s.manual) {
       const row = h("div", { class: "tl-item-row" }, allOwn(s) ? null : valueSelect(s));
       if (s.bumpers.length) row.append(h("span", { class: "hint" }, "Found from the bumpers around it"));
@@ -266,7 +283,7 @@
       }
       wave.append(s.region);
       s.label = h("div", { class: `tl-label k-${kind(s)}` },
-        !s.manual && !s.byPhrase && !allOwn(s) && editable ? valueSelect(s, true) : h("span", { class: "tl-label-text" }, name(s)),
+        !s.manual && !s.byPhrase && !s.byTranscript && !allOwn(s) && editable ? valueSelect(s, true) : h("span", { class: "tl-label-text" }, name(s)),
         h("button", { type: "button", class: "tl-chip", title: `${name(s)}, ${clock(s.start)}: click to zoom in`,
                       "aria-label": `${name(s)} at ${clock(s.start)}`, onclick: () => focusSection(s) },
           icon(KIND_ICONS[kind(s)] || KIND_ICONS.repeated)));
@@ -353,7 +370,7 @@
       for (const [band, b] of s.bands) {
         Object.assign(band.style, { left: `${xAt(b.start)}px`, width: `${Math.max(2, xAt(b.end) - xAt(b.start))}px` });
       }
-      const fullWidth = s.manual || s.byPhrase || !editable ? LABEL_W.text : LABEL_W.full;
+      const fullWidth = s.manual || s.byPhrase || s.byTranscript || !editable ? LABEL_W.text : LABEL_W.full;
       let placed = null;
       for (const [mode, width] of [["full", fullWidth], ["chip", LABEL_W.chip]]) {
         const row = rows.findIndex((taken) => free(taken, left, left + width));

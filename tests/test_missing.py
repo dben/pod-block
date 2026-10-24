@@ -71,3 +71,40 @@ def test_music_after_the_last_word_is_not_missing_but_an_ad_there_is():
     assert align(feed, timed(show, 0), duration=300).missing == []  # 60 s of music after the talk
     assert [(round(a), round(b)) for a, b in align(feed, timed(show, 0) + timed(ad, 245), duration=320).missing] \
         == [(240, 320)]
+
+
+def test_a_stretch_kept_by_hand_stays_kept_when_found_a_little_differently():
+    from podblock.app.missing import Fit, keep
+
+    kept = keep([], 200, 260, True)
+    assert cuts(Fit(1.0, missing=[(201.5, 259.0), (900, 960)]), kept) == [
+        {"type": "missing", "start": 900, "end": 960}]
+    assert keep(kept, 199, 258, False) == []
+
+
+def test_a_feed_lists_transcripts_in_its_newest_items(db):
+    from podblock.app.missing import has_feed_transcripts
+
+    db.execute("INSERT INTO podcasts (id, name) VALUES (1, 'Show')")
+    db.executemany("INSERT INTO episodes (guid, podcast_id, pub_ts, item_xml) VALUES (?, 1, ?, ?)",
+                   [(f"ep-{n}", n, "<item><title>A transcript of sorts</title></item>") for n in range(5)])
+    assert not has_feed_transcripts(db, 1)
+    db.execute("UPDATE episodes SET item_xml = '<item><podcast:transcript url=\"x.vtt\" type=\"text/vtt\"/></item>' "
+               "WHERE guid = 'ep-4'")
+    assert has_feed_transcripts(db, 1)
+
+
+def test_the_timeline_lists_stretches_cut_and_kept_and_saves_a_keep(db):
+    from podblock.app import processing
+
+    db.execute("INSERT INTO podcasts (id, name) VALUES (1, 'Show')")
+    db.execute("INSERT INTO episodes (id, guid, podcast_id, state, duration, missing_cuts, missing_kept) "
+               "VALUES (1, 'ep-1', 1, 'ready', 1000, ?, ?)",
+               ('[{"type": "missing", "start": 200, "end": 260}]', "[[900, 960]]"))
+    db.commit()
+
+    listed = processing.timeline(db, 1, None)["missing"]
+    assert [(m["start"], m["kept"]) for m in listed] == [(200, False), (900, True)]
+    changes = processing.check_edits(db, 1, {"missing": [{"start": 200, "end": 260, "keep": True},
+                                                         {"start": 990, "end": 1200, "keep": False}]})
+    assert changes["missing"] == [{"start": 200, "end": 260, "keep": True}, {"start": 990, "end": 1000, "keep": False}]

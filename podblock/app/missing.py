@@ -18,12 +18,18 @@ lined up word for word (`align`):
   its break sting before a short notice. Only a transcript known to leave
   ads out says so: one with no missing stretch may well have the ads in it.
 
+The download's captions are served in its place, being timed to it
+(captions.py); the feed's stay on the episode to check against.
+
 A transcript that hardly lines up at all (another edit of the episode, or
 another language) gives nothing.
 
 Missing stretches are saved on the episode (`episodes.missing_cuts`) each
 time it is cut, as [{type: "missing", start, end}], and cut with the
-repeats; in chapters they read as ad breaks.
+repeats; in chapters they read as ad breaks. One kept on the timeline is
+saved as its span (`episodes.missing_kept`); a stretch found later that is
+mostly that span is kept too, as the two transcripts can line up a little
+differently each time.
 """
 
 from __future__ import annotations
@@ -47,6 +53,8 @@ MIN_SEC = 20.0  # the shortest missing stretch
 MIN_WORDS = 15  # words heard in a stretch before it can count as missing by its words alone
 STRAY = 0.15  # share of a stretch's heard words the feed's transcript may have there and still miss it
 SPOKEN_JOIN = 10.0  # lined-up words this close make one stretch of the show
+RECENT = 20  # the feed's newest items looked at for transcripts
+KEPT_SHARE = 0.5  # a stretch this much inside one kept by hand is kept
 
 Word = tuple[float, float, str]
 
@@ -150,34 +158,64 @@ def enabled(db: sqlite3.Connection, settings: Settings, podcast_id: int | None) 
 
 
 def has_feed_transcripts(db: sqlite3.Connection, podcast_id: int | None) -> bool:
-    """Whether any of the show's episodes came with a transcript from its feed."""
+    """Whether the show's feed lists transcripts: in one of its newest RECENT items, or saved from one."""
+    if db.execute("SELECT 1 FROM (SELECT item_xml FROM episodes WHERE podcast_id = ? ORDER BY pub_ts DESC LIMIT ?) "
+                  "WHERE item_xml LIKE '%:transcript %' LIMIT 1", (podcast_id, RECENT)).fetchone():
+        return True
     return db.execute("SELECT 1 FROM episodes e, json_each(e.transcripts) t WHERE e.podcast_id = ? "
                       "AND json_extract(t.value, '$.made') IS NULL LIMIT 1", (podcast_id,)).fetchone() is not None
 
 
 def feed_transcript(ep: sqlite3.Row) -> dict | None:
-    """The episode's transcript from its feed, if it has one."""
-    return next((t for t in chapters.transcripts(ep) if not t.get("made")), None)
+    """The episode's transcript from its feed, if it has one: served, or kept for the check."""
+    return next((t for t in chapters.transcripts(ep, reference=True) if not t.get("made")), None)
+
+
+def heard(ep: sqlite3.Row) -> bool:
+    """Whether the episode has captions with each word's time."""
+    return any(t.get("made") and t.get("words") for t in chapters.transcripts(ep))
 
 
 def needs_words(ep: sqlite3.Row) -> bool:
     """Whether the episode has a feed transcript and nothing heard to check it against yet."""
-    t = feed_transcript(ep)
-    return t is not None and not t.get("words")
+    return feed_transcript(ep) is not None and not heard(ep)
 
 
 def fit(db: sqlite3.Connection, settings: Settings, ep: sqlite3.Row) -> Fit | None:
     """How the episode's feed transcript lines up with what was heard in its download; None when the check is
     off for the show, or there is nothing to compare."""
-    t = feed_transcript(ep)
-    if t is None or not t.get("words") or not ep["duration"] or not enabled(db, settings, ep["podcast_id"]):
+    if (feed_transcript(ep) is None or not heard(ep) or not ep["duration"]
+            or not enabled(db, settings, ep["podcast_id"])):
         return None
     return align(phrases.feed_words(ep), phrases.words(ep), ep["duration"])
 
 
-def cuts(found: Fit | None) -> list[dict]:
-    """The stretches to cut, as saved on the episode."""
-    return [{"type": MISSING, "start": a, "end": b} for a, b in (found.missing if found else [])]
+def cuts(found: Fit | None, kept: list[tuple[float, float]] = ()) -> list[dict]:
+    """The stretches to cut, as saved on the episode: those not `kept`."""
+    return [{"type": MISSING, "start": a, "end": b} for a, b in (found.missing if found else [])
+            if not any(_overlap(a, b, k) >= KEPT_SHARE * (b - a) for k in kept)]
+
+
+def _overlap(a: float, b: float, span) -> float:
+    return max(0.0, min(b, span[1]) - max(a, span[0]))
+
+
+def kept(ep: sqlite3.Row) -> list[tuple[float, float]]:
+    """The stretches kept on the episode's timeline."""
+    return [tuple(k) for k in json.loads(ep["missing_kept"] or "[]")]
+
+
+def keep(spans: list[tuple[float, float]], start: float, end: float, on: bool) -> list[tuple[float, float]]:
+    """`spans` (kept stretches) with start-end kept, or no longer kept."""
+    others = [k for k in spans if _overlap(start, end, k) <= 0]
+    return sorted([*others, (start, end)]) if on else others
+
+
+def listing(ep: sqlite3.Row) -> list[dict]:
+    """The episode's stretches for its timeline: those cut, and those kept."""
+    return sorted([{**c, "kept": False} for c in saved(ep)]
+                  + [{"type": MISSING, "start": a, "end": b, "kept": True} for a, b in kept(ep)],
+                  key=lambda m: m["start"])
 
 
 def spoken(found: Fit | None) -> list[tuple[float, float]]:
@@ -198,7 +236,7 @@ def downloaded(db: sqlite3.Connection, podcast_id: int) -> list[int]:
 def requeue(db: sqlite3.Connection, podcast_id: int, user_id: int | None, note: str) -> int:
     """Queue the show's ready episodes that have been checked to be cut again. Returns how many were queued."""
     rows = db.execute("SELECT * FROM episodes WHERE podcast_id = ? AND state = ?", (podcast_id, READY)).fetchall()
-    ids = [ep["id"] for ep in rows if (feed_transcript(ep) or {}).get("words")]
+    ids = [ep["id"] for ep in rows if feed_transcript(ep) is not None and heard(ep)]
     return len(enqueue(db, "process", ids, user_id, skip_ready=False, payload=json.dumps({"recut": True}),
                        note=note))
 

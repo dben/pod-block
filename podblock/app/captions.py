@@ -27,9 +27,11 @@ downloads page's Transcribe again): the new captions then replace whatever it
 had, its feed's transcripts included.
 
 For a show whose feed transcripts are checked for missing ads (missing.py),
-an episode with a feed transcript is transcribed too. The feed's transcript
-stays the one served; what was heard is saved as its word times (`words`),
-and the episode is cut again with what the check finds.
+an episode with a feed transcript is transcribed too, and its captions are
+served in place of the feed's: those were timed before the ads went in, so
+they run behind the download after each ad. The feed's transcripts stay on
+the episode, unserved (`reference`), for the check, and the episode is cut
+again with what it finds.
 
 When the service has speakers turned on, it also says who speaks when; those
 turns are saved beside the captions (`speakers.py`) for `podblock speakers`
@@ -353,9 +355,6 @@ def run(ctx: Context, settings: Settings) -> None:
                 {"language": language} if language else None,
                 patience=BUSY_PATIENCE if settings.caption_workers > 1 else 0.0, timer=ctx.timer)
     stem = settings.media.transcripts(ep)
-    if check:
-        _save_heard(ctx, ep, stem, heard)
-        return
     path = stem.with_name(stem.name + ".captions.vtt")
     _write(path, webvtt(cues(heard["segments"])))
     timed = stem.with_name(stem.name + ".words.json")  # each word's time, for finding intro and outro phrases
@@ -364,41 +363,30 @@ def run(ctx: Context, settings: Settings) -> None:
              **({"language": heard["language"]} if heard["language"] else {})}
     if heard["speakers"] is not None:
         saved["speakers"] = str(speakers.save(stem, heard["speakers"], heard["options"]))
+    before = json.loads(ep["transcripts"] or "[]")
+    # A checked show's feed transcripts stay, unserved, to check what was heard against (missing.py).
+    reference = [{**t, "reference": True} for t in before if not t.get("made")] if (
+        check or missing.enabled(ctx.db, settings, ep["podcast_id"])) else []
     with transaction(ctx.db):
-        now = ctx.db.execute("SELECT original_path, transcripts FROM episodes WHERE id = ?", (episode_id,)).fetchone()
-        before = json.loads(ep["transcripts"] or "[]")
+        now = ctx.db.execute("SELECT state, original_path, transcripts FROM episodes WHERE id = ?",
+                             (episode_id,)).fetchone()
         if (now is None or now["original_path"] != ep["original_path"]
                 or json.loads(now["transcripts"] or "[]") != before):  # cleaned up meanwhile, or the feed's were read
             _forget([saved], keep=json.loads(now["transcripts"] or "[]") if now else [])
             return
-        ctx.db.execute("UPDATE episodes SET transcripts = ? WHERE id = ?", (json.dumps([saved]), episode_id))
-    _forget(before, keep=[saved])  # what these replace
-    log.info("captions for episode %d: %d segments, %s%s", episode_id, len(heard["segments"]),
+        ctx.db.execute("UPDATE episodes SET transcripts = ? WHERE id = ?",
+                       (json.dumps([saved, *reference]), episode_id))
+    _forget(before, keep=[saved, *reference])  # what these replace
+    log.info("captions for episode %d: %d segments, %s%s%s", episode_id, len(heard["segments"]),
              heard["language"] or "language unknown",
-             f", {len({t[2] for t in heard['speakers']})} speakers" if heard["speakers"] else "")
-    phrases.requeue(ctx.db, ep["podcast_id"], ctx.job["requested_by"], [episode_id],
-                    note="Waiting to be cut again: an intro or outro phrase was heard")
-
-
-def _save_heard(ctx: Context, ep: sqlite3.Row, stem: Path, heard: dict) -> None:
-    """Save what was heard as the word times of the episode's feed transcript, and cut it again to fit."""
-    timed = stem.with_name(stem.name + ".heard.json")
-    _write(timed, json.dumps([w for seg in heard["segments"] for w in _words(seg)], separators=(",", ":")))
-    with transaction(ctx.db):
-        now = ctx.db.execute("SELECT state, original_path, transcripts FROM episodes WHERE id = ?",
-                             (ep["id"],)).fetchone()
-        if (now is None or now["original_path"] != ep["original_path"]
-                or now["transcripts"] != ep["transcripts"]):  # cleaned up, or transcribed again, meanwhile
-            timed.unlink(missing_ok=True)
-            return
-        feed = missing.feed_transcript(ep)
-        saved = [{**t, "words": str(timed)} if t["path"] == feed["path"] else t
-                 for t in json.loads(ep["transcripts"])]
-        ctx.db.execute("UPDATE episodes SET transcripts = ? WHERE id = ?", (json.dumps(saved), ep["id"]))
-    log.info("checking episode %d's transcript: %d segments heard", ep["id"], len(heard["segments"]))
-    if now["state"] == READY:
-        enqueue(ctx.db, "process", [ep["id"]], ctx.job["requested_by"], skip_ready=False,
+             f", {len({t[2] for t in heard['speakers']})} speakers" if heard["speakers"] else "",
+             ", checked against the feed's transcript" if reference else "")
+    if reference and now["state"] == READY:
+        enqueue(ctx.db, "process", [episode_id], ctx.job["requested_by"], skip_ready=False,
                 payload=json.dumps({"recut": True}), note="Waiting to be cut again: its transcript was checked")
+    else:
+        phrases.requeue(ctx.db, ep["podcast_id"], ctx.job["requested_by"], [episode_id],
+                        note="Waiting to be cut again: an intro or outro phrase was heard")
 
 
 def _forget(transcripts: list[dict], keep: list[dict]) -> None:

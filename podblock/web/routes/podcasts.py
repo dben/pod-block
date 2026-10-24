@@ -172,8 +172,9 @@ def show_podcast(request: Request, podcast_id: int, view: str = "active", q: str
         intro, outro = phrases.of_podcast(db, podcast_id)
         context.update(intro_phrases=params.get("intro", "\n".join(intro)),
                        outro_phrases=params.get("outro", "\n".join(outro)),
-                       transcriber=bool(request.app.state.settings.whisper_url),
-                       transcript_check=missing.enabled(db, request.app.state.settings, podcast_id))
+                       transcript_check=missing.enabled(db, request.app.state.settings, podcast_id),
+                       show_check=bool(request.app.state.settings.whisper_url)
+                       and (missing.has_feed_transcripts(db, podcast_id) or pod["transcript_check"]))
     return page(request, "podcast.html", title=pod["name"], nav="podcasts", user=user,
                 cut_sec=library.cut_seconds(db, podcast_id),
                 subscribed=library.subscribed(db, user["id"], podcast_id),

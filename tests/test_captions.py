@@ -227,7 +227,7 @@ def test_transcribing_again_replaces_the_feeds_transcript_and_earlier_captions(d
     assert all(Path(f).exists() for f in files) and len(service.model.calls) == 2
 
 
-def test_a_feed_transcript_is_checked_against_what_is_heard_and_stays_the_one_served(db, setup, service, tmp_path):
+def test_a_checked_feed_transcript_is_kept_to_check_and_the_captions_served(db, setup, service, tmp_path):
     from podblock.app import missing, phrases
     feeds = tmp_path / "media/transcripts/feed.srt"
     feeds.parent.mkdir(parents=True)
@@ -239,16 +239,24 @@ def test_a_feed_transcript_is_checked_against_what_is_heard_and_stays_the_one_se
     assert captions.queue(db, setup, [1], None) == [1]
     assert worker.run_job(setup, db, jobs.claim(db, kinds=(captions.KIND,))) == "done"
 
-    (saved,) = chapters.transcripts(episode(db))
-    assert saved["path"] == str(feeds) and Path(saved["words"]).exists()  # the feed's, with what was heard
+    (served,) = chapters.transcripts(episode(db))
+    assert served["made"] == "whisper"  # timed to the download, ads and all
+    (_, kept) = chapters.transcripts(episode(db), reference=True)
+    assert kept == {"format": "srt", "path": str(feeds), "reference": True} and feeds.exists()
     assert phrases.feed_words(episode(db))[0][2] == "the"
+    assert "The feed" not in chapters.captions(episode(db))
     assert phrases.words(episode(db))[0] == (1.0, 1.3, "an")
     queued = db.execute("SELECT kind, episode_id, payload FROM jobs WHERE state = 'queued'").fetchall()
     assert [tuple(r) for r in queued] == [("process", 1, '{"recut": true}')]
     assert captions.queue(db, setup, [1], None) == []  # checked once
 
     db.execute("UPDATE podcasts SET transcript_check = 0")
+    db.commit()
     assert missing.fit(db, setup, episode(db)) is None  # turned off
+
+    from podblock.app import retention
+    retention.clear(db, episode(db))
+    assert not feeds.exists()  # the feed's goes with the download too
 
 
 def test_the_downloads_page_queues_episodes_to_transcribe_again(db, setup):
