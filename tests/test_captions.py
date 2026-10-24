@@ -391,3 +391,27 @@ def test_speaker_models_land_whole_and_once_in_a_shared_folder(tmp_path, monkeyp
                                                        found.embedding.name]  # no temporary files left
     module.Speakers(folder, threads=1)  # a second replica finds them there
     assert len(fetched) == 2
+
+
+def test_a_captions_job_times_sending_waiting_transcribing_and_speakers(db, setup, service):
+    service.module.speakers = FakeSpeakers()
+    captions.queue(db, setup, [1], None)
+    worker.run_queue(setup)
+    rows = {r["step"]: r for r in db.execute("SELECT * FROM timings WHERE kind = 'captions'")}
+    assert set(rows) == {"captions.upload", "captions.transcribe", "captions.speakers", "job"}
+    assert rows["captions.upload"]["count"] == len(b"not really audio")
+    assert rows["captions.transcribe"]["audio"] == rows["captions.speakers"]["audio"] == 20.0
+
+
+def test_time_spent_on_busy_replicas_counts_as_waiting(service, tmp_path):
+    from podblock.timing import Timer
+
+    audio = tmp_path / "a.mp3"
+    audio.write_bytes(b"audio")
+    service.module.turn.acquire()
+    later(0.3, service.module.turn.release)
+    timer = Timer()
+    captions.ask(Steps(), service.url, "transcribe", audio, patience=5.0, timer=timer)
+    rows = {r["step"]: r for r in timer.rows}
+    assert rows["captions.wait"]["count"] > 1 and rows["captions.wait"]["seconds"] >= 0.25  # tries
+    assert set(rows) == {"captions.upload", "captions.wait", "captions.transcribe"}

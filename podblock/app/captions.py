@@ -45,6 +45,7 @@ from pathlib import Path
 import requests
 import urllib3
 
+from ..timing import Timer
 from . import chapters, phrases, speakers
 from .config import Settings
 from .db import transaction
@@ -185,18 +186,25 @@ def _language(db: sqlite3.Connection, podcast_id: int | None) -> str | None:
     return code if re.fullmatch(r"[a-z]{2,3}", code) else None
 
 
-def ask(ctx, url: str, what: str, audio: Path, params: dict | None = None, patience: float = 0.0) -> dict:
+def ask(ctx, url: str, what: str, audio: Path, params: dict | None = None, patience: float = 0.0,
+        timer: Timer | None = None) -> dict:
     """Send the audio to the service's `what` ("transcribe" or "speakers") and read back what it found:
     {language, duration, segments, speakers, options}, the last two when it says who speaks when. `ctx` is told
     each step and how far through (a job's Context, or anything with `step` and `progress`).
 
     For `patience` seconds, a busy replica is hung up on and the audio sent again a little later, which the
-    Service may give to another; after that it waits its turn. Cut off part way, it asks once more."""
-    give_up = time.monotonic() + patience
-    wait, retried = BUSY_WAIT[0], False
+    Service may give to another; after that it waits its turn. Cut off part way, it asks once more.
+
+    `timer` is told, once it is done, how long sending the audio took (the last time), how long it waited for a
+    transcriber (every try before, and waiting its turn), and how long each of the service's steps took."""
+    give_up = start = time.monotonic()
+    give_up += patience
+    wait, retried, tries = BUSY_WAIT[0], False, 0
     while True:
+        tries += 1
+        took: dict[str, float] = {}
         try:
-            return _ask(ctx, url, what, audio, params, leave_if_busy=time.monotonic() < give_up)
+            found = _ask(ctx, url, what, audio, params, leave_if_busy=time.monotonic() < give_up, took=took)
         except _Busy:
             ctx.step("Waiting for a free transcriber")
             _pause(ctx, wait * random.uniform(1, 1.5))  # spread out, so jobs turned away together don't collide again
@@ -208,6 +216,22 @@ def ask(ctx, url: str, what: str, audio: Path, params: dict | None = None, patie
             log.warning("%s; asking again", e)
             ctx.step("Asking the transcriber again")
             _pause(ctx, RETRY_AFTER)
+        else:
+            if timer is not None:
+                _report(timer, took, found["duration"], audio, tries, time.monotonic() - start)
+            return found
+
+
+def _report(timer: Timer, took: dict[str, float], duration: float | None, audio: Path, tries: int,
+            total: float) -> None:
+    """What the last try's steps took, and the rest of `total` as waiting for a transcriber."""
+    timer.add("captions.upload", took.get("upload", 0.0), count=audio.stat().st_size)
+    waited = total - sum(took.values()) + took.get("wait", 0.0)
+    if tries > 1 or took.get("wait"):
+        timer.add("captions.wait", max(0.0, waited), count=tries)
+    for step in ("transcribe", "speakers"):
+        if step in took:
+            timer.add(f"captions.{step}", took[step], audio=duration)
 
 
 def _pause(ctx, seconds: float) -> None:
@@ -233,13 +257,25 @@ def _lines(resp: requests.Response):
         yield rest  # cut short: every whole line ends in a newline
 
 
-def _ask(ctx, url: str, what: str, audio: Path, params: dict | None, leave_if_busy: bool) -> dict:
+def _ask(ctx, url: str, what: str, audio: Path, params: dict | None, leave_if_busy: bool,
+         took: dict[str, float]) -> dict:
+    """One try. `took` is given the seconds each part took: upload, wait (its turn), transcribe, speakers."""
     found: dict = {"language": None, "duration": None, "segments": [], "speakers": None, "options": None}
     done = False
+    phase, since = "upload", time.monotonic()
+
+    def then(next_phase: str) -> None:
+        nonlocal phase, since
+        now = time.monotonic()
+        took[phase] = took.get(phase, 0.0) + now - since
+        phase, since = next_phase, now
+
     try:
         with audio.open("rb") as body, requests.post(
                 f"{url}/{what}", data=body, params=params, headers={"Content-Type": "application/octet-stream"},
                 stream=True, timeout=TIMEOUT) as resp:
+            working = "transcribe" if what == "transcribe" else "speakers"
+            then(working)  # the answer starts once the service has the whole upload
             resp.raise_for_status()
             ctx.step("Transcribing" if what == "transcribe" else "Finding who speaks when")
             for raw in _lines(resp):
@@ -252,16 +288,24 @@ def _ask(ctx, url: str, what: str, audio: Path, params: dict | None, leave_if_bu
                 if line.get("waiting"):
                     if leave_if_busy:
                         raise _Busy()
+                    phase = "wait" if phase == working and not found["duration"] else phase  # since the upload
                     ctx.progress(None)  # also notices a cancel
-                elif "error" in line:
+                    continue
+                if phase == "wait":  # its turn came: said so, or (an older service) seen by its first line
+                    then(working)
+                if line.get("working"):
+                    continue
+                if "error" in line:
                     raise CaptionError(f"the transcriber failed: {line['error']}")
                 elif line.get("done"):
+                    then("done")
                     done = True
                 elif "start" in line:
                     found["segments"].append(line)
                     duration = found["duration"]
                     ctx.progress(min(1.0, line["end"] / duration) if duration else None)
                 elif line.get("step") == "speakers" and what == "transcribe":  # a second step, after the words
+                    then("speakers")
                     ctx.step("Finding who speaks when")
                 elif "progress" in line:
                     ctx.progress(line["progress"])
@@ -296,7 +340,7 @@ def run(ctx: Context, settings: Settings) -> None:
     language = _language(ctx.db, ep["podcast_id"])
     heard = ask(ctx, settings.whisper_url, "transcribe", Path(ep["original_path"]),
                 {"language": language} if language else None,
-                patience=BUSY_PATIENCE if settings.caption_workers > 1 else 0.0)
+                patience=BUSY_PATIENCE if settings.caption_workers > 1 else 0.0, timer=ctx.timer)
     stem = settings.media.transcripts(ep)
     path = stem.with_name(stem.name + ".captions.vtt")
     _write(path, webvtt(cues(heard["segments"])))

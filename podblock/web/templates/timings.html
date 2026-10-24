@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% macro amount(n, unit) -%}
+{%- if n is none %}{% elif unit == 'bytes' %}{{ n|filesize }}{% else %}{{ '{:,.0f}'.format(n) }} {{ unit }}{% endif -%}
+{%- endmacro %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Timings</h1>
+    <p class="muted">How long each step of the jobs takes. Kept {{ keep_days }} days.</p>
+  </div>
+  <a class="btn btn-ghost btn-sm" href="/timings.csv?days={{ days }}" download>Download CSV</a>
+</div>
+
+<div class="toolbar">
+  <nav class="tabs" aria-label="Period">
+    {% for d, label in periods.items() %}
+    <a href="/timings{% if d != 30 %}?days={{ d }}{% endif %}" {% if d == days %}aria-current="page"{% endif %}>{{ label }}</a>
+    {% endfor %}
+  </nav>
+</div>
+
+{% if not kinds %}
+<p class="card muted">No jobs have run in the last {{ periods[days] }}.</p>
+{% endif %}
+
+{% for k in kinds %}
+<section class="card timings-card">
+  <h2>{{ k.label }}</h2>
+  <div class="table-scroll">
+    <table class="stats-table">
+      <thead>
+        <tr><th scope="col">Step</th><th scope="col">Runs</th><th scope="col">Median</th><th scope="col">Slowest 10%</th>
+          <th scope="col">Per hour of audio</th><th scope="col">Typical</th><th scope="col">Total</th></tr>
+      </thead>
+      <tbody>
+        {% for s in k.steps %}
+        <tr{% if s.part %} class="stats-part"{% endif %}>
+          <th scope="row">{{ s.label }}</th>
+          <td>{{ '{:,}'.format(s.runs) }}</td>
+          <td>{{ s.median|took }}</td>
+          <td>{{ s.p90|took }}</td>
+          <td>{% if s.per_hour is not none %}{{ s.per_hour|took }}{% endif %}</td>
+          <td>{{ amount(s.count, s.unit) }}</td>
+          <td>{{ s.total|took }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endfor %}
+
+{% if recent %}
+<h2 class="group-title">Latest jobs</h2>
+<ul class="job-list timings-list">
+  {% for r in recent %}
+  <li class="card">
+    <details class="timings-job">
+      <summary>
+        <span class="job-title">{{ r.label }}{% if r.job.title %}: {{ r.job.title }}{% endif %}</span>
+        <span class="muted">{% if r.whole is not none %}{{ r.whole|took }}{% else %}{{ (r.job.state or 'gone')|capitalize }}{% endif %} · {{ r.job.at|ago }}</span>
+      </summary>
+      <div class="table-scroll">
+      <table class="stats-table">
+        <tbody>
+          {% for s in r.steps %}
+          <tr{% if s.part %} class="stats-part"{% endif %}>
+            <th scope="row">{{ s.label }}</th>
+            <td>{{ s.seconds|took }}</td>
+            <td>{{ amount(s.count, s.unit) }}</td>
+            <td>{% if s.audio %}{{ s.audio|clock }} of audio{% endif %}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      </div>
+    </details>
+  </li>
+  {% endfor %}
+</ul>
+{% endif %}
+{% endblock %}

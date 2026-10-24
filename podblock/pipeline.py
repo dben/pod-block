@@ -21,6 +21,7 @@ from .matcher import MatchParams, common_runs
 from .outro import music_bed_outro
 from .report import MIN_SECTION_SEC, build_sections, skipped
 from .store import BUMPER, BUMPER_IN, BUMPER_OUT, IGNORED, KEPT, SegmentMatch, Store, transaction
+from .timing import Timer
 
 log = logging.getLogger(__name__)
 
@@ -211,13 +212,15 @@ def comparison_set(store: Store, episode_id: int, same: int = COMPARE_SAME, othe
 
 def find_common_blocks(store: Store, episode_ids: list[int], params: MatchParams,
                        same: int = COMPARE_SAME, other: int = COMPARE_OTHER,
-                       only_among_given: bool = False, skip: frozenset[int] | set[int] = frozenset()) -> int:
+                       only_among_given: bool = False, skip: frozenset[int] | set[int] = frozenset(),
+                       timer: Timer | None = None) -> int:
     """Compare each episode with its comparison set and store new common blocks.
 
     Returns how many blocks were added. With `only_among_given`, the given
     episodes are only compared with each other; episodes in `skip` are never
-    compared with.
+    compared with. `timer` is told how long each step takes, as `repeats.*`.
     """
+    timer = timer or Timer()
     fps: dict[int, Fingerprint] = {}
 
     def load(ep_id: int) -> Fingerprint:
@@ -232,36 +235,49 @@ def find_common_blocks(store: Store, episode_ids: list[int], params: MatchParams
             pairs.add(tuple(sorted((ep_id, other_id))))
     involved = targets | {e for pair in pairs for e in pair}
 
+    todo = [pair for pair in sorted(pairs) if not store.was_compared(*pair)]
+    with timer("repeats.load", count=0) as step:  # the rest are loaded as rescans need them
+        for ep_id in sorted({e for pair in todo for e in pair}):
+            load(ep_id)
+            step["count"] += 1
     candidates: list[tuple[int, float, float, int]] = []  # (episode, start, end, hits)
-    for a_id, b_id in sorted(pairs):
-        if store.was_compared(a_id, b_id):
-            continue
-        fa, fb = load(a_id), load(b_id)
-        runs = common_runs(fa.hashes, fa.times, fb.hashes, fb.times, params)
-        log.info("episodes %d vs %d: %d shared blocks", a_id, b_id, len(runs))
-        for r in runs:
-            candidates.append((a_id, frames_to_seconds(r.a_start), frames_to_seconds(r.a_end), r.hits))
-        store.mark_compared(a_id, b_id)
+    with timer("repeats.compare", count=len(todo)) as step:
+        for a_id, b_id in todo:
+            fa, fb = load(a_id), load(b_id)
+            runs = common_runs(fa.hashes, fa.times, fb.hashes, fb.times, params)
+            log.info("episodes %d vs %d: %d shared blocks", a_id, b_id, len(runs))
+            for r in runs:
+                candidates.append((a_id, frames_to_seconds(r.a_start), frames_to_seconds(r.a_end), r.hits))
+            store.mark_compared(a_id, b_id)
+        step["detail"] = {"pairs": len(pairs), "candidates": len(candidates)}
 
     # Longest first, so a long shared block is stored whole and the shorter
     # pieces of it found in other pairs are recognised as already known.
     added = 0
-    for ep_id, start, end, _ in sorted(candidates, key=lambda c: c[1] - c[2]):
-        piece = load(ep_id).slice(start, end)
-        for gap_start, gap_end in store.uncovered(piece, params):
-            if gap_end - gap_start < params.min_length_sec:
-                continue
-            store.add_segment(piece.slice(gap_start, gap_end), ep_id,
-                              start + gap_start, start + gap_end)
-            added += 1
+    with timer("repeats.add") as step:
+        for ep_id, start, end, _ in sorted(candidates, key=lambda c: c[1] - c[2]):
+            piece = load(ep_id).slice(start, end)
+            for gap_start, gap_end in store.uncovered(piece, params):
+                if gap_end - gap_start < params.min_length_sec:
+                    continue
+                store.add_segment(piece.slice(gap_start, gap_end), ep_id,
+                                  start + gap_start, start + gap_end)
+                added += 1
+        step["count"] = added
 
     # New blocks may also play in the episodes compared against.
-    for ep_id in sorted(involved if added else targets):
-        rescan(store, ep_id, params, load(ep_id), heard=ep_id in targets)
-    split_segments(store, params.min_length_sec)
-    drop_nested_blocks(store)
-    prune_short_blocks(store)
-    retag_bumpers(store)
+    rescanned = sorted(involved if added else targets)
+    with timer("repeats.rescan", count=len(rescanned)):
+        for ep_id in rescanned:
+            rescan(store, ep_id, params, load(ep_id), heard=ep_id in targets)
+    with timer("repeats.split") as step:
+        step["count"] = split_segments(store, params.min_length_sec)
+    with timer("repeats.nested") as step:
+        step["count"] = drop_nested_blocks(store)
+    with timer("repeats.short") as step:
+        step["count"] = prune_short_blocks(store)
+    with timer("repeats.bumpers"):
+        retag_bumpers(store)
     return added
 
 

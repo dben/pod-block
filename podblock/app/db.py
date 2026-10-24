@@ -233,6 +233,23 @@ MIGRATIONS = [
     ALTER TABLE podcasts ADD COLUMN outro_phrases TEXT;  -- JSON list
     ALTER TABLE episodes ADD COLUMN phrase_cuts TEXT;  -- JSON list of {type, start, end, phrase}, as last cut
     """,
+    # 17: how long each step of each job took, for the timings page (timings.py)
+    """
+    CREATE TABLE timings (
+        id INTEGER PRIMARY KEY,
+        job_id INTEGER REFERENCES jobs(id) ON DELETE CASCADE,
+        kind TEXT NOT NULL,  -- the job's kind; `recut` for a process job cutting a ready episode again
+        step TEXT NOT NULL,  -- download, fingerprint, repeats.compare, ... (timings.STEPS)
+        episode_id INTEGER REFERENCES episodes(id) ON DELETE SET NULL,
+        seconds REAL NOT NULL,
+        audio REAL,  -- seconds of audio the step worked on
+        count INTEGER,  -- what it worked through: bytes, pairs, episodes, blocks (timings.STEPS says which)
+        detail TEXT,  -- JSON, anything else worth knowing
+        at REAL NOT NULL  -- when the job finished
+    );
+    CREATE INDEX timings_at ON timings(at);
+    CREATE INDEX timings_job ON timings(job_id);
+    """,
 ]
 
 

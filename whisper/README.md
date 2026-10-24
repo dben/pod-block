@@ -179,6 +179,7 @@ The answer is one JSON object per line:
 
 ```
 {"waiting": true}                                   another episode is being transcribed
+{"working": true}                                   its turn has come
 {"language": "en", "duration": 3605.2}              the audio is read
 {"start": 1.2, "end": 4.8, "text": " Hello there", "words": [[1.2, 1.5, " Hello"], [1.5, 1.9, " there"]]}
 {"step": "speakers"}                                with WHISPER_SPEAKERS: who speaks when

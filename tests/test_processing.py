@@ -2,6 +2,7 @@ import json
 import re
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import numpy as np
@@ -1191,3 +1192,86 @@ def test_a_download_queues_captions_and_a_missing_transcriber_fails_only_them(en
     assert {r["kind"] for r in rows[1:]} == {"captions"} and len(rows) > 1
     assert all(r["state"] == "failed" and "couldn't reach the transcriber" in r["error"] for r in rows[1:])
     assert episode(env, "ep-5")["state"] == "ready"
+
+
+# ---- timings ---------------------------------------------------------------------
+
+def timed(env, kind=None):
+    rows = env.db.execute("SELECT * FROM timings" + (" WHERE kind = ?" if kind else "") + " ORDER BY id",
+                          (kind,) if kind else ()).fetchall()
+    return rows
+
+
+def test_each_step_of_a_job_is_timed_and_recuts_are_told_apart(env):
+    job = processed(env)
+    rows = timed(env, "process")
+    steps = [r["step"] for r in rows]
+    assert {r["job_id"] for r in rows} == {job["id"]}
+    for step in ("download", "fingerprint", "repeats.wait", "repeats.load", "repeats.compare", "repeats.add",
+                 "repeats.rescan", "repeats.split", "repeats.nested", "repeats.short", "repeats.bumpers",
+                 "repeats.reports", "repeats", "cut", "waveform", "job"):
+        assert step in steps, step
+    assert steps[-1] == "job"
+    by_step = {r["step"]: r for r in rows}
+    group = steps.count("download")  # the episode and the ones that came along
+    assert group > 1 and steps.count("cut") == group and by_step["repeats"]["count"] == group
+    assert by_step["repeats.compare"]["count"] >= 1 and by_step["repeats.add"]["count"] >= 1
+    assert all(r["audio"] > 0 for r in rows if r["step"] in ("fingerprint", "cut", "waveform"))
+    assert all(r["count"] > 0 for r in rows if r["step"] == "download")  # bytes
+    assert json.loads(by_step["repeats"]["detail"])["added"] == by_step["repeats.add"]["count"]
+    whole = [r["seconds"] for r in rows if "." not in r["step"] and r["step"] != "job"]  # parts are within these
+    assert sum(whole) <= by_step["job"]["seconds"] + 0.01
+
+    jobs.enqueue(env.db, "process", [env.ids["ep-3"]], None, skip_ready=False, payload=json.dumps({"recut": True}))
+    worker.run_queue(env.settings)
+    recuts = {r["step"] for r in timed(env, "recut")}  # the download and fingerprint are there already
+    assert "job" in recuts and "repeats" in recuts and not recuts & {"download", "fingerprint"}
+
+
+def test_a_failed_job_keeps_the_steps_it_finished(env, monkeypatch):
+    env.cdn.fail |= set(env.cdn.files)
+    jobs.enqueue(env.db, "process", [env.ids["ep-2"]], None)
+    worker.run_queue(env.settings)
+    assert env.db.execute("SELECT state FROM jobs").fetchone()["state"] == "failed"
+    assert not timed(env)  # nothing finished: not even the download
+
+    env.cdn.fail.clear()
+
+    def unreadable(*args, **kwargs):
+        raise ValueError("not audio")
+
+    monkeypatch.setattr(processing, "fingerprint_file", unreadable)
+    jobs.enqueue(env.db, "process", [env.ids["ep-2"]], None, skip_ready=False)
+    worker.run_queue(env.settings)
+    assert [r["step"] for r in timed(env)] == ["download"]  # and no row for the whole job
+
+
+def test_the_timings_page_sums_up_each_step_for_the_admin(env):
+    processed(env)
+    jobs.enqueue(env.db, "process", [env.ids["ep-3"]], None, skip_ready=False, payload=json.dumps({"recut": True}))
+    worker.run_queue(env.settings)
+    assert 'href="/timings"' in env.client.get("/jobs").text
+    page = env.client.get("/timings").text
+    assert "Download and cut" in page and "Cut again" in page
+    assert "Compare pairs" in page and "Per hour of audio" in page and "Latest jobs" in page
+    assert env.client.get("/timings?days=7").status_code == 200
+
+    csv = env.client.get("/timings.csv")
+    assert csv.headers["content-type"].startswith("text/csv")
+    lines = csv.text.splitlines()
+    assert lines[0].startswith("at,job,kind,step") and len(lines) == 1 + len(timed(env))
+
+    env.client.post("/users", data={"username": "bob", "password": "password1"})
+    bob = TestClient(env.client.app, follow_redirects=False)
+    bob.post("/login", data={"username": "bob", "password": "password1"})
+    assert 'href="/timings"' not in bob.get("/jobs").text
+    assert bob.get("/timings").status_code == 403 and bob.get("/timings.csv").status_code == 403
+
+
+def test_old_timings_are_let_go(env):
+    from podblock.app import timings
+    processed(env)
+    count = len(timed(env))
+    assert timings.prune(env.db) == 0
+    assert timings.prune(env.db, now=time.time() + (timings.KEEP_DAYS + 1) * 86400) == count
+    assert not timed(env)

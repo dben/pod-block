@@ -26,7 +26,7 @@ import sys
 import threading
 import time
 
-from . import captions, following, jobs, locks, processing, retention
+from . import captions, following, jobs, locks, processing, retention, timings
 from .config import Settings
 from .db import connect, prepare
 from .states import CANCELLED, DONE, FAILED
@@ -50,15 +50,19 @@ def run_job(settings: Settings, db, job) -> str:
     try:
         RUNNERS[job["kind"]](ctx, settings)
     except jobs.Cancelled:
-        jobs.finish(db, job["id"], CANCELLED)
-        return CANCELLED
+        state, error = CANCELLED, None
     except Exception as e:
         if not isinstance(e, processing.ProcessError):
             log.exception("job %d (%s) failed", job["id"], job["kind"])
-        jobs.finish(db, job["id"], FAILED, str(e)[:500] or type(e).__name__)
-        return FAILED
-    jobs.finish(db, job["id"], DONE)
-    return DONE
+        state, error = FAILED, str(e)[:500] or type(e).__name__
+    else:
+        state, error = DONE, None
+    try:
+        timings.save(db, job, ctx.timer, finished=state == DONE)
+    except Exception:  # timings are for looking at; never worth failing a job over
+        log.exception("couldn't save job %d's timings", job["id"])
+    jobs.finish(db, job["id"], state, error)
+    return state
 
 
 def run_queue(settings: Settings) -> int:
@@ -121,6 +125,7 @@ class Background:
                     following.refresh_due(db)
                     retention.expire_due(db)
                     retention.prune_store(db)
+                    timings.prune(db)
                 finally:
                     db.close()
             except Exception:  # keep going; the next tick may well work

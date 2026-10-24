@@ -4,6 +4,7 @@ POST /transcribe with an episode's audio as the body (and `?language=en` if the
 show's language is known) answers with one JSON object per line, as they come:
 
     {"waiting": true}                          at once, and every so often, while another episode is worked on
+    {"working": true}                          when its turn comes
     {"language": "en", "duration": 3605.2}     once the audio is read and its language known
     {"start": 1.2, "end": 4.8, "text": "...", "words": [[1.2, 1.5, " Hello"], ...]}
     {"step": "speakers"}                       then, with speakers turned on, who speaks when:
@@ -56,6 +57,7 @@ import signal
 import tarfile
 import tempfile
 import threading
+import time
 import urllib.request
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -223,6 +225,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not self._take_turn():
                     return  # stopping: the answer ends without "done", and the client asks again
                 try:
+                    self._line({"working": True})
                     self._work(audio.name, url.path == "/transcribe", language,
                                opts if speakers is not None and query.get("speakers") != "0" else None)
                 finally:
@@ -252,8 +255,10 @@ class Handler(BaseHTTPRequestHandler):
             raise Hangup() from None
 
     def _work(self, path: str, words: bool, language: str | None, speaker_opts: dict | None) -> None:
+        took, since = {}, time.monotonic()
         try:
             samples = decode(path)
+            took["decode"], since = time.monotonic() - since, time.monotonic()
             if words:
                 segments, info = (batched or model).transcribe(samples, language=language, **options())
                 self._line({"language": info.language, "duration": round(info.duration, 3)})
@@ -263,10 +268,12 @@ class Handler(BaseHTTPRequestHandler):
                                 "words": found})
             else:
                 self._line({"duration": round(len(samples) / RATE, 3)})
+            took["words"], since = time.monotonic() - since, time.monotonic()
             if speaker_opts is not None:
                 self._line({"step": "speakers"})
                 turns = speakers.run(samples, speaker_opts, lambda f: self._line({"progress": round(f or 0, 3)}))
                 self._line({"speakers": turns, "options": speaker_opts})
+                took["speakers"] = time.monotonic() - since
         except Hangup:
             raise
         except Exception as e:
@@ -274,6 +281,10 @@ class Handler(BaseHTTPRequestHandler):
             self._line({"error": f"{type(e).__name__}: {e}"[:500]})
             return
         self._line({"done": True})
+        length = len(samples) / RATE
+        log.info("%.0f s of audio: %s; %.2f of its length", length,
+                 ", ".join(f"{k} {v:.1f} s" for k, v in took.items() if k != "words" or words),
+                 sum(took.values()) / length if length else 0)
 
 
 @contextmanager

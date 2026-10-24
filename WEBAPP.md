@@ -274,6 +274,19 @@ on Kubernetes, with backups and upgrades, see `deployment/README.md`.
 - When a download finds new blocks, the show's other ready episodes are
   queued to be cut again; those whose cut wouldn't change are done in
   moments. A re-cut never sets off more re-cuts.
+- Each job times its steps (`podblock/timing.py`, saved by
+  `podblock/app/timings.py` into the `timings` table, kept 90 days):
+  download, fingerprint, finding repeats and each of its parts (loading
+  fingerprints, comparing pairs, storing new blocks, rescans, splitting and
+  dropping blocks, bumpers, reports, and the wait for another job's
+  repeats), cut and waveform; and for captions, sending the audio, waiting
+  for a free transcriber, transcribing and who speaks when. Only steps that
+  finish are kept, and only a job that finishes gets a row for the whole of
+  it. Re-cuts are saved as kind `recut`. The admin's **Timings** page
+  (`/timings`, linked from Jobs) sums them up per kind of job over 7, 30 or
+  90 days (runs, median, slowest 10%, time per hour of audio, total) and
+  lists the latest jobs step by step; `/timings.csv` has every row. The
+  transcription service also logs each episode's times.
 - The episode page shows the status (queued and running ones update
   themselves), a player and a download for the cut file, and how much was
   cut, with the show notes beside it (below it on a phone), then the
@@ -583,6 +596,7 @@ episodes  + pub_ts, summary, image_url, link, audio_type, audio_length, feed_dur
 jobs(id, kind, episode_id, state, step, progress, error, cancel_requested, attempts,
      requested_by, created_at, started_at, finished_at, payload)
 edits(id, episode_id, start, end, created_by, created_at)    -- sections cut by hand, this episode only
+timings(id, job_id, kind, step, episode_id, seconds, audio, count, detail, at)  -- how long each step took
 ```
 
 Connections get a `REGEXP` function (`db.connect`), so filters run in SQL.
@@ -638,6 +652,7 @@ only looks at fingerprinted ones, so they don't affect it.
 | `GET /users`, `POST /users` | admin | list users; add one (`username`, `password`) |
 | `POST /users/{id}/password`, `POST /users/{id}/remove` | admin | new password; remove |
 | `GET /downloads?sort=` | admin | every download on disk, with sizes |
+| `GET /timings?days=`, `GET /timings.csv?days=` | admin | how long each step of the jobs takes; every timing as CSV |
 | `POST /downloads/delete` | admin | delete the files of `ids` |
 | `POST /downloads/transcribe` | admin | transcribe `ids` again, replacing any transcript they have |
 

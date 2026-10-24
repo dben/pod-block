@@ -17,6 +17,7 @@ import sqlite3
 import time
 from pathlib import Path
 
+from ..timing import Timer
 from .db import transaction
 from .states import ACTIVE, CANCELLED, FAILED, FINISHED, QUEUED, READY, RETRYABLE, sql
 
@@ -201,11 +202,13 @@ class Context:
     """What a running job uses to say what it is doing, and to learn it should stop.
 
     What it writes is committed at once, for the pages to show, so it is used outside transaction blocks.
+    `timer` times its steps, for the timings page (timings.py).
     """
 
     def __init__(self, db: sqlite3.Connection, job: sqlite3.Row):
         self.db = db
         self.job = job
+        self.timer = Timer()
         self._step = ""
         self._episode: int | None = None
         self._last = 0.0
