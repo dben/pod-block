@@ -14,6 +14,8 @@ import json
 import logging
 import sqlite3
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 from .. import cut
@@ -22,6 +24,7 @@ from ..fingerprint import fingerprint_file
 from ..matcher import MatchParams
 from ..pipeline import Paths, episode_report, find_common_blocks, load_fingerprint, rescan
 from ..store import BUMPER, BUMPER_IN, BUMPER_OUT, IGNORED, INTRO, KEPT, OUTRO, PODCAST_TYPES, SHOW, Store
+from ..timing import Timer
 from . import captions, chapters, phrases
 from .config import Settings
 from .db import transaction
@@ -36,6 +39,17 @@ FILL_GAPS = 4.0  # default seconds of new audio between two repeats cut with the
 
 class ProcessError(Exception):
     pass
+
+
+@contextmanager
+def _detecting(ctx: Context) -> Iterator[None]:
+    """Hold `detecting` for the block, timing the wait for another job to let go of it."""
+    with ctx.timer("repeats.wait"):
+        detecting.acquire()
+    try:
+        yield
+    finally:
+        detecting.release()
 
 
 class Busy(ProcessError):
@@ -74,8 +88,10 @@ def _fetch(ctx: Context, settings: Settings, store: Store, paths: Paths, episode
         original = settings.media.original(ep)
         ctx.step("Downloading", episode_id)
         try:
-            download(ep["audio_url"], original,
-                     progress=lambda done, total: ctx.progress(done / total if total else None))
+            with ctx.timer("download", episode_id) as step:
+                download(ep["audio_url"], original,
+                         progress=lambda done, total: ctx.progress(done / total if total else None))
+                step["count"] = original.stat().st_size
         except (Cancelled, ProcessError):
             raise
         except Exception as e:
@@ -87,7 +103,9 @@ def _fetch(ctx: Context, settings: Settings, store: Store, paths: Paths, episode
     if fp_path is None or not fp_path.exists():
         ctx.step("Fingerprinting", episode_id)
         try:
-            fp = fingerprint_file(original, store.config)
+            with ctx.timer("fingerprint", episode_id) as step:
+                fp = fingerprint_file(original, store.config)
+                step["audio"] = fp.duration
         except Exception as e:
             raise ProcessError(f"couldn't read the audio ({e})") from None
         fp_path = paths.fingerprint(ep["guid"], store.config)
@@ -115,7 +133,8 @@ def _render(ctx: Context, settings: Settings, episode_id: int, report: dict) -> 
     ep = _episode(ctx.db, episode_id)
     if ep["source_chapters"] is None:  # with the feed's transcripts, for its phrases
         ctx.step("Reading chapters", episode_id)
-        chapters.gather(ctx.db, ep, settings.media.transcripts(ep))
+        with ctx.timer("chapters", episode_id):
+            chapters.gather(ctx.db, ep, settings.media.transcripts(ep))
         ep = _episode(ctx.db, episode_id)
     said = phrases.for_episode(ctx.db, ep)
     keep = cut.keep_spans(cuts(ctx.db, episode_id, report, said), ep["duration"])
@@ -132,8 +151,9 @@ def _render(ctx: Context, settings: Settings, episode_id: int, report: dict) -> 
         return
     ctx.step("Cutting", episode_id)
     try:
-        out = cut.render(Path(ep["original_path"]), settings.media.cut(ep), keep,
-                         progress=ctx.progress, chapters=marks)
+        with ctx.timer("cut", episode_id, audio=ep["duration"]):
+            out = cut.render(Path(ep["original_path"]), settings.media.cut(ep), keep,
+                             progress=ctx.progress, chapters=marks)
     except cut.CutError as e:
         raise ProcessError(str(e)) from None
     if ep["cut_path"] and Path(ep["cut_path"]) != out.path:
@@ -147,15 +167,17 @@ def _render(ctx: Context, settings: Settings, episode_id: int, report: dict) -> 
              time.time(), episode_id))
 
 
-def ensure_peaks(db: sqlite3.Connection, settings: Settings, episode_id: int) -> Path | None:
-    """The episode's waveform file, made from its download if there isn't one yet."""
+def ensure_peaks(db: sqlite3.Connection, settings: Settings, episode_id: int, timer: Timer | None = None
+                 ) -> Path | None:
+    """The episode's waveform file, made from its download if there isn't one yet (timed by `timer`, if given)."""
     ep = _episode(db, episode_id)
     if ep["peaks_path"] and Path(ep["peaks_path"]).exists():
         return Path(ep["peaks_path"])
     if not ep["original_path"] or not Path(ep["original_path"]).exists():
         return None
     per_second = 10
-    values = cut.peaks(Path(ep["original_path"]), per_second)
+    with (timer or Timer())("waveform", episode_id, audio=ep["duration"]):
+        values = cut.peaks(Path(ep["original_path"]), per_second)
     path = settings.media.peaks(ep)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".part")
@@ -188,20 +210,25 @@ def run(ctx: Context, settings: Settings) -> None:
             for other in group[1:]:
                 ctx.db.execute("UPDATE episodes SET state = 'running', state_note = 'Finding repeats' WHERE id = ?",
                                (other,))
-        with detecting:
+        with _detecting(ctx), ctx.timer("repeats", count=len(group)) as step:
+            blocks = ctx.db.execute("SELECT COUNT(*) FROM segments").fetchone()[0]
             if learn:
                 skip = {r["id"] for r in ctx.db.execute("SELECT id FROM episodes WHERE skip_processing = 1")}
-                added = find_common_blocks(store, group, params, skip=skip)
+                added = find_common_blocks(store, group, params, skip=skip, timer=ctx.timer)
             else:
-                rescan(store, episode_id, params, heard=True)
+                with ctx.timer("repeats.rescan", count=1):
+                    rescan(store, episode_id, params, heard=True)
                 added = 0
             gaps = _fill_gaps(ctx.db, ep["podcast_id"])
-            reports = {ep_id: episode_report(store, ep_id, params, fill_gaps=gaps) for ep_id in group}
+            with ctx.timer("repeats.reports", count=len(group)):
+                reports = {ep_id: episode_report(store, ep_id, params, fill_gaps=gaps) for ep_id in group}
+            step["audio"] = sum(_episode(ctx.db, ep_id)["duration"] or 0 for ep_id in group) or None
+            step["detail"] = {"blocks": blocks, "added": added, "learn": learn}
         for ep_id in group:
             _render(ctx, settings, ep_id, reports[ep_id])
         for ep_id in group:
             ctx.step("Drawing the waveform", ep_id)
-            ensure_peaks(ctx.db, settings, ep_id)
+            ensure_peaks(ctx.db, settings, ep_id, ctx.timer)
             with transaction(ctx.db):
                 ctx.db.execute("UPDATE episodes SET state = 'ready', state_note = NULL WHERE id = ?", (ep_id,))
         captions.queue(ctx.db, settings, group, ctx.job["requested_by"])
@@ -235,7 +262,7 @@ def run_unlearn(ctx: Context, settings: Settings) -> None:
     store = Store.on(ctx.db)
     touched: set[int] = set()
     ctx.step("Forgetting repeats found in filtered episodes")
-    with detecting, transaction(ctx.db):
+    with _detecting(ctx), ctx.timer("repeats.unlearn", count=0) as step, transaction(ctx.db):
         skip = {r["id"] for r in ctx.db.execute("SELECT id FROM episodes WHERE skip_processing = 1")}
         eps = [e for e in wanted if e in skip]  # a filter taken away since then leaves the rest be
         if not eps:
@@ -251,6 +278,7 @@ def run_unlearn(ctx: Context, settings: Settings) -> None:
             if len(plays - skip) < 2:
                 touched |= plays
                 store.delete_segment(block)
+                step["count"] += 1
         ctx.db.execute(f"DELETE FROM compared_pairs WHERE a_id IN ({marks}) OR b_id IN ({marks})", (*eps, *eps))
     ready = [r["id"] for r in ctx.db.execute(
         f"SELECT id FROM episodes WHERE state = 'ready' AND id IN ({', '.join('?' * len(touched))})",
@@ -381,9 +409,9 @@ def run_edit(ctx: Context, settings: Settings) -> None:
                 else:
                     local.add(block)
         touched = _playing(ctx.db, everywhere) | _playing(ctx.db, local, podcast)
-        with detecting:
+        with _detecting(ctx), ctx.timer("repeats", count=1):
             fp = load_fingerprint(store, episode_id) if any(a["as_block"] for a in changes["add"]) else None
-            with transaction(ctx.db):  # the changes land together, or not at all
+            with ctx.timer("repeats.edit"), transaction(ctx.db):  # the changes land together, or not at all
                 for t in changes["types"]:
                     for block in t["blocks"] + t["bumpers"]:
                         if t["type"] == IGNORED:
@@ -407,8 +435,10 @@ def run_edit(ctx: Context, settings: Settings) -> None:
                                        (episode_id, a["start"], a["end"], ctx.job["requested_by"], time.time()))
                 for edit_id in changes["remove"]:
                     ctx.db.execute("DELETE FROM edits WHERE id = ? AND episode_id = ?", (edit_id, episode_id))
-            rescan(store, episode_id, params, heard=True)
-            report = episode_report(store, episode_id, params, fill_gaps=_fill_gaps(ctx.db, ep["podcast_id"]))
+            with ctx.timer("repeats.rescan", count=1):
+                rescan(store, episode_id, params, heard=True)
+            with ctx.timer("repeats.reports", count=1):
+                report = episode_report(store, episode_id, params, fill_gaps=_fill_gaps(ctx.db, ep["podcast_id"]))
         _render(ctx, settings, episode_id, report)
         others = touched - {episode_id}
         if any(a["as_block"] for a in changes["add"]):  # a new block may well play in the show's other episodes

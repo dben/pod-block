@@ -34,6 +34,7 @@ class Settings:
     jobs: str = "process"  # where: a child process (`podblock worker`), threads of this one, or "none" (run
     #                        `podblock worker` yourself)
     workers: int = 1  # threads running jobs
+    caption_workers: int = 1  # threads running captions jobs: as many as the transcription service has replicas
     whisper_url: str | None = None  # the transcription service (whisper/); when set, downloads get captions
 
     @property
@@ -57,6 +58,7 @@ class Settings:
             secret_key=os.environ.get("PODBLOCK_SECRET_KEY") or None,
             secure_cookies=_flag("PODBLOCK_SECURE_COOKIES"),
             workers=int(os.environ.get("PODBLOCK_WORKERS") or 1),
+            caption_workers=int(os.environ.get("PODBLOCK_CAPTION_WORKERS") or 1),
             jobs=_choice("PODBLOCK_JOBS", JOBS),
             whisper_url=(os.environ.get("PODBLOCK_WHISPER_URL") or "").rstrip("/") or None,
         )

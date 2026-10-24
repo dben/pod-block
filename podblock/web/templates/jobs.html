@@ -7,6 +7,7 @@
       <h1>Jobs</h1>
       <p class="muted">{{ jobs.running|length }} running · {{ jobs.queued|length }} queued</p>
     </div>
+    {% if user.is_admin %}<a class="btn btn-ghost btn-sm" href="/timings">Timings</a>{% endif %}
   </div>
   {% if worker_down %}
   <p class="alert alert-error" role="alert">The job process stopped and is being started again. Jobs wait

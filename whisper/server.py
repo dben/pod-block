@@ -3,7 +3,8 @@
 POST /transcribe with an episode's audio as the body (and `?language=en` if the
 show's language is known) answers with one JSON object per line, as they come:
 
-    {"waiting": true}                          while another episode is being worked on
+    {"waiting": true}                          at once, and every so often, while another episode is worked on
+    {"working": true}                          when its turn comes
     {"language": "en", "duration": 3605.2}     once the audio is read and its language known
     {"start": 1.2, "end": 4.8, "text": "...", "words": [[1.2, 1.5, " Hello"], ...]}
     {"step": "speakers"}                       then, with speakers turned on, who speaks when:
@@ -17,8 +18,18 @@ transcribing again; both take `threshold`, `count`, `min_on` and `min_off`
 (see SPEAKER_* below) to override the defaults, and `speakers=0` turns them
 off for one request.
 
-One episode at a time; others wait their turn. A client that hangs up stops
-its work at the next segment. GET /healthz answers once the models are loaded.
+One episode at a time; others wait their turn. The first "waiting" line comes
+straight away, so a client with other replicas to try can hang up and ask
+again. A client that hangs up stops its work at the next segment. GET /healthz
+answers once the models are loaded.
+
+On SIGTERM it finishes the episode in hand, sends away those waiting (they
+see the answer end with no "done", and ask again), answers 503 to new ones,
+and then exits.
+
+Replicas can share one models folder (a ReadWriteMany volume): downloads take
+a lock file in it (`.fetch.lock`), so the first replica to start fetches the
+models and the others wait, then find them there.
 
 Settings, from the environment:
 
@@ -41,13 +52,22 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
+import signal
 import tarfile
 import tempfile
 import threading
+import time
 import urllib.request
+from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover
+    fcntl = None
 
 log = logging.getLogger("whisper")
 
@@ -63,6 +83,7 @@ batched = None  # and its BatchedInferencePipeline, with WHISPER_BATCH
 decode = None  # faster_whisper's decode_audio: a file to 16 kHz mono samples
 speakers = None  # a Speakers, with WHISPER_SPEAKERS
 turn = threading.Lock()  # one episode at a time: each takes every core it is given
+stopping = threading.Event()  # set by SIGTERM: finish the episode in hand, take no more
 
 
 def _env_float(name: str, default: float) -> float:
@@ -93,16 +114,29 @@ class Speakers:
         self.fetch(folder)
 
     def fetch(self, folder: Path) -> None:
+        """Download the models that aren't in `folder` yet. Each lands under a name of its own and is moved into
+        place whole, so a replica that starts meanwhile never reads half of one."""
         folder.mkdir(parents=True, exist_ok=True)
         if not self.segmentation.exists():
             log.info("fetching %s", SEGMENTATION)
-            with urllib.request.urlopen(SEGMENTATION) as resp, tarfile.open(fileobj=resp, mode="r|bz2") as tar:
-                tar.extractall(folder, filter="data")
+            tmp = Path(tempfile.mkdtemp(prefix=".fetch-", dir=folder))
+            try:
+                with urllib.request.urlopen(SEGMENTATION) as resp, tarfile.open(fileobj=resp, mode="r|bz2") as tar:
+                    tar.extractall(tmp, filter="data")
+                if not self.segmentation.exists():
+                    shutil.rmtree(self.segmentation.parent, ignore_errors=True)  # what an older version left half done
+                    (tmp / self.segmentation.parent.name).replace(self.segmentation.parent)
+            finally:
+                shutil.rmtree(tmp, ignore_errors=True)
         if not self.embedding.exists():
             log.info("fetching %s", EMBEDDING)
-            tmp = self.embedding.with_name(self.embedding.name + ".part")
-            urllib.request.urlretrieve(EMBEDDING, tmp)
-            tmp.replace(self.embedding)
+            fd, tmp = tempfile.mkstemp(prefix=".fetch-", dir=folder)
+            os.close(fd)
+            try:
+                urllib.request.urlretrieve(EMBEDDING, tmp)
+                Path(tmp).replace(self.embedding)
+            finally:
+                Path(tmp).unlink(missing_ok=True)
 
     @staticmethod
     def defaults() -> dict:
@@ -159,6 +193,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_error(404)
         if model is None:
             return self.send_error(503, "the models are still loading")
+        if stopping.is_set():
+            return self.send_error(503, "stopping")
         query = {k: v[0] for k, v in parse_qs(url.query).items()}
         if url.path == "/speakers" and speakers is None:
             return self.send_error(404, "speakers are off (WHISPER_SPEAKERS)")
@@ -186,15 +222,30 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/x-ndjson")
             self.end_headers()
             try:
-                while not turn.acquire(timeout=WAIT_NOTE):
-                    self._line({"waiting": True})
+                if not self._take_turn():
+                    return  # stopping: the answer ends without "done", and the client asks again
                 try:
+                    self._line({"working": True})
                     self._work(audio.name, url.path == "/transcribe", language,
                                opts if speakers is not None and query.get("speakers") != "0" else None)
                 finally:
                     turn.release()
             except (BrokenPipeError, ConnectionResetError, Hangup):
                 log.info("the client hung up; stopped")
+
+    def _take_turn(self) -> bool:
+        """Wait for the one episode being worked on, saying so at once and then every WAIT_NOTE seconds. False
+        if the service is stopping meanwhile."""
+        if not turn.acquire(blocking=False):
+            self._line({"waiting": True})
+            while not turn.acquire(timeout=WAIT_NOTE):
+                if stopping.is_set():
+                    return False
+                self._line({"waiting": True})
+        if stopping.is_set():
+            turn.release()
+            return False
+        return True
 
     def _line(self, obj: dict) -> None:
         try:
@@ -204,8 +255,10 @@ class Handler(BaseHTTPRequestHandler):
             raise Hangup() from None
 
     def _work(self, path: str, words: bool, language: str | None, speaker_opts: dict | None) -> None:
+        took, since = {}, time.monotonic()
         try:
             samples = decode(path)
+            took["decode"], since = time.monotonic() - since, time.monotonic()
             if words:
                 segments, info = (batched or model).transcribe(samples, language=language, **options())
                 self._line({"language": info.language, "duration": round(info.duration, 3)})
@@ -215,10 +268,12 @@ class Handler(BaseHTTPRequestHandler):
                                 "words": found})
             else:
                 self._line({"duration": round(len(samples) / RATE, 3)})
+            took["words"], since = time.monotonic() - since, time.monotonic()
             if speaker_opts is not None:
                 self._line({"step": "speakers"})
                 turns = speakers.run(samples, speaker_opts, lambda f: self._line({"progress": round(f or 0, 3)}))
                 self._line({"speakers": turns, "options": speaker_opts})
+                took["speakers"] = time.monotonic() - since
         except Hangup:
             raise
         except Exception as e:
@@ -226,12 +281,34 @@ class Handler(BaseHTTPRequestHandler):
             self._line({"error": f"{type(e).__name__}: {e}"[:500]})
             return
         self._line({"done": True})
+        length = len(samples) / RATE
+        log.info("%.0f s of audio: %s; %.2f of its length", length,
+                 ", ".join(f"{k} {v:.1f} s" for k, v in took.items() if k != "words" or words),
+                 sum(took.values()) / length if length else 0)
+
+
+@contextmanager
+def fetching(folder: Path):
+    """Hold the lock file in the models folder while models are downloaded, so replicas sharing the folder
+    fetch them once. Where the volume can't lock (ENOLCK), each fetches on its own."""
+    folder.mkdir(parents=True, exist_ok=True)
+    fd = os.open(folder / ".fetch.lock", os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        if fcntl is not None:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX)
+            except OSError as e:
+                log.warning("couldn't lock %s (%s); fetching without it", folder / ".fetch.lock", e)
+        yield
+    finally:
+        os.close(fd)
 
 
 def main() -> None:
     global model, batched, decode, speakers
     from faster_whisper import BatchedInferencePipeline, WhisperModel  # here, so tests can use stand-ins
     from faster_whisper.audio import decode_audio
+    from faster_whisper.utils import download_model
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     for name in ("httpx", "httpx2"):  # each request of the model's download
@@ -240,20 +317,27 @@ def main() -> None:
     device = os.environ.get("WHISPER_DEVICE") or "cpu"
     compute = os.environ.get("WHISPER_COMPUTE_TYPE") or "int8"
     threads = int(os.environ.get("WHISPER_THREADS") or 0)
+    signal.signal(signal.SIGTERM, lambda *_: stopping.set())
     server = ThreadingHTTPServer(("0.0.0.0", int(os.environ.get("WHISPER_PORT") or 9000)), Handler)
     server.daemon_threads = True
     threading.Thread(target=server.serve_forever, daemon=True).start()  # /healthz says "loading" meanwhile
-    if os.environ.get("WHISPER_SPEAKERS", "").strip().lower() in {"1", "true", "yes", "on"}:
-        home = Path(os.environ.get("HF_HOME") or Path.home() / ".cache")
-        speakers = Speakers(home / "speakers", threads or 4)
-    log.info("loading %s on %s (%s); a first start downloads it", name, device, compute)
-    whisper = WhisperModel(name, device=device, compute_type=compute, cpu_threads=threads)
+    home = Path(os.environ.get("HF_HOME") or Path.home() / ".cache")
+    with fetching(home):
+        if os.environ.get("WHISPER_SPEAKERS", "").strip().lower() in {"1", "true", "yes", "on"}:
+            speakers = Speakers(home / "speakers", threads or 4)
+        log.info("fetching %s, unless it is in %s already", name, home)
+        path = name if os.path.isdir(name) else download_model(name)
+    log.info("loading %s on %s (%s)", name, device, compute)
+    whisper = WhisperModel(path, device=device, compute_type=compute, cpu_threads=threads)
     batched = BatchedInferencePipeline(whisper) if int(os.environ.get("WHISPER_BATCH") or 8) > 1 else None
     decode = decode_audio
     model = whisper
     log.info("ready on port %d%s%s", server.server_port, f", batches of {options()['batch_size']}" if batched
              else "", ", with speakers" if speakers else "")
-    threading.Event().wait()
+    stopping.wait()
+    log.info("stopping once the episode in hand is done")
+    turn.acquire()  # those waiting are sent away at their next note, so this is the one being worked on
+    log.info("stopped")
 
 
 if __name__ == "__main__":

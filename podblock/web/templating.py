@@ -80,6 +80,19 @@ def duration(secs: float | None) -> str:
     return f"{mins // 60} hr {mins % 60} min" if mins % 60 else f"{mins // 60} hr"
 
 
+def took(secs: float | None) -> str:
+    """A step's time, to a precision that suits it: 0.42 s, 12.3 s, 4 min 3 s, 1 hr 4 min."""
+    secs = secs or 0.0
+    if secs < 1:
+        return f"{secs:.2f} s"
+    if secs < 60:
+        return f"{secs:.1f} s"
+    if secs < 3600:
+        mins, rest = divmod(round(secs), 60)
+        return f"{mins} min {rest} s" if rest else f"{mins} min"
+    return duration(secs)
+
+
 def clock(secs: float | None) -> str:
     secs = int(round(secs or 0))
     h, rem = divmod(secs, 3600)
@@ -127,6 +140,6 @@ def filesize(n: int | None) -> str:
 
 templates.env.globals.update(static=static, flashes=take_flashes, active_jobs=active_jobs, expires=expires,
                              states=states)
-templates.env.filters.update(until=until, filesize=filesize, ago=ago, day=day, duration=duration, clock=clock,
-                             web_url=web_url, plural=plural, text=html_to_text,
+templates.env.filters.update(until=until, filesize=filesize, ago=ago, day=day, duration=duration, took=took,
+                             clock=clock, web_url=web_url, plural=plural, text=html_to_text,
                              fromjson=lambda text: json.loads(text) if text else [])

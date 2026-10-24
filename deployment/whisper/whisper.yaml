@@ -3,11 +3,23 @@ kind: Deployment
 metadata:
   name: pod-block-whisper
 spec:
-  replicas: 1  # it transcribes one episode at a time; pod-block sends one at a time too
+  replicas: 2  # CHANGE: each transcribes one episode at a time; set PODBLOCK_CAPTION_WORKERS in ../kustomization.yaml to match
   strategy:
-    type: Recreate  # the models volume is ReadWriteOnce
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0  # an old replica keeps working until a new one is ready
   template:
     spec:
+      terminationGracePeriodSeconds: 3600  # a stopping replica finishes the episode in hand: up to about 35 minutes
+      #                                      for an hour of audio on large-v3-turbo with speakers, on 4 cores
+      topologySpreadConstraints:  # replicas on different nodes, where there are nodes to spare
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: pod-block-whisper
       securityContext:
         runAsUser: 1000
         runAsGroup: 1000
@@ -41,7 +53,7 @@ spec:
               memory: 2Gi
             limits:
               memory: 6Gi  # large-v3-turbo: about 2 GB; the decoded audio (0.25 GB an hour); speakers: 0.5 GB
-          startupProbe:  # the first start downloads the model
+          startupProbe:  # the first start downloads the model; other replicas wait for it to finish
             httpGet:
               path: /healthz
               port: http
@@ -72,12 +84,17 @@ spec:
       port: 80
       targetPort: http
 ---
+# The models, shared by every replica: downloaded by the first to start, read once by each as it starts. A
+# shared file system (NFS, CephFS, Longhorn RWX, EFS, Azure Files) is fine here, as nothing writes after the
+# download. Without a ReadWriteMany class, use an emptyDir in the Deployment instead (each replica then fetches
+# the model on every start), or set replicas to 1 and ReadWriteOnce.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: pod-block-whisper-models
 spec:
-  accessModes: [ReadWriteOnce]
+  accessModes: [ReadWriteMany]
+  # storageClassName: nfs-client  # CHANGE: a class that can do ReadWriteMany
   resources:
     requests:
       storage: 5Gi  # small is about 0.5 GB, large-v3-turbo about 1.6 GB
