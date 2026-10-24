@@ -1,6 +1,7 @@
 """The podcast pages: adding and browsing podcasts, the episode list and what can be done to a selection,
 filters, the show page's tabs, and finding podcasts by name."""
 
+import html
 import re
 
 import pytest
@@ -372,6 +373,24 @@ def test_each_row_has_a_download_button(client, web):
     assert res.json() == {"action": "download", "changed": [one]}
     row = client.get(f"/episodes/{one}/row").text
     assert "ep-dl-busy" in row and 'value="download"' not in row and 'hx-trigger="every 3s"' in row
+
+
+def test_back_to_the_show_keeps_the_list_it_came_from(client, web):
+    pod = add(client, web, item(1))
+    (one,) = ids_of(client, pod, "ep-1")
+
+    def back(referer=None):
+        headers = {"referer": referer} if referer else {}
+        text = client.get(f"/episodes/{one}", headers=headers).text
+        return html.unescape(re.search(r'<a class="back" href="([^"]*)"', text).group(1))
+
+    assert back() == f"/podcasts/{pod}"
+    assert back(f"http://testserver/podcasts/{pod}?view=archived&downloaded=1&q=night&page=3") == \
+        f"/podcasts/{pod}?view=archived&downloaded=1&q=night"
+    assert back(f"http://testserver/podcasts/{pod}?view=grabbed") == f"/podcasts/{pod}?grabbed=1"
+    assert back(f"http://testserver/podcasts/{pod}?tab=settings") == f"/podcasts/{pod}"
+    assert back(f"http://testserver/podcasts/{pod + 1}?view=archived") == f"/podcasts/{pod}"
+    assert back(f"http://elsewhere.example/podcasts/{pod}?view=archived") == f"/podcasts/{pod}"
 
 
 def test_only_the_admin_sees_downloads(client, web):

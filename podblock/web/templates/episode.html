@@ -2,7 +2,7 @@
 {% block content %}
 {% set e = episode %}
 {% set art = e.image_url|web_url or podcast.image_url|web_url %}
-<a class="back" href="/podcasts/{{ podcast.id }}">
+<a class="back" href="{{ back }}">
   <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>{{ podcast.name }}
 </a>
 
