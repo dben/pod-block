@@ -237,7 +237,9 @@ def test_the_shared_feed_becomes_the_admins_on_upgrade(tmp_path):
                         ALTER TABLE podcasts DROP COLUMN outro_phrases;
                         ALTER TABLE episodes DROP COLUMN phrase_cuts;
                         DROP TABLE timings;
-                        ALTER TABLE podcasts DROP COLUMN max_break;""")  # undo every step from per-user feeds on
+                        ALTER TABLE podcasts DROP COLUMN max_break;
+                        ALTER TABLE podcasts DROP COLUMN transcript_check;
+                        ALTER TABLE episodes DROP COLUMN missing_cuts;""")  # undo every step from per-user feeds on
     before = next(n for n, m in enumerate(MIGRATIONS) if isinstance(m, str) and "CREATE TABLE user_feeds" in m)
     db.execute("UPDATE settings SET value = ? WHERE key = 'app_schema'", (str(before),))
     db.commit()

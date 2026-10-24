@@ -26,6 +26,11 @@ An episode can also be transcribed again on purpose (`queue(force=True)`, the
 downloads page's Transcribe again): the new captions then replace whatever it
 had, its feed's transcripts included.
 
+For a show whose feed transcripts are checked for missing ads (missing.py),
+an episode with a feed transcript is transcribed too. The feed's transcript
+stays the one served; what was heard is saved as its word times (`words`),
+and the episode is cut again with what the check finds.
+
 When the service has speakers turned on, it also says who speaks when; those
 turns are saved beside the captions (`speakers.py`) for `podblock speakers`
 to compare with the repeats found. They don't go into the captions yet.
@@ -46,11 +51,11 @@ import requests
 import urllib3
 
 from ..timing import Timer
-from . import chapters, phrases, speakers
+from . import chapters, missing, phrases, speakers
 from .config import Settings
 from .db import transaction
-from .jobs import Context, enqueue_task
-from .states import ACTIVE, sql
+from .jobs import Context, enqueue, enqueue_task
+from .states import ACTIVE, READY, sql
 
 log = logging.getLogger(__name__)
 
@@ -79,11 +84,16 @@ class _Busy(Exception):
     """The replica asked is working on another episode."""
 
 
-def wanted(ep: sqlite3.Row, settings: Settings, force: bool = False) -> bool:
+def wanted(ep: sqlite3.Row, settings: Settings, force: bool = False, check: bool = False) -> bool:
     """Whether an episode should get captions: the service is set, it has a download, and no timed transcript
-    (or, with `force`, whatever it has)."""
+    (or, with `force`, whatever it has; with `check`, a feed transcript with nothing heard to check it by)."""
     return bool(settings.whisper_url and ep["original_path"] and Path(ep["original_path"]).exists()
-                and (force or not json.loads(ep["transcripts"] or "[]")))
+                and (force or not json.loads(ep["transcripts"] or "[]") or (check and missing.needs_words(ep))))
+
+
+def _checking(db: sqlite3.Connection, settings: Settings, ep: sqlite3.Row) -> bool:
+    """Whether the episode's feed transcript is to be checked against what is heard (missing.py)."""
+    return missing.needs_words(ep) and missing.enabled(db, settings, ep["podcast_id"])
 
 
 def queue(db: sqlite3.Connection, settings: Settings, episode_ids: list[int], user_id: int | None,
@@ -93,7 +103,7 @@ def queue(db: sqlite3.Connection, settings: Settings, episode_ids: list[int], us
     queued = []
     for ep_id in dict.fromkeys(episode_ids):
         ep = db.execute("SELECT * FROM episodes WHERE id = ?", (ep_id,)).fetchone()
-        if ep is None or not wanted(ep, settings, force):
+        if ep is None or not wanted(ep, settings, force, check=_checking(db, settings, ep)):
             continue
         if db.execute(f"SELECT 1 FROM jobs WHERE kind = ? AND state IN ({sql(ACTIVE)}) "
                       "AND json_extract(payload, '$.episode') = ?", (KIND, ep_id)).fetchone():
@@ -332,7 +342,8 @@ def run(ctx: Context, settings: Settings) -> None:
     ep = ctx.db.execute("SELECT * FROM episodes WHERE id = ?", (episode_id,)).fetchone()
     if ep is None:
         raise CaptionError("the episode is gone")
-    if json.loads(ep["transcripts"] or "[]") and not force:
+    check = not force and _checking(ctx.db, settings, ep)
+    if json.loads(ep["transcripts"] or "[]") and not force and not check:
         return  # it has one already: from its feed, or an earlier captions job
     if not ep["original_path"] or not Path(ep["original_path"]).exists():
         raise CaptionError("its download is gone; download it again for captions")
@@ -342,6 +353,9 @@ def run(ctx: Context, settings: Settings) -> None:
                 {"language": language} if language else None,
                 patience=BUSY_PATIENCE if settings.caption_workers > 1 else 0.0, timer=ctx.timer)
     stem = settings.media.transcripts(ep)
+    if check:
+        _save_heard(ctx, ep, stem, heard)
+        return
     path = stem.with_name(stem.name + ".captions.vtt")
     _write(path, webvtt(cues(heard["segments"])))
     timed = stem.with_name(stem.name + ".words.json")  # each word's time, for finding intro and outro phrases
@@ -364,6 +378,27 @@ def run(ctx: Context, settings: Settings) -> None:
              f", {len({t[2] for t in heard['speakers']})} speakers" if heard["speakers"] else "")
     phrases.requeue(ctx.db, ep["podcast_id"], ctx.job["requested_by"], [episode_id],
                     note="Waiting to be cut again: an intro or outro phrase was heard")
+
+
+def _save_heard(ctx: Context, ep: sqlite3.Row, stem: Path, heard: dict) -> None:
+    """Save what was heard as the word times of the episode's feed transcript, and cut it again to fit."""
+    timed = stem.with_name(stem.name + ".heard.json")
+    _write(timed, json.dumps([w for seg in heard["segments"] for w in _words(seg)], separators=(",", ":")))
+    with transaction(ctx.db):
+        now = ctx.db.execute("SELECT state, original_path, transcripts FROM episodes WHERE id = ?",
+                             (ep["id"],)).fetchone()
+        if (now is None or now["original_path"] != ep["original_path"]
+                or now["transcripts"] != ep["transcripts"]):  # cleaned up, or transcribed again, meanwhile
+            timed.unlink(missing_ok=True)
+            return
+        feed = missing.feed_transcript(ep)
+        saved = [{**t, "words": str(timed)} if t["path"] == feed["path"] else t
+                 for t in json.loads(ep["transcripts"])]
+        ctx.db.execute("UPDATE episodes SET transcripts = ? WHERE id = ?", (json.dumps(saved), ep["id"]))
+    log.info("checking episode %d's transcript: %d segments heard", ep["id"], len(heard["segments"]))
+    if now["state"] == READY:
+        enqueue(ctx.db, "process", [ep["id"]], ctx.job["requested_by"], skip_ready=False,
+                payload=json.dumps({"recut": True}), note="Waiting to be cut again: its transcript was checked")
 
 
 def _forget(transcripts: list[dict], keep: list[dict]) -> None:

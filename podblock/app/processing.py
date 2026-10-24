@@ -26,7 +26,7 @@ from ..matcher import MatchParams
 from ..pipeline import Paths, episode_report, find_common_blocks, load_fingerprint, rescan
 from ..store import BUMPER, BUMPER_IN, BUMPER_OUT, IGNORED, INTRO, KEPT, OUTRO, PODCAST_TYPES, SHOW, Store
 from ..timing import Timer
-from . import captions, chapters, phrases
+from . import captions, chapters, missing, phrases
 from .config import Settings
 from .db import transaction
 from .jobs import Cancelled, Context, enqueue, settle_episode, take_along
@@ -114,18 +114,20 @@ def _fetch(ctx: Context, settings: Settings, store: Store, paths: Paths, episode
         store.upsert_episode(ep["guid"], fingerprint_path=str(fp_path), duration=fp.duration)
 
 
-def _cutting(db: sqlite3.Connection, podcast_id: int | None) -> dict:
-    """A podcast's settings for episode_report."""
-    row = db.execute("SELECT fill_gaps, max_break FROM podcasts WHERE id = ?", (podcast_id,)).fetchone()
+def _cutting(db: sqlite3.Connection, settings: Settings, episode_id: int) -> dict:
+    """An episode's settings for episode_report: its podcast's, and where its transcript says the show plays."""
+    ep = _episode(db, episode_id)
+    row = db.execute("SELECT fill_gaps, max_break FROM podcasts WHERE id = ?", (ep["podcast_id"],)).fetchone()
+    spoken = missing.spoken(missing.fit(db, settings, ep))
     if row is None:
-        return {"fill_gaps": FILL_GAPS, "max_break": MAX_BREAK_SEC}
-    return {"fill_gaps": row["fill_gaps"], "max_break": row["max_break"]}
+        return {"fill_gaps": FILL_GAPS, "max_break": MAX_BREAK_SEC, "spoken": spoken}
+    return {"fill_gaps": row["fill_gaps"], "max_break": row["max_break"], "spoken": spoken}
 
 
 def cuts(db: sqlite3.Connection, episode_id: int, report: dict,
          phrase_cuts: list[dict] = ()) -> list[tuple[float, float]]:
-    """Everything to cut from an episode: the report's sections, the intro and outro its phrases mark, and the
-    ones cut by hand."""
+    """Everything to cut from an episode: the report's sections, the intro and outro its phrases mark (and what
+    its transcript is missing), and the ones cut by hand."""
     found = [(s["start"], s["end"]) for s in report["sections"]]
     found += [(p["start"], p["end"]) for p in phrase_cuts]
     found += [(r["start"], r["end"]) for r in db.execute("SELECT start, end FROM edits WHERE episode_id = ?",
@@ -141,17 +143,21 @@ def _render(ctx: Context, settings: Settings, episode_id: int, report: dict) -> 
             chapters.gather(ctx.db, ep, settings.media.transcripts(ep))
         ep = _episode(ctx.db, episode_id)
     said = phrases.for_episode(ctx.db, ep)
-    keep = cut.keep_spans(cuts(ctx.db, episode_id, report, said), ep["duration"])
+    unsaid = missing.cuts(missing.fit(ctx.db, settings, ep))
+    keep = cut.keep_spans(cuts(ctx.db, episode_id, report, said + unsaid), ep["duration"])
     if not keep:
         raise ProcessError("the whole episode was found to repeat, so nothing would be left")
     spec = json.dumps([[round(a, 2), round(b, 2)] for a, b in keep])
     edits = ctx.db.execute("SELECT start, end FROM edits WHERE episode_id = ?", (episode_id,)).fetchall()
-    marks = chapters.build(json.loads(spec), chapters.cuts(report, edits, said), json.loads(ep["source_chapters"]))
+    as_breaks = [{**m, "type": "break"} for m in unsaid]  # chapters call them ad breaks
+    marks = chapters.build(json.loads(spec), chapters.cuts(report, edits, said + as_breaks),
+                           json.loads(ep["source_chapters"]))
     if (spec == ep["cut_spec"] and json.dumps(marks) == ep["cut_chapters"] and ep["cut_path"]
             and Path(ep["cut_path"]).exists()):
         with transaction(ctx.db):  # nothing to cut differently
-            ctx.db.execute("UPDATE episodes SET state = 'ready', state_note = NULL, phrase_cuts = ?, "
-                           "ready_at = COALESCE(ready_at, ?) WHERE id = ?", (json.dumps(said), time.time(), episode_id))
+            ctx.db.execute("UPDATE episodes SET state = 'ready', state_note = NULL, phrase_cuts = ?, missing_cuts = ?, "
+                           "ready_at = COALESCE(ready_at, ?) WHERE id = ?",
+                           (json.dumps(said), json.dumps(unsaid), time.time(), episode_id))
         return
     ctx.step("Cutting", episode_id)
     try:
@@ -165,10 +171,11 @@ def _render(ctx: Context, settings: Settings, episode_id: int, report: dict) -> 
     with transaction(ctx.db):
         ctx.db.execute(
             """UPDATE episodes SET state = 'ready', state_note = NULL, cut_path = ?, cut_type = ?, cut_duration = ?,
-                      cut_bytes = ?, cut_spec = ?, cut_chapters = ?, phrase_cuts = ?, processed_at = ?,
-                      ready_at = COALESCE(ready_at, ?), expired_at = NULL, ever_downloaded = 1 WHERE id = ?""",
-            (str(out.path), out.mime, out.duration, out.size, spec, json.dumps(marks), json.dumps(said), time.time(),
-             time.time(), episode_id))
+                      cut_bytes = ?, cut_spec = ?, cut_chapters = ?, phrase_cuts = ?, missing_cuts = ?,
+                      processed_at = ?, ready_at = COALESCE(ready_at, ?), expired_at = NULL, ever_downloaded = 1
+               WHERE id = ?""",
+            (str(out.path), out.mime, out.duration, out.size, spec, json.dumps(marks), json.dumps(said),
+             json.dumps(unsaid), time.time(), time.time(), episode_id))
 
 
 def ensure_peaks(db: sqlite3.Connection, settings: Settings, episode_id: int, timer: Timer | None = None
@@ -223,9 +230,9 @@ def run(ctx: Context, settings: Settings) -> None:
                 with ctx.timer("repeats.rescan", count=1):
                     rescan(store, episode_id, params, heard=True)
                 added = 0
-            cutting = _cutting(ctx.db, ep["podcast_id"])
             with ctx.timer("repeats.reports", count=len(group)):
-                reports = {ep_id: episode_report(store, ep_id, params, **cutting) for ep_id in group}
+                reports = {ep_id: episode_report(store, ep_id, params, **_cutting(ctx.db, settings, ep_id))
+                           for ep_id in group}
             step["audio"] = sum(_episode(ctx.db, ep_id)["duration"] or 0 for ep_id in group) or None
             step["detail"] = {"blocks": blocks, "added": added, "learn": learn}
         for ep_id in group:
@@ -442,7 +449,7 @@ def run_edit(ctx: Context, settings: Settings) -> None:
             with ctx.timer("repeats.rescan", count=1):
                 rescan(store, episode_id, params, heard=True)
             with ctx.timer("repeats.reports", count=1):
-                report = episode_report(store, episode_id, params, **_cutting(ctx.db, ep["podcast_id"]))
+                report = episode_report(store, episode_id, params, **_cutting(ctx.db, settings, episode_id))
         _render(ctx, settings, episode_id, report)
         others = touched - {episode_id}
         if any(a["as_block"] for a in changes["add"]):  # a new block may well play in the show's other episodes
@@ -504,5 +511,6 @@ def timeline(db: sqlite3.Connection, episode_id: int, report: dict | None) -> di
     manual = [{"id": f"m{r['id']}", "edit": r["id"], "start": r["start"], "end": r["end"]}
               for r in db.execute("SELECT * FROM edits WHERE episode_id = ? ORDER BY start", (episode_id,))]
     said = [{"id": f"p{i}", **p} for i, p in enumerate(phrases.saved(ep))]
-    return {"sections": sections, "manual": manual, "not_repeats": not_repeats, "phrases": said}
+    unsaid = [{"id": f"u{i}", **m} for i, m in enumerate(missing.saved(ep))]
+    return {"sections": sections, "manual": manual, "not_repeats": not_repeats, "phrases": said, "missing": unsaid}
 

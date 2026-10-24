@@ -143,10 +143,16 @@ def _json_words(text: str) -> list[tuple[float, float, str]]:
 def words(ep: sqlite3.Row) -> list[tuple[float, float, str]]:
     """The episode's words in the uncut audio, in order, as (start, end, word) with `word` as `tokens` gives it:
     whisper's own times when its captions kept them, else guessed from a transcript's cues. Empty without one."""
-    saved = chapters.transcripts(ep)
-    for t in saved:
+    for t in chapters.transcripts(ep):
         if t.get("words") and Path(t["words"]).exists():
             return [(a, b, w) for a, b, word in json.loads(Path(t["words"]).read_text()) for w in tokens(word)]
+    return feed_words(ep)
+
+
+def feed_words(ep: sqlite3.Row) -> list[tuple[float, float, str]]:
+    """The words of the episode's transcript file, as `words` gives them, each word's time guessed from its cue:
+    for a feed's transcript, its times, whatever was heard in the download."""
+    saved = chapters.transcripts(ep)
     for fmt in ("vtt", "srt", "json"):
         if any(t["format"] == fmt for t in saved):
             text = chapters._read(ep, fmt)

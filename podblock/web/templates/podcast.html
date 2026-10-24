@@ -181,6 +181,14 @@
       <input type="checkbox" name="auto_download" value="true" {% if podcast.auto_download %}checked{% endif %}>
       Download new episodes as they appear
     </label>
+    {% if transcriber %}
+    <input type="hidden" name="check_shown" value="true">
+    <label class="tl-check settings-check">
+      <input type="checkbox" name="transcript_check" value="true" {% if transcript_check %}checked{% endif %}>
+      Cut what the feed's transcript leaves out
+    </label>
+    <small class="hint">Transcribes each download to compare. For shows with inserted ads.</small>
+    {% endif %}
     <button class="btn btn-primary btn-sm" type="submit">Save</button>
   </form>
 </section>

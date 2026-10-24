@@ -630,7 +630,7 @@ button.transcript-time:hover { color: var(--accent); text-decoration: underline;
 }
 .k-intro { --c: var(--type-intro); }
 .k-outro { --c: var(--type-outro); }
-.k-break { --c: var(--type-ad); }
+.k-break, .k-missing { --c: var(--type-ad); }
 .k-repeated { --c: var(--type-repeated); }
 .k-show { --c: var(--type-show); }
 .k-ignored { --c: var(--type-ignored); }

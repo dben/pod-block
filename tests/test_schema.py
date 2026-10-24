@@ -31,7 +31,7 @@ SHIPPED = ["9e41bd10322d1b18", "25b49003da210e9e", "a3b543510a6e79fe", "52c4ef83
            "da86379def3017da", "579499483c73fce2", "8584ad1da8ec8f0d", "0ecaa28be5177004", "3d3d0fb58e988193",
            "894c592d023cff02", "2279df03ba58202e", "6746b5025296d568", "03af274d2e0e3f79", "a4894b75bb3c8de0",
            "5dc3b8c724b904c2", "6b5eaf907368114f", "6377acf3b9d7c06e",
-           "6211df782ca7fb5b"]
+           "6211df782ca7fb5b", "43836b6d574fa433"]
 
 
 def tables(db: sqlite3.Connection) -> set[str]:

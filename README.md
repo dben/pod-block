@@ -90,6 +90,9 @@ feeds or audio files and it lists what repeats. See [`CLI.md`](CLI.md).
   it and each download gets captions in the private feed and under the
   episode page's player, made on the CPU. A show can also list phrases
   that end its intro or start its outro; everything past them is cut.
+  For a show whose feed has its own transcripts, the download is
+  transcribed too, and speech the feed's transcript leaves out (inserted
+  ads) is cut.
 - **Stays small.** Downloads are cleaned up a week after they are cut (set
   per podcast), unless you keep them.
 

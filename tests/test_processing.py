@@ -872,6 +872,16 @@ def test_daily_prune_spares_fingerprints_in_use(env):
 
 # ---- more per-podcast settings ------------------------------------------------------
 
+def test_the_transcript_check_is_saved_only_where_the_form_shows_it(env):
+    form = {"retention_days": 7, "refresh_minutes": 60, "fill_gaps": 4}
+    env.client.post(f"/podcasts/{env.pod}/settings", data=form)  # no transcriber: no checkbox
+    assert env.db.execute("SELECT transcript_check FROM podcasts").fetchone()[0] is None
+    env.client.post(f"/podcasts/{env.pod}/settings", data={**form, "check_shown": "true"})
+    assert env.db.execute("SELECT transcript_check FROM podcasts").fetchone()[0] == 0
+    env.client.post(f"/podcasts/{env.pod}/settings", data={**form, "check_shown": "true", "transcript_check": "true"})
+    assert env.db.execute("SELECT transcript_check FROM podcasts").fetchone()[0] == 1
+
+
 def test_a_wider_gap_joins_the_jingle_and_the_ad(env):
     env.client.post(f"/podcasts/{env.pod}/settings",
                     data={"retention_days": 7, "refresh_minutes": 60, "fill_gaps": 35})

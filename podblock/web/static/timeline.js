@@ -29,6 +29,8 @@
     ...data.manual.map((m) => ({ ...m, manual: true, removed: false })),
     // Cut by the show's intro and outro phrases: shown, and changed only through the phrases.
     ...(data.phrases || []).map((p) => ({ ...p, byPhrase: true, value: p.type, saved: p.type, blocks: [], bumpers: [], own: [] })),
+    // Left out of the feed's transcript: shown, and turned off only in the show's settings.
+    ...(data.missing || []).map((m) => ({ ...m, byPhrase: true, value: m.type, saved: m.type, blocks: [], bumpers: [], own: [] })),
   ];
   // False positives that play here: not on the timeline, only in a list of their own, to undo the flag.
   const falses = data.not_repeats.map((x) => ({ ...x, value: "ignored", saved: "ignored", bumpers: [] }));
@@ -76,6 +78,7 @@
     intro: '<path d="M5 5v14M19 12H9m0 0 4-4m-4 4 4 4"/>',
     outro: '<path d="M19 5v14M5 12h10m0 0-4-4m4 4-4 4"/>',
     break: '<rect x="4" y="7" width="16" height="10" rx="2"/><path d="M8 14l1.5-4 1.5 4m-2.4-1.2h1.8M14 10v4h1a2 2 0 0 0 0-4z"/>',
+    missing: '<path d="M4 7h16M4 12h6m4 0h6M4 17h16"/>',
     repeated: '<path d="M17 3l3 3-3 3M4 11V9a3 3 0 0 1 3-3h13M7 21l-3-3 3-3m13-2v2a3 3 0 0 1-3 3H4"/>',
     show: '<path d="m12 4 2.4 4.9 5.4.8-3.9 3.8.9 5.4L12 16.4 7.2 19l.9-5.4-3.9-3.8 5.4-.8z"/>',
     ignored: '<path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z"/><circle cx="12" cy="12" r="2.5"/>',
@@ -98,7 +101,7 @@
     return s.value === "kept" ? "ignored" : s.value;
   }
   function name(s) {
-    if (s.byPhrase) return s.type === "intro" ? "Intro (phrase)" : "Outro (phrase)";
+    if (s.byPhrase) return { intro: "Intro (phrase)", outro: "Outro (phrase)", missing: "Not in transcript" }[s.type];
     if (s.manual) return isNew(s) ? "New section" : "Cut by hand";
     if (s.value === "auto") return s.is_break ? "Ad break" : "Repeat";
     return { intro: "Intro", outro: "Outro", show: "Local", kept: "Kept", ignored: "Not a repeat" }[s.value];
@@ -191,7 +194,8 @@
     li.addEventListener("click", (e) => { if (!e.target.closest("button, select, input, label")) focusSection(s); });
     if (s.byPhrase) {
       li.append(h("div", { class: "tl-item-row" },
-        h("span", { class: "hint" }, `Heard “${s.phrase}”. Change it in the show's settings.`)));
+        h("span", { class: "hint" }, s.type === "missing" ? "Not in the feed's transcript. Turn off in the show's settings."
+                                                          : `Heard “${s.phrase}”. Change it in the show's settings.`)));
     } else if (!s.manual) {
       const row = h("div", { class: "tl-item-row" }, allOwn(s) ? null : valueSelect(s));
       if (s.bumpers.length) row.append(h("span", { class: "hint" }, "Found from the bumpers around it"));
