@@ -562,7 +562,7 @@ podcasts  + author, description, image_url, link, language, categories (JSON), e
             followed, refresh_minutes, feed_etag, feed_last_modified,
             last_refreshed_at, last_error, added_at,
             public_token,                                    -- guards audio links
-            retention_days, auto_download, fill_gaps, sort_oldest,
+            retention_days, auto_download, fill_gaps, max_break, sort_oldest,
             intro_phrases, outro_phrases                     -- JSON lists (phrases.py)
 episodes  + pub_ts, summary, image_url, link, audio_type, audio_length, feed_duration,
             season, episode_number, episode_type, explicit,

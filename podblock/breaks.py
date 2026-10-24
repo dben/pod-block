@@ -21,7 +21,7 @@ NEW_ADS_GAP_SEC = 90.0  # a half-found break joins known blocks this close: new 
 CONFIRM_EDGES = 6  # a bumper seen at a break edge this often...
 CONFIRM_EPISODES = 3  # ...in this many episodes keeps its tag from then on
 JOIN_GAP_SEC = 8.0  # blocks this close together belong to one group
-MAX_BREAK_SEC = 600.0  # a bumper-in and bumper-out further apart do not pair up
+MAX_BREAK_SEC = 300.0  # a bumper-in and bumper-out further apart do not pair up (podcasts.max_break)
 MIN_EDGE_SHARE = 0.5  # share of a block's occurrences that must sit at a group edge
 
 OPENS = {BUMPER_IN, BUMPER}
@@ -152,6 +152,13 @@ def find_breaks(matches: list[SegmentMatch], kinds: dict[int, str],
                 # Another opening sting right after the first: the break starts after both.
                 open_break.start = group_end = max(open_break.start, m.end)
                 open_break.blocks.append(m.segment_id)
+                continue
+            if kind == BUMPER_IN:
+                # A break never holds a second bumper-in, so the first was a
+                # false start (the same sting before a notice, say) or its
+                # bumper-out was missed. Either way the break starts here.
+                give_up(open_break)
+                open_break = open_at(m)
                 continue
             # A break holds at least one ad, so a closer right on the opener's
             # heels is part of the same sting. Shows that play one sting on

@@ -233,6 +233,10 @@ MIGRATIONS = [
     ALTER TABLE podcasts ADD COLUMN outro_phrases TEXT;  -- JSON list
     ALTER TABLE episodes ADD COLUMN phrase_cuts TEXT;  -- JSON list of {type, start, end, phrase}, as last cut
     """,
+    # 17: how far apart a bumper-in and bumper-out can be and still make one ad break
+    """
+    ALTER TABLE podcasts ADD COLUMN max_break REAL NOT NULL DEFAULT 300;  -- seconds
+    """,
 ]
 
 

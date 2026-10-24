@@ -169,16 +169,16 @@ def show_podcast(request: Request, podcast_id: int, view: str = "active", q: str
 @router.post("/podcasts/{podcast_id}/settings")
 def podcast_settings(request: Request, podcast_id: int, retention_days: int = Form(...),
                      refresh_minutes: int = Form(...), fill_gaps: float = Form(4.0), auto_download: bool = Form(False),
-                     sort: str = Form("newest"), user=Depends(current_user),
+                     max_break_minutes: float = Form(5.0), sort: str = Form("newest"), user=Depends(current_user),
                      db: sqlite3.Connection = Depends(get_db)) -> Response:
     _podcast_or_404(db, podcast_id)
     try:
-        new_gap = library.save_settings(db, podcast_id, retention_days, refresh_minutes, fill_gaps, auto_download,
-                                        oldest_first=sort == "oldest")
+        recut = library.save_settings(db, podcast_id, retention_days, refresh_minutes, fill_gaps, auto_download,
+                                      oldest_first=sort == "oldest", max_break=max_break_minutes * 60)
     except library.SettingsError as e:
         flash(request, str(e), "error")
     else:
-        flash(request, "Saved." + (" Process episodes again to cut them with the new gap." if new_gap else ""))
+        flash(request, "Saved." + (" Process episodes again to cut them with the new settings." if recut else ""))
     return RedirectResponse(f"/podcasts/{podcast_id}?tab=settings#tabs", status_code=303)
 
 

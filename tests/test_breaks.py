@@ -70,3 +70,32 @@ def test_breaks_from_bumpers_and_from_plain_groups():
         (900, 900, None, 3),
         (2000, 2100, None, None),
     ]
+
+
+def test_a_second_bumper_in_starts_the_break_again():
+    # The show's bumper-in plays before a short notice, then the episode runs
+    # on until the real break, which opens with the same sting.
+    kinds = {1: BUMPER_IN, 3: BUMPER_OUT}
+    matches = [
+        SegmentMatch(1, 100, 104, 0, 50),  # before the notice
+        SegmentMatch(1, 280, 284, 0, 50),
+        SegmentMatch(5, 290, 350, 0, 300),
+        SegmentMatch(3, 380, 384, 0, 50),
+    ]
+
+    breaks = [(b.start, b.end) for b in find_breaks(matches, kinds) if b.length > 0]
+
+    assert breaks == [(284, 380)]
+
+
+def test_bumpers_further_apart_than_the_longest_break_do_not_pair():
+    kinds = {1: BUMPER_IN, 3: BUMPER_OUT}
+    matches = [
+        SegmentMatch(1, 100, 104, 0, 50),  # a lone sting before a notice
+        SegmentMatch(5, 330, 390, 0, 300),  # the real break: no bumper-in, then a known ad
+        SegmentMatch(3, 400, 404, 0, 50),
+    ]
+
+    assert [(b.start, b.end) for b in find_breaks(matches, kinds, max_break=600)] == [(104, 400)]
+    # The ad and bumper-out still mark the real break.
+    assert [(b.start, b.end) for b in find_breaks(matches, kinds, max_break=240) if b.length > 0] == [(330, 400)]

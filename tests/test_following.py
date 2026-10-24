@@ -178,8 +178,13 @@ def test_podcast_settings_are_checked_and_say_when_the_gap_changed(db, web):
         library.save_settings(db, pod, 9999, 60, 4, False, False)
     assert not library.save_settings(db, pod, 3, 60, 4, True, True)  # 4 seconds is the gap already
     assert library.save_settings(db, pod, 3, 60, 10, True, True)
+    assert not library.save_settings(db, pod, 3, 60, 10, True, True, max_break=300)
+    assert library.save_settings(db, pod, 3, 60, 10, True, True, max_break=420)
+    with pytest.raises(library.SettingsError):
+        library.save_settings(db, pod, 3, 60, 10, True, True, max_break=10)
     row = db.execute("SELECT * FROM podcasts WHERE id = ?", (pod,)).fetchone()
-    assert (row["retention_days"], row["fill_gaps"], row["auto_download"], row["sort_oldest"]) == (3, 10, 1, 1)
+    assert (row["retention_days"], row["fill_gaps"], row["auto_download"], row["sort_oldest"],
+            row["max_break"]) == (3, 10, 1, 1, 420)
 
 
 def test_feeds_that_move_are_followed(db, web):

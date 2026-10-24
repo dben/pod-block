@@ -17,6 +17,7 @@ import time
 from pathlib import Path
 
 from .. import cut
+from ..breaks import MAX_BREAK_SEC
 from ..feed import download
 from ..fingerprint import fingerprint_file
 from ..matcher import MatchParams
@@ -95,9 +96,12 @@ def _fetch(ctx: Context, settings: Settings, store: Store, paths: Paths, episode
         store.upsert_episode(ep["guid"], fingerprint_path=str(fp_path), duration=fp.duration)
 
 
-def _fill_gaps(db: sqlite3.Connection, podcast_id: int | None) -> float:
-    row = db.execute("SELECT fill_gaps FROM podcasts WHERE id = ?", (podcast_id,)).fetchone()
-    return row["fill_gaps"] if row is not None else FILL_GAPS
+def _cutting(db: sqlite3.Connection, podcast_id: int | None) -> dict:
+    """A podcast's settings for episode_report."""
+    row = db.execute("SELECT fill_gaps, max_break FROM podcasts WHERE id = ?", (podcast_id,)).fetchone()
+    if row is None:
+        return {"fill_gaps": FILL_GAPS, "max_break": MAX_BREAK_SEC}
+    return {"fill_gaps": row["fill_gaps"], "max_break": row["max_break"]}
 
 
 def cuts(db: sqlite3.Connection, episode_id: int, report: dict,
@@ -195,8 +199,8 @@ def run(ctx: Context, settings: Settings) -> None:
             else:
                 rescan(store, episode_id, params, heard=True)
                 added = 0
-            gaps = _fill_gaps(ctx.db, ep["podcast_id"])
-            reports = {ep_id: episode_report(store, ep_id, params, fill_gaps=gaps) for ep_id in group}
+            cutting = _cutting(ctx.db, ep["podcast_id"])
+            reports = {ep_id: episode_report(store, ep_id, params, **cutting) for ep_id in group}
         for ep_id in group:
             _render(ctx, settings, ep_id, reports[ep_id])
         for ep_id in group:
@@ -408,7 +412,7 @@ def run_edit(ctx: Context, settings: Settings) -> None:
                 for edit_id in changes["remove"]:
                     ctx.db.execute("DELETE FROM edits WHERE id = ? AND episode_id = ?", (edit_id, episode_id))
             rescan(store, episode_id, params, heard=True)
-            report = episode_report(store, episode_id, params, fill_gaps=_fill_gaps(ctx.db, ep["podcast_id"]))
+            report = episode_report(store, episode_id, params, **_cutting(ctx.db, ep["podcast_id"]))
         _render(ctx, settings, episode_id, report)
         others = touched - {episode_id}
         if any(a["as_block"] for a in changes["add"]):  # a new block may well play in the show's other episodes

@@ -78,6 +78,9 @@ then on, since fingerprints made with different settings never match.
   `0` lists them all.
 - `--fill-gaps 30`: take in up to 30 s of unique audio when it sits between
   two repeated parts, so a short gap between ads doesn't split a break.
+- `--max-break 300`: a bumper-in with no bumper-out within this many
+  seconds (default 300) doesn't open a break. Keeps a sting played before
+  a short notice from cutting everything up to the next break's end.
 - `--neighbors 3`: first fetch the 3 nearest episodes in the feed (newer and
   older), compare them with this one and store any new blocks. Good for
   catching ads that only ran for a week or two.

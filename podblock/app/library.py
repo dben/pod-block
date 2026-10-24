@@ -25,6 +25,7 @@ MAX_IDS = 5000  # per bulk action
 RETENTION_DAYS = (0, 3650)  # the range of each podcast setting
 REFRESH_MINUTES = (15, 7 * 24 * 60)
 FILL_GAPS = (0, 120)
+MAX_BREAK = (60, 1800)
 
 
 class SettingsError(ValueError):
@@ -94,19 +95,22 @@ def cut_seconds(db: sqlite3.Connection, podcast_id: int) -> float:
 
 
 def save_settings(db: sqlite3.Connection, podcast_id: int, retention_days: int, refresh_minutes: int,
-                  fill_gaps: float, auto_download: bool, oldest_first: bool) -> bool:
-    """Save a podcast's settings, shared by everyone. Returns whether the gap of new audio cut between two
-    repeats changed: episodes cut before keep the old gap until they are processed again."""
+                  fill_gaps: float, auto_download: bool, oldest_first: bool, max_break: float = 300) -> bool:
+    """Save a podcast's settings, shared by everyone. Returns whether a setting that decides the cuts changed
+    (the gap of new audio cut between two repeats, the longest ad break): episodes cut before keep the old cuts
+    until they are processed again."""
     if not (RETENTION_DAYS[0] <= retention_days <= RETENTION_DAYS[1]
             and REFRESH_MINUTES[0] <= refresh_minutes <= REFRESH_MINUTES[1]
-            and FILL_GAPS[0] <= fill_gaps <= FILL_GAPS[1]):
+            and FILL_GAPS[0] <= fill_gaps <= FILL_GAPS[1]
+            and MAX_BREAK[0] <= max_break <= MAX_BREAK[1]):
         raise SettingsError("Those settings are out of range.")
     with transaction(db):
-        old = db.execute("SELECT fill_gaps FROM podcasts WHERE id = ?", (podcast_id,)).fetchone()
-        db.execute("UPDATE podcasts SET retention_days = ?, refresh_minutes = ?, fill_gaps = ?, auto_download = ?, "
-                   "sort_oldest = ? WHERE id = ?",
-                   (retention_days, refresh_minutes, fill_gaps, int(auto_download), int(oldest_first), podcast_id))
-    return old is not None and old["fill_gaps"] != fill_gaps
+        old = db.execute("SELECT fill_gaps, max_break FROM podcasts WHERE id = ?", (podcast_id,)).fetchone()
+        db.execute("UPDATE podcasts SET retention_days = ?, refresh_minutes = ?, fill_gaps = ?, max_break = ?, "
+                   "auto_download = ?, sort_oldest = ? WHERE id = ?",
+                   (retention_days, refresh_minutes, fill_gaps, max_break, int(auto_download), int(oldest_first),
+                    podcast_id))
+    return old is not None and (old["fill_gaps"], old["max_break"]) != (fill_gaps, max_break)
 
 
 def episode(db: sqlite3.Connection, user_id: int, episode_id: int) -> sqlite3.Row | None:
