@@ -163,6 +163,14 @@
       </span>
     </label>
     <label class="field">
+      <span>Longest ad break</span>
+      <span class="input-with-unit">
+        <input class="input" type="number" name="max_break_minutes" min="1" max="30" step="0.5" value="{{ '%g' % (podcast.max_break / 60) }}" required>
+        <span class="muted">minutes</span>
+      </span>
+      <small class="hint">Bumpers further apart don't mark a break.</small>
+    </label>
+    <label class="field">
       <span>List episodes</span>
       <select class="input" name="sort">
         <option value="newest">Newest first</option>
@@ -173,6 +181,14 @@
       <input type="checkbox" name="auto_download" value="true" {% if podcast.auto_download %}checked{% endif %}>
       Download new episodes as they appear
     </label>
+    {% if show_check %}
+    <input type="hidden" name="check_shown" value="true">
+    <label class="tl-check settings-check">
+      <input type="checkbox" name="transcript_check" value="true" {% if transcript_check %}checked{% endif %}>
+      Cut what the feed's transcript leaves out
+    </label>
+    <small class="hint">Transcribes each download to compare. For shows with inserted ads.</small>
+    {% endif %}
     <button class="btn btn-primary btn-sm" type="submit">Save</button>
   </form>
 </section>

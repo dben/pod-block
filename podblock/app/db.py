@@ -250,6 +250,16 @@ MIGRATIONS = [
     CREATE INDEX timings_at ON timings(at);
     CREATE INDEX timings_job ON timings(job_id);
     """,
+    # 18: how far apart a bumper-in and bumper-out can be and still make one ad break
+    """
+    ALTER TABLE podcasts ADD COLUMN max_break REAL NOT NULL DEFAULT 480;  -- seconds
+    """,
+    # 19: checking feed transcripts for the ads they leave out (missing.py)
+    """
+    ALTER TABLE podcasts ADD COLUMN transcript_check INTEGER;  -- NULL: on when its feed has transcripts
+    ALTER TABLE episodes ADD COLUMN missing_cuts TEXT;  -- JSON list of {type, start, end}, as last cut
+    ALTER TABLE episodes ADD COLUMN missing_kept TEXT;  -- JSON list of [start, end]: stretches kept on the timeline
+    """,
 ]
 
 

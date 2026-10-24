@@ -211,6 +211,7 @@ def test_transcribing_again_replaces_the_feeds_transcript_and_earlier_captions(d
     feeds.write_text("1\n00:00:01,000 --> 00:00:02,000\nThe feed's own\n")
     db.execute("UPDATE episodes SET transcripts = ? WHERE id = 1",
                (json.dumps([{"format": "srt", "path": str(feeds)}]),))
+    db.execute("UPDATE podcasts SET transcript_check = 0")
     db.commit()
     assert captions.queue(db, setup, [1], None) == []  # it has one
     assert captions.queue(db, setup, [1], None, force=True) == [1]
@@ -224,6 +225,38 @@ def test_transcribing_again_replaces_the_feeds_transcript_and_earlier_captions(d
     assert worker.run_job(setup, db, jobs.claim(db, kinds=(captions.KIND,))) == "done"
     assert [t["path"] for t in chapters.transcripts(episode(db))] == [saved["path"]]
     assert all(Path(f).exists() for f in files) and len(service.model.calls) == 2
+
+
+def test_a_checked_feed_transcript_is_kept_to_check_and_the_captions_served(db, setup, service, tmp_path):
+    from podblock.app import missing, phrases
+    feeds = tmp_path / "media/transcripts/feed.srt"
+    feeds.parent.mkdir(parents=True)
+    feeds.write_text("1\n00:00:02,000 --> 00:00:03,500\nThe show itself starts here.\n")
+    db.execute("UPDATE episodes SET transcripts = ?, duration = 20 WHERE id = 1",
+               (json.dumps([{"format": "srt", "path": str(feeds)}]),))
+    db.commit()
+    assert missing.enabled(db, setup, 1)  # on by itself: the feed has transcripts
+    assert captions.queue(db, setup, [1], None) == [1]
+    assert worker.run_job(setup, db, jobs.claim(db, kinds=(captions.KIND,))) == "done"
+
+    (served,) = chapters.transcripts(episode(db))
+    assert served["made"] == "whisper"  # timed to the download, ads and all
+    (_, kept) = chapters.transcripts(episode(db), reference=True)
+    assert kept == {"format": "srt", "path": str(feeds), "reference": True} and feeds.exists()
+    assert phrases.feed_words(episode(db))[0][2] == "the"
+    assert "The feed" not in chapters.captions(episode(db))
+    assert phrases.words(episode(db))[0] == (1.0, 1.3, "an")
+    queued = db.execute("SELECT kind, episode_id, payload FROM jobs WHERE state = 'queued'").fetchall()
+    assert [tuple(r) for r in queued] == [("process", 1, '{"recut": true}')]
+    assert captions.queue(db, setup, [1], None) == []  # checked once
+
+    db.execute("UPDATE podcasts SET transcript_check = 0")
+    db.commit()
+    assert missing.fit(db, setup, episode(db)) is None  # turned off
+
+    from podblock.app import retention
+    retention.clear(db, episode(db))
+    assert not feeds.exists()  # the feed's goes with the download too
 
 
 def test_the_downloads_page_queues_episodes_to_transcribe_again(db, setup):

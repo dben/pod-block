@@ -11,7 +11,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from .breaks import AdBreak, find_breaks
+from .breaks import MAX_BREAK_SEC, AdBreak, find_breaks
 from .feed import download, fetch_feed
 from .fingerprint import FingerprintConfig, fingerprint_file
 from .matcher import MatchParams
@@ -110,7 +110,7 @@ def cmd_report(args, store: Store, paths: Paths) -> None:
 
     find_common_blocks(store, [ep_id], params, same=args.compare_same, other=args.compare_other)
     show(args, episode_report(store, ep_id, params, fill_gaps=args.fill_gaps, outro_bed=args.outro_bed or None,
-                              min_section=args.min_section))
+                              min_section=args.min_section, max_break=args.max_break))
 
 
 def fetch_neighbours(args, store: Store, paths: Paths, ep_id: int) -> None:
@@ -145,7 +145,7 @@ def report_data(args, store: Store, title: str, duration: float, matches,
                 ep_id: int | None = None, outro_bed_start: float | None = None, podcast_id: int | None = None) -> dict:
     sections = build_sections(matches, store.types(podcast_id), duration, fill_gaps=args.fill_gaps,
                               outro_bed_start=outro_bed_start, min_section=args.min_section,
-                              pinned=store.hand_typed())
+                              pinned=store.hand_typed(), max_break=args.max_break)
     return {"episode_id": ep_id, "title": title, "duration": round(duration, 2),
             "repeated_sec": round(sum(s.length for s in sections), 2),
             "sections": [s.to_dict() for s in sections]}
@@ -465,6 +465,9 @@ def main(argv: list[str] | None = None) -> None:
                    help="first fetch the K nearest episodes in the feed and look for new repeats")
     p.add_argument("--fill-gaps", type=float, default=0.0, metavar="SEC",
                    help="take in up to SEC seconds of unique audio between repeats (default: 0)")
+    p.add_argument("--max-break", type=float, default=MAX_BREAK_SEC, metavar="SEC",
+                   help="a bumper-in and bumper-out further apart than this don't make a break "
+                        "(default: %(default)s)")
     p.add_argument("--outro-bed", action="store_true",
                    help="look for an outro read over a music bed, even if the podcast setting is off")
     p.add_argument("--min-section", type=float, default=MIN_SECTION_SEC, metavar="SEC",

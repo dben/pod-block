@@ -38,12 +38,20 @@ class Addition(BaseModel):
     type: str = "show"
 
 
+class MissingKeep(BaseModel):
+    """A stretch left out of the feed's transcript, kept (not cut) or cut again."""
+    start: float
+    end: float
+    keep: bool
+
+
 class Edits(BaseModel):
     """The changes the timeline saves (`changes()` in timeline.js)."""
     types: list[TypeChange] = []
     add: list[Addition] = []
     remove: list[int] = []  # hand-made cuts to undo, by id
     delete: list[int] = []  # blocks marked by hand to delete, by id
+    missing: list[MissingKeep] = []
 
 
 def _episode(db: sqlite3.Connection, user_id: int, episode_id: int) -> sqlite3.Row:

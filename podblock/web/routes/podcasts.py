@@ -9,7 +9,7 @@ import segno
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 
-from ...app import directory, filters, following, library, phrases, private_feeds, storage
+from ...app import captions, directory, filters, following, library, missing, phrases, private_feeds, storage
 from ..deps import admin_user, current_user, feed_url, get_db, wake_worker
 from ..templating import flash, page, plural
 
@@ -171,7 +171,10 @@ def show_podcast(request: Request, podcast_id: int, view: str = "active", q: str
     if tab == "settings":
         intro, outro = phrases.of_podcast(db, podcast_id)
         context.update(intro_phrases=params.get("intro", "\n".join(intro)),
-                       outro_phrases=params.get("outro", "\n".join(outro)))
+                       outro_phrases=params.get("outro", "\n".join(outro)),
+                       transcript_check=missing.enabled(db, request.app.state.settings, podcast_id),
+                       show_check=bool(request.app.state.settings.whisper_url)
+                       and (missing.has_feed_transcripts(db, podcast_id) or pod["transcript_check"]))
     return page(request, "podcast.html", title=pod["name"], nav="podcasts", user=user,
                 cut_sec=library.cut_seconds(db, podcast_id),
                 subscribed=library.subscribed(db, user["id"], podcast_id),
@@ -183,17 +186,37 @@ def show_podcast(request: Request, podcast_id: int, view: str = "active", q: str
 @router.post("/podcasts/{podcast_id}/settings")
 def podcast_settings(request: Request, podcast_id: int, retention_days: int = Form(...),
                      refresh_minutes: int = Form(...), fill_gaps: float = Form(4.0), auto_download: bool = Form(False),
-                     sort: str = Form("newest"), user=Depends(current_user),
+                     max_break_minutes: float = Form(8.0), sort: str = Form("newest"),
+                     transcript_check: bool = Form(False), check_shown: bool = Form(False), user=Depends(current_user),
                      db: sqlite3.Connection = Depends(get_db)) -> Response:
     _podcast_or_404(db, podcast_id)
     try:
-        new_gap = library.save_settings(db, podcast_id, retention_days, refresh_minutes, fill_gaps, auto_download,
-                                        oldest_first=sort == "oldest")
+        recut = library.save_settings(db, podcast_id, retention_days, refresh_minutes, fill_gaps, auto_download,
+                                      oldest_first=sort == "oldest", max_break=max_break_minutes * 60)
     except library.SettingsError as e:
         flash(request, str(e), "error")
     else:
-        flash(request, "Saved." + (" Process episodes again to cut them with the new gap." if new_gap else ""))
+        note = " Process episodes again to cut them with the new settings." if recut else ""
+        if check_shown:
+            note += _save_check(request, db, podcast_id, transcript_check, user["id"])
+        flash(request, "Saved." + note)
     return RedirectResponse(f"/podcasts/{podcast_id}?tab=settings#tabs", status_code=303)
+
+
+def _save_check(request: Request, db: sqlite3.Connection, podcast_id: int, on: bool, user_id: int) -> str:
+    """Turn the transcript check on or off, and queue what that changes. Returns a note for the flash."""
+    settings = request.app.state.settings
+    was = missing.enabled(db, settings, podcast_id)
+    missing.save_setting(db, podcast_id, on)
+    if on and not was:
+        queued = captions.queue(db, settings, missing.downloaded(db, podcast_id), user_id)
+        wake_worker(request)
+        return f" Checking {plural(len(queued), 'transcript')}." if queued else ""
+    if was and not on:
+        queued = missing.requeue(db, podcast_id, user_id, note="Waiting to be cut again: the transcript check is off")
+        wake_worker(request)
+        return f" Cutting {plural(len(queued), 'episode')} again." if queued else ""
+    return ""
 
 
 @router.post("/podcasts/{podcast_id}/phrases")

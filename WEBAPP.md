@@ -260,6 +260,21 @@ on Kubernetes, with backups and upgrades, see `deployment/README.md`.
   new phrases queues the ready episodes they cut differently. The timeline
   shows these cuts as Intro (phrase) and Outro (phrase), changed only
   through the phrases.
+- Missing from the transcript (`podblock/app/missing.py`): shows with
+  inserted ads usually make their feed's transcript before the ads go in.
+  With the transcriber set, a show whose feed has transcripts has each
+  download transcribed too (a checkbox in its settings, on by default for
+  those shows), and the two lined up word for word. Speech heard with
+  nothing for it in the feed's transcript, or audio that runs on much
+  longer than the transcript does between the same two words, is cut when
+  it lasts 20 s or more. A break found from bumpers that is mostly what the
+  transcript has is dropped, but only once the transcript is known to leave
+  ads out. The download's captions are then served in place of the feed's
+  transcript, whose times run behind after each ad; the feed's stays on the
+  episode to check against. The checkbox shows only when the feed lists
+  transcripts (in its newest 20 items) or the check was turned on. The
+  timeline shows these cuts as Not in transcript, each with Don't cut this,
+  kept for that episode; chapters call them ad breaks.
 - Each join gets a chapter saying what was cut and how much: "1:32 ad break
   cut", or, inside a chapter of the source's, "Interview (after 1:32 ad
   break cut)". An episode with no chapters of its own gets a "Start"
@@ -526,7 +541,8 @@ on Kubernetes, with backups and upgrades, see `deployment/README.md`.
   downloaded is left alone.
 - The Settings tab sets days before clean-up, how often to check the feed
   (15 minutes to a week), how close two repeats must be to be combined,
-  oldest first, and whether new episodes download on their own, and lists
+  the longest ad break, oldest first, whether new episodes download on
+  their own, and whether the feed's transcripts are checked, and lists
   the show's intro and outro phrases. Settings are shared.
 
 ### Look and feel
@@ -577,8 +593,9 @@ podcasts  + author, description, image_url, link, language, categories (JSON), e
             followed, refresh_minutes, feed_etag, feed_last_modified,
             last_refreshed_at, last_error, added_at,
             public_token,                                    -- guards audio links
-            retention_days, auto_download, fill_gaps, sort_oldest,
-            intro_phrases, outro_phrases                     -- JSON lists (phrases.py)
+            retention_days, auto_download, fill_gaps, max_break, sort_oldest,
+            intro_phrases, outro_phrases,                    -- JSON lists (phrases.py)
+            transcript_check                                 -- NULL: on when its feed has transcripts
 episodes  + pub_ts, summary, image_url, link, audio_type, audio_length, feed_duration,
             season, episode_number, episode_type, explicit,
             item_xml,                                        -- raw <item>
@@ -591,6 +608,8 @@ episodes  + pub_ts, summary, image_url, link, audio_type, audio_length, feed_dur
             cut_chapters,                                    -- the chapters written into the cut file
             held_by,                                         -- the running job working on it
             phrase_cuts,                                     -- the intro and outro its phrases cut, as last cut
+            missing_cuts,                                    -- what its feed's transcript leaves out, as last cut
+            missing_kept,                                    -- those kept on the timeline, as spans
             ready_at, expired_at                             -- the retention clock
 
 jobs(id, kind, episode_id, state, step, progress, error, cancel_requested, attempts,

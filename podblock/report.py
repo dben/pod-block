@@ -23,11 +23,12 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 
-from .breaks import BUMPER_TYPES, find_breaks
+from .breaks import BUMPER_TYPES, MAX_BREAK_SEC, find_breaks
 from .store import IGNORED, INTRO, KEPT, OUTRO, REPEATED, SHOW, TYPES, SegmentMatch
 
 BREAK = "break"
 JOIN_SEC = 2.0  # parts this close always merge
+SPOKEN_SHARE = 0.5  # a break found from bumpers that is this much the show itself is no break
 MIN_SECTION_SEC = 15.0  # shorter sections are left in, unless they are breaks or typed by hand
 ORDER = [INTRO, OUTRO, BREAK, *TYPES]  # how a section's types are listed
 SKIPPED = (KEPT, IGNORED)  # never cut
@@ -71,9 +72,12 @@ class Section:
 
 def build_sections(matches: list[SegmentMatch], types: dict[int, str], duration: float,
                    fill_gaps: float = 0.0, outro_bed_start: float | None = None,
-                   min_section: float = MIN_SECTION_SEC, pinned: set[int] = frozenset()) -> list[Section]:
+                   min_section: float = MIN_SECTION_SEC, pinned: set[int] = frozenset(),
+                   max_break: float = MAX_BREAK_SEC, spoken: list[tuple[float, float]] = ()) -> list[Section]:
     """`outro_bed_start` is where a talked-over music-bed outro begins, if one was found.
-    `pinned` blocks (typed by hand) make a section stay however short it is."""
+    `pinned` blocks (typed by hand) make a section stay however short it is. A bumper-in and bumper-out more
+    than `max_break` seconds apart do not make a break, and neither do bumpers around what is mostly `spoken`:
+    the show itself, as its transcript has it (app/missing.py)."""
     matches = [m for m in matches if types.get(m.segment_id) not in SKIPPED]
     # Bumpers only mark breaks; hosts often talk over them, so they are left out.
     parts = [Part(m.start, m.end, types.get(m.segment_id, REPEATED), m.segment_id) for m in matches
@@ -89,8 +93,9 @@ def build_sections(matches: list[SegmentMatch], types: dict[int, str], duration:
         max(outros, key=lambda p: p.end).end = duration
 
     # Breaks without bumpers are only their known blocks, which are parts already.
-    parts += [Part(b.start, b.end, BREAK) for b in find_breaks(matches, types)
-              if (b.opened_by is not None or b.closed_by is not None) and b.length > 0]
+    parts += [Part(b.start, b.end, BREAK) for b in find_breaks(matches, types, max_break)
+              if (b.opened_by is not None or b.closed_by is not None) and b.length > 0
+              and _overlap(b.start, b.end, spoken) < SPOKEN_SHARE * b.length]
 
     sections: list[Section] = []
     reach = max(JOIN_SEC, fill_gaps)
@@ -107,6 +112,11 @@ def build_sections(matches: list[SegmentMatch], types: dict[int, str], duration:
     keeps = {INTRO, OUTRO, SHOW, BREAK}
     return [s for s in sections if s.length >= min_section
             or any(p.type in keeps or p.block in pinned for p in s.parts)]
+
+
+def _overlap(start: float, end: float, spans) -> float:
+    """Seconds of start-end that the spans cover."""
+    return sum(max(0.0, min(end, b) - max(start, a)) for a, b in spans)
 
 
 def skipped(matches: list[SegmentMatch], types: dict[int, str], kind: str,
