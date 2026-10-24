@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
-from urllib.parse import urlencode
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 import segno
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
@@ -124,6 +124,20 @@ def _list_url(podcast_id: int, view: str, narrow: set[str], q: str = "", **extra
     return f"/podcasts/{podcast_id}" + (f"?{urlencode(query)}" if query else "")
 
 
+def list_return_url(request: Request, podcast_id: int) -> str:
+    """Where a link back to the show should go: the episode list as it was (view, narrows, search) when the
+    page was reached from it, else the show's page."""
+    ref = urlsplit(request.headers.get("referer", ""))
+    if ref.netloc != request.url.netloc or ref.path.rstrip("/") != f"/podcasts/{podcast_id}":
+        return f"/podcasts/{podcast_id}"
+    params = {k: v[0] for k, v in parse_qs(ref.query).items()}
+    if params.get("tab", "episodes") != "episodes":
+        return f"/podcasts/{podcast_id}"
+    view = params.get("view", "active")
+    narrow = {n for n in NARROWS if params.get(n, "").lower() in {"1", "true", "on", "yes"} or view == n}
+    return _list_url(podcast_id, view if view in VIEWS else "active", narrow, params.get("q", ""))
+
+
 @router.get("/podcasts/{podcast_id}")
 def show_podcast(request: Request, podcast_id: int, view: str = "active", q: str = "", tab: str = "",
                  downloaded: bool = False, grabbed: bool = False,
@@ -169,7 +183,7 @@ def show_podcast(request: Request, podcast_id: int, view: str = "active", q: str
 @router.post("/podcasts/{podcast_id}/settings")
 def podcast_settings(request: Request, podcast_id: int, retention_days: int = Form(...),
                      refresh_minutes: int = Form(...), fill_gaps: float = Form(4.0), auto_download: bool = Form(False),
-                     max_break_minutes: float = Form(5.0), sort: str = Form("newest"), user=Depends(current_user),
+                     max_break_minutes: float = Form(8.0), sort: str = Form("newest"), user=Depends(current_user),
                      db: sqlite3.Connection = Depends(get_db)) -> Response:
     _podcast_or_404(db, podcast_id)
     try:

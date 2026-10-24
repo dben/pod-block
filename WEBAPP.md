@@ -32,7 +32,7 @@ built, and what could come next.
 | Timeline and player | `static/timeline.js`, no library | a canvas over the part in view, with waveform data worked out on the server |
 | Styling | hand-written CSS with custom properties | dark by default, mobile first, no build step |
 | Database | `podblock.sqlite`, through `sqlite3` as the detector's `Store` does | one file on a volume; the app's tables are added by numbered steps in `podblock/app/db.py` |
-| Background work | a worker process, `podblock worker`, that `serve` starts and restarts; inside it, threads (`PODBLOCK_WORKERS`, default 1) take jobs from a table in the database, one more takes captions jobs, and one more refreshes feeds and cleans up | survives restarts, needs no broker; a crash or memory spike in a job can't take the pages down; the two share only the database, so the worker can move to its own container later |
+| Background work | a worker process, `podblock worker`, that `serve` starts and restarts; inside it, threads (`PODBLOCK_WORKERS`, default 1) take jobs from a table in the database, more (`PODBLOCK_CAPTION_WORKERS`, default 1) take captions jobs, and one more refreshes feeds and cleans up | survives restarts, needs no broker; a crash or memory spike in a job can't take the pages down; the two share only the database, so the worker can move to its own container later |
 | Audio cutting | `podblock/cut.py`: one ffmpeg decodes to raw samples, Python drops the cut stretches and fades each join, a second ffmpeg encodes | flat memory whatever the length, cuts on the exact sample, real fades; one decode and one encode |
 
 ## How it fits together
@@ -116,6 +116,7 @@ Others:
 | `PODBLOCK_PUBLIC_URL` | base URL for links in the private feed, e.g. `https://pods.example.com`; falls back to the address the request came to |
 | `PODBLOCK_WORKERS` | threads running jobs (default 1). Fingerprinting takes about 0.3 GB and one core per thread |
 | `PODBLOCK_WHISPER_URL` | the transcription service, e.g. `http://pod-block-whisper:9000`; when set, downloads without a timed transcript get captions (`whisper/README.md`) |
+| `PODBLOCK_CAPTION_WORKERS` | captions jobs at once (default 1); set it to the transcription service's replicas |
 | `PODBLOCK_JOBS` | where jobs run: `process` (default, a `podblock worker` that `serve` starts), `threads` (inside `serve`) or `none` (run `podblock worker` yourself; only one may run) |
 | `FORWARDED_ALLOW_IPS` | Uvicorn's own: which proxies to trust for `X-Forwarded-*` headers; set it to the ingress's address range |
 
@@ -238,7 +239,8 @@ on Kubernetes, with backups and upgrades, see `deployment/README.md`.
   back as WebVTT, `rel="captions"`, among the episode's transcripts, so it is
   shifted and served like a feed's own. The job names its episode in its
   payload rather than holding it, so the episode stays ready and editable
-  meanwhile, and captions jobs take a worker thread of their own. When the
+  meanwhile, and captions jobs take worker threads of their own
+  (`PODBLOCK_CAPTION_WORKERS`, one per transcription replica). When the
   service has speakers on, the turns it finds are saved beside the captions
   (`podblock/app/speakers.py`), for `podblock speakers` to set beside the
   repeats; they don't go into the captions or the cuts yet. Each word's
@@ -272,6 +274,19 @@ on Kubernetes, with backups and upgrades, see `deployment/README.md`.
 - When a download finds new blocks, the show's other ready episodes are
   queued to be cut again; those whose cut wouldn't change are done in
   moments. A re-cut never sets off more re-cuts.
+- Each job times its steps (`podblock/timing.py`, saved by
+  `podblock/app/timings.py` into the `timings` table, kept 90 days):
+  download, fingerprint, finding repeats and each of its parts (loading
+  fingerprints, comparing pairs, storing new blocks, rescans, splitting and
+  dropping blocks, bumpers, reports, and the wait for another job's
+  repeats), cut and waveform; and for captions, sending the audio, waiting
+  for a free transcriber, transcribing and who speaks when. Only steps that
+  finish are kept, and only a job that finishes gets a row for the whole of
+  it. Re-cuts are saved as kind `recut`. The admin's **Timings** page
+  (`/timings`, linked from Jobs) sums them up per kind of job over 7, 30 or
+  90 days (runs, median, slowest 10%, time per hour of audio, total) and
+  lists the latest jobs step by step; `/timings.csv` has every row. The
+  transcription service also logs each episode's times.
 - The episode page shows the status (queued and running ones update
   themselves), a player and a download for the cut file, and how much was
   cut, with the show notes beside it (below it on a phone), then the
@@ -581,6 +596,7 @@ episodes  + pub_ts, summary, image_url, link, audio_type, audio_length, feed_dur
 jobs(id, kind, episode_id, state, step, progress, error, cancel_requested, attempts,
      requested_by, created_at, started_at, finished_at, payload)
 edits(id, episode_id, start, end, created_by, created_at)    -- sections cut by hand, this episode only
+timings(id, job_id, kind, step, episode_id, seconds, audio, count, detail, at)  -- how long each step took
 ```
 
 Connections get a `REGEXP` function (`db.connect`), so filters run in SQL.
@@ -636,6 +652,7 @@ only looks at fingerprinted ones, so they don't affect it.
 | `GET /users`, `POST /users` | admin | list users; add one (`username`, `password`) |
 | `POST /users/{id}/password`, `POST /users/{id}/remove` | admin | new password; remove |
 | `GET /downloads?sort=` | admin | every download on disk, with sizes |
+| `GET /timings?days=`, `GET /timings.csv?days=` | admin | how long each step of the jobs takes; every timing as CSV |
 | `POST /downloads/delete` | admin | delete the files of `ids` |
 | `POST /downloads/transcribe` | admin | transcribe `ids` again, replacing any transcript they have |
 

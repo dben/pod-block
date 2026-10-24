@@ -95,7 +95,7 @@ def cut_seconds(db: sqlite3.Connection, podcast_id: int) -> float:
 
 
 def save_settings(db: sqlite3.Connection, podcast_id: int, retention_days: int, refresh_minutes: int,
-                  fill_gaps: float, auto_download: bool, oldest_first: bool, max_break: float = 300) -> bool:
+                  fill_gaps: float, auto_download: bool, oldest_first: bool, max_break: float = 480) -> bool:
     """Save a podcast's settings, shared by everyone. Returns whether a setting that decides the cuts changed
     (the gap of new audio cut between two repeats, the longest ad break): episodes cut before keep the old cuts
     until they are processed again."""

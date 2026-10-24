@@ -86,8 +86,8 @@ the transcription service from [`whisper/`](../whisper/) beside it:
 kubectl apply -k deployment/whisper/
 ```
 
-Then uncomment `PODBLOCK_WHISPER_URL` in `kustomization.yaml` and apply it
-again. Each episode downloaded after that gets a captions job once it is cut.
+Then uncomment `PODBLOCK_WHISPER_URL` and `PODBLOCK_CAPTION_WORKERS` in
+`kustomization.yaml` and apply it again. Each episode downloaded after that gets a captions job once it is cut.
 It's ready in the feed straight away; the captions follow when the job is
 done.
 
@@ -99,9 +99,17 @@ Before you apply it, change these in `whisper/kustomization.yaml`:
 - **`WHISPER_SPEAKERS`**: `true` also records who speaks when, for
   `podblock speakers`. Adds about 0.17 of the episode's length.
 
+And in `whisper/whisper.yaml`:
+
+- **`replicas`**: episodes transcribed at once, one each. Keep
+  `PODBLOCK_CAPTION_WORKERS` the same.
+- **`storageClassName`**: one that can do ReadWriteMany, as the replicas
+  share the models volume. Without one, see the note above the volume.
+
 It is its own Deployment, Service and volume (`pod-block-whisper-models`,
 5 GiB, for the downloaded models), with its own labels, so it never mixes
-with pod-block's pods. It runs as uid 1000 with a read-only root file system,
+with pod-block's pods. Replicas spread across nodes where they can, and a
+stopping replica finishes its episode first (up to an hour). It runs as uid 1000 with a read-only root file system,
 like pod-block, and asks for 1 CPU and 2 GiB, limited to 6 GiB. It is busy
 only while it transcribes. The image is `ghcr.io/dben/pod-block-whisper`,
 with the same tags as pod-block's. [`whisper/README.md`](../whisper/README.md)

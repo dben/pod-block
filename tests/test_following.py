@@ -178,7 +178,7 @@ def test_podcast_settings_are_checked_and_say_when_the_gap_changed(db, web):
         library.save_settings(db, pod, 9999, 60, 4, False, False)
     assert not library.save_settings(db, pod, 3, 60, 4, True, True)  # 4 seconds is the gap already
     assert library.save_settings(db, pod, 3, 60, 10, True, True)
-    assert not library.save_settings(db, pod, 3, 60, 10, True, True, max_break=300)
+    assert not library.save_settings(db, pod, 3, 60, 10, True, True, max_break=480)
     assert library.save_settings(db, pod, 3, 60, 10, True, True, max_break=420)
     with pytest.raises(library.SettingsError):
         library.save_settings(db, pod, 3, 60, 10, True, True, max_break=10)

@@ -19,7 +19,7 @@ from ..app.config import Settings
 from ..app.db import connect, prepare, setting
 from ..app.worker import JobProcess, in_process
 from .deps import LoginRequired, get_db
-from .routes import auth, downloads, episodes, jobs, podcasts, private_feeds, users
+from .routes import auth, downloads, episodes, jobs, podcasts, private_feeds, timings, users
 from .templating import STATIC
 
 SESSION_DAYS = 30
@@ -70,7 +70,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.add_middleware(SessionMiddleware, secret_key=secret, session_cookie="podblock_session",
                        max_age=SESSION_DAYS * 86400, same_site="lax", https_only=settings.secure_cookies)
     app.mount("/static", StaticFiles(directory=STATIC), name="static")
-    for routes in (auth, podcasts, episodes, jobs, private_feeds, users, downloads):
+    for routes in (auth, podcasts, episodes, jobs, private_feeds, users, downloads, timings):
         app.include_router(routes.router)
 
     @app.exception_handler(LoginRequired)

@@ -1,8 +1,9 @@
 """Work that runs apart from any request: feed refreshes, clean-up, and the job queue.
 
 `Background` is that work: one thread refreshes feeds when they are due and
-cleans up old downloads, `workers` threads take jobs from the queue, and one
-more takes `captions` jobs, which mostly wait on the transcription service.
+cleans up old downloads, `workers` threads take jobs from the queue, and
+`caption_workers` more take `captions` jobs, which mostly wait on the
+transcription service.
 
 It runs in a process of its own, `podblock worker` (`run_worker`), which the
 web app starts as its child and starts again if it dies (`JobProcess`). So a
@@ -25,7 +26,7 @@ import sys
 import threading
 import time
 
-from . import captions, following, jobs, locks, processing, retention
+from . import captions, following, jobs, locks, processing, retention, timings
 from .config import Settings
 from .db import connect, prepare
 from .states import CANCELLED, DONE, FAILED
@@ -49,15 +50,19 @@ def run_job(settings: Settings, db, job) -> str:
     try:
         RUNNERS[job["kind"]](ctx, settings)
     except jobs.Cancelled:
-        jobs.finish(db, job["id"], CANCELLED)
-        return CANCELLED
+        state, error = CANCELLED, None
     except Exception as e:
         if not isinstance(e, processing.ProcessError):
             log.exception("job %d (%s) failed", job["id"], job["kind"])
-        jobs.finish(db, job["id"], FAILED, str(e)[:500] or type(e).__name__)
-        return FAILED
-    jobs.finish(db, job["id"], DONE)
-    return DONE
+        state, error = FAILED, str(e)[:500] or type(e).__name__
+    else:
+        state, error = DONE, None
+    try:
+        timings.save(db, job, ctx.timer, finished=state == DONE)
+    except Exception:  # timings are for looking at; never worth failing a job over
+        log.exception("couldn't save job %d's timings", job["id"])
+    jobs.finish(db, job["id"], state, error)
+    return state
 
 
 def run_queue(settings: Settings) -> int:
@@ -82,9 +87,9 @@ class Background:
         self._threads = [threading.Thread(target=self._refresh, name="podblock-refresh", daemon=True)]
         self._threads += [threading.Thread(target=self._work, args=("jobs",), name=f"podblock-worker-{n}",
                                            daemon=True) for n in range(max(0, workers))]
-        if workers > 0:  # captions wait on the transcriber, so they have a thread of their own
-            self._threads.append(threading.Thread(target=self._work, args=("captions",), name="podblock-captions",
-                                                  daemon=True))
+        if workers > 0:  # captions wait on the transcriber, so they have threads of their own
+            self._threads += [threading.Thread(target=self._work, args=("captions",), name=f"podblock-captions-{n}",
+                                               daemon=True) for n in range(max(1, settings.caption_workers))]
         self.held: int | None = None  # the worker lock, when it runs in the web app's own process
 
     def start(self) -> None:
@@ -120,6 +125,7 @@ class Background:
                     following.refresh_due(db)
                     retention.expire_due(db)
                     retention.prune_store(db)
+                    timings.prune(db)
                 finally:
                     db.close()
             except Exception:  # keep going; the next tick may well work

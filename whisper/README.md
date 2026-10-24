@@ -12,8 +12,12 @@ of up to two 42-character lines and saves them beside the episode. They are
 served like a feed's own transcript, with times moved to fit the cut audio,
 so re-cutting an episode needs no new transcript.
 
-- Captions jobs have their own worker thread, so a long transcription doesn't
-  hold up downloads. They show on the Jobs page as "Captions: *episode*".
+- Captions jobs have their own worker threads, so a long transcription
+  doesn't hold up downloads. They show on the Jobs page as "Captions:
+  *episode*". One runs at a time, unless `PODBLOCK_CAPTION_WORKERS` says
+  more (see [More than one replica](#more-than-one-replica)).
+- A transcription cut off part way, by a restart say, is asked for once more
+  before the job fails.
 - The episode stays in the feeds while its captions are made; the feed picks
   them up on the app's next refresh.
 - The show's `<language>` is passed to whisper when it knows it; otherwise
@@ -45,9 +49,43 @@ The first start downloads the model into `/models` (small: about 0.5 GB).
 kubectl apply -k deployment/whisper/
 ```
 
-Then uncomment `PODBLOCK_WHISPER_URL` in `deployment/kustomization.yaml` and
-apply that too. Set `WHISPER_THREADS` in `deployment/whisper/kustomization.yaml`
-to the cores it may use.
+Then uncomment `PODBLOCK_WHISPER_URL` and `PODBLOCK_CAPTION_WORKERS` in
+`deployment/kustomization.yaml` and apply that too. Set `WHISPER_THREADS` in
+`deployment/whisper/kustomization.yaml` to the cores it may use.
+
+The example runs two replicas sharing one ReadWriteMany models volume, so it
+needs a storage class that can do that (NFS, CephFS, Longhorn RWX, EFS, Azure
+Files); `whisper.yaml` says what to do without one.
+
+### More than one replica
+
+Each replica transcribes one episode at a time, so more replicas, spread over
+more nodes, transcribe more episodes at once.
+
+- **pod-block's side.** Set `PODBLOCK_CAPTION_WORKERS` to the number of
+  replicas: that many captions jobs run at once.
+- **Finding a free replica.** The Service hands each request to any replica,
+  busy or not. A busy one says so straight away, and pod-block then hangs up
+  and sends the episode again a few seconds later, for the Service to try
+  another. After 10 minutes of that (every replica busy, say) it waits its
+  turn where it is. It only does this with `PODBLOCK_CAPTION_WORKERS` above
+  1. Each new try sends the episode again, which in a cluster takes a second
+  or two.
+- **The models volume.** Replicas share it. The first to start downloads the
+  models while holding a lock file in it (`/models/.fetch.lock`); the others
+  wait for it, then load what it fetched.
+- **Stopping.** On SIGTERM a replica finishes the episode in hand, sends away
+  those waiting for it (pod-block asks again, and the Service sends them
+  elsewhere), refuses new ones and exits. The example allows it an hour
+  (`terminationGracePeriodSeconds`). Updates roll one replica at a time and
+  start the new one before stopping the old.
+- **Spreading.** The example asks Kubernetes to put replicas on different
+  nodes where it can. With a GPU node, add a `nodeSelector` and
+  `nvidia.com/gpu: 1` to the limits, and a CUDA image (`WHISPER_DEVICE`).
+
+With Docker, more than one container behind one network alias
+(`--network-alias pod-block-whisper`) works the same way: Docker's DNS hands
+out each one in turn.
 
 ## Settings
 
@@ -141,6 +179,7 @@ The answer is one JSON object per line:
 
 ```
 {"waiting": true}                                   another episode is being transcribed
+{"working": true}                                   its turn has come
 {"language": "en", "duration": 3605.2}              the audio is read
 {"start": 1.2, "end": 4.8, "text": " Hello there", "words": [[1.2, 1.5, " Hello"], [1.5, 1.9, " there"]]}
 {"step": "speakers"}                                with WHISPER_SPEAKERS: who speaks when
@@ -153,8 +192,11 @@ The answer is one JSON object per line:
 `count`, `min_on` and `min_off` to override the settings for one request, and
 `speakers=0` leaves the speakers out.
 
-One episode at a time; others wait. Hanging up stops the work at the next
-segment. `GET /healthz` answers 200 once the models are loaded.
+One episode at a time; others wait, and get their first `{"waiting": true}`
+straight away, then one every 15 seconds. Hanging up stops the work at the
+next segment. `GET /healthz` answers 200 once the models are loaded. When
+stopping (SIGTERM), those waiting see the answer end with no `done`, and new
+requests get 503.
 
 `requirements.txt` pins every package: faster-whisper 1.2.1 passes PyAV an
 argument PyAV 19 dropped, so `av` stays at 18 until faster-whisper catches up.

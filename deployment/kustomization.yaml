@@ -24,3 +24,4 @@ configMapGenerator:
       - PODBLOCK_WORKERS=1  # jobs at once; each takes about a core and 0.3 GB while fingerprinting
       - FORWARDED_ALLOW_IPS=*  # trust X-Forwarded-* from the ingress; the Service isn't reachable otherwise
       # - PODBLOCK_WHISPER_URL=http://pod-block-whisper  # captions, once whisper/ is applied (see its kustomization)
+      # - PODBLOCK_CAPTION_WORKERS=2  # captions at once: the whisper Deployment's replicas

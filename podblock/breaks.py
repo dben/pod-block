@@ -21,7 +21,7 @@ NEW_ADS_GAP_SEC = 90.0  # a half-found break joins known blocks this close: new 
 CONFIRM_EDGES = 6  # a bumper seen at a break edge this often...
 CONFIRM_EPISODES = 3  # ...in this many episodes keeps its tag from then on
 JOIN_GAP_SEC = 8.0  # blocks this close together belong to one group
-MAX_BREAK_SEC = 300.0  # a bumper-in and bumper-out further apart do not pair up (podcasts.max_break)
+MAX_BREAK_SEC = 480.0  # a bumper-in and bumper-out further apart do not pair up (podcasts.max_break)
 MIN_EDGE_SHARE = 0.5  # share of a block's occurrences that must sit at a group edge
 STING_PAIR_SEC = 15.0  # a bumper-out with a bumper-in this soon after it leads into a break
 

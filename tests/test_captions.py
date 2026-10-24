@@ -246,3 +246,172 @@ def test_the_downloads_page_queues_episodes_to_transcribe_again(db, setup):
     off = TestClient(create_app(replace(setup, api_key="k", background=False, whisper_url=None)))
     off.post("/login", data={"key": "k"})
     assert "/downloads/transcribe" not in off.get("/downloads").text  # no transcriber, no button
+
+
+# ---- more than one replica, and replicas that stop ---------------------------------
+
+class Steps:
+    def __init__(self):
+        self.steps = []
+
+    def step(self, text):
+        self.steps.append(text)
+
+    def progress(self, fraction):
+        pass
+
+
+def later(seconds, do):
+    timer = threading.Timer(seconds, do)
+    timer.start()
+    return timer
+
+
+def test_a_busy_replica_says_so_at_once(service, tmp_path):
+    import requests
+
+    audio = tmp_path / "a.mp3"
+    audio.write_bytes(b"audio")
+    service.module.turn.acquire()
+    try:
+        with requests.post(f"{service.url}/transcribe", data=audio.read_bytes(), stream=True, timeout=3) as resp:
+            assert json.loads(next(captions._lines(resp))) == {"waiting": True}  # not after WAIT_NOTE
+    finally:
+        service.module.turn.release()
+
+
+def test_with_patience_a_busy_replica_is_asked_again_and_without_it_waited_for(service, tmp_path):
+    audio = tmp_path / "a.mp3"
+    audio.write_bytes(b"audio")
+    for patience, moved_on in ((5.0, True), (0.0, False)):
+        service.module.turn.acquire()
+        later(0.3, service.module.turn.release)
+        said = Steps()
+        heard = captions.ask(said, service.url, "transcribe", audio, patience=patience)
+        assert len(heard["segments"]) == 2
+        assert ("Waiting for a free transcriber" in said.steps) == moved_on
+
+
+def test_a_stopping_replica_sends_away_those_waiting_and_refuses_new_ones(service, tmp_path):
+    import requests
+
+    audio = tmp_path / "a.mp3"
+    audio.write_bytes(b"audio")
+    service.module.WAIT_NOTE = 0.1
+    service.module.turn.acquire()
+    try:
+        later(0.2, service.module.stopping.set)
+        with requests.post(f"{service.url}/transcribe", data=b"audio", stream=True, timeout=3) as resp:
+            assert [json.loads(r) for r in resp.iter_lines() if r][-1] == {"waiting": True}  # and no "done"
+        assert requests.post(f"{service.url}/transcribe", data=b"audio", timeout=3).status_code == 503
+        with pytest.raises(captions.CutOff, match="isn't ready"):  # asked once more, then given up on
+            captions.ask(Steps(), service.url, "transcribe", audio)
+    finally:
+        service.module.turn.release()
+    assert not service.model.calls
+
+
+def test_a_transcription_cut_off_is_asked_for_once_more(tmp_path):
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    asked = []
+
+    class Flaky(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.0"
+
+        def log_message(self, *args):
+            pass
+
+        def do_POST(self):
+            self.rfile.read(int(self.headers["Content-Length"]))
+            asked.append(self.path)
+            self.send_response(200)
+            self.end_headers()
+            lines = [{"language": "en", "duration": 20.0}, segment(1, "An ad you will hear again.")]
+            if len(asked) > len(cut_after):
+                lines.append({"done": True})
+            self.wfile.write(b"".join(json.dumps(x).encode() + b"\n" for x in lines))
+
+    audio = tmp_path / "a.mp3"
+    audio.write_bytes(b"audio")
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Flaky)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    url = f"http://127.0.0.1:{server.server_port}"
+    try:
+        cut_after = [1]  # the first answer ends with no "done"
+        said = Steps()
+        heard = captions.ask(said, url, "transcribe", audio)
+        assert len(asked) == 2 and len(heard["segments"]) == 1 and "Asking the transcriber again" in said.steps
+        asked.clear()
+        cut_after = [1, 2]  # twice: the job fails
+        with pytest.raises(captions.CutOff, match="part way"):
+            captions.ask(Steps(), url, "transcribe", audio)
+        assert len(asked) == 2
+    finally:
+        server.shutdown()
+
+
+def test_captions_jobs_get_as_many_threads_as_asked_for(tmp_path):
+    settings = Settings(data_dir=tmp_path, media_dir=tmp_path / "media", caption_workers=3)
+    names = [t.name for t in worker.Background(settings, workers=2)._threads]
+    assert sum(n.startswith("podblock-captions-") for n in names) == 3
+    assert sum(n.startswith("podblock-worker-") for n in names) == 2
+
+
+def test_speaker_models_land_whole_and_once_in_a_shared_folder(tmp_path, monkeypatch):
+    import io
+    import tarfile
+
+    module = load_server()
+    packed = io.BytesIO()
+    with tarfile.open(fileobj=packed, mode="w:bz2") as tar:
+        data = b"segmentation model"
+        info = tarfile.TarInfo("sherpa-onnx-pyannote-segmentation-3-0/model.onnx")
+        info.size = len(data)
+        tar.addfile(info, io.BytesIO(data))
+    fetched = []
+
+    def urlopen(url):
+        fetched.append(url)
+        return io.BytesIO(packed.getvalue())
+
+    def urlretrieve(url, to):
+        fetched.append(url)
+        Path(to).write_bytes(b"embedding model")
+
+    monkeypatch.setattr(module.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(module.urllib.request, "urlretrieve", urlretrieve)
+    folder = tmp_path / "speakers"
+    (folder / "sherpa-onnx-pyannote-segmentation-3-0").mkdir(parents=True)  # half done by an older version
+    with module.fetching(tmp_path):
+        found = module.Speakers(folder, threads=1)
+    assert found.segmentation.read_bytes() == b"segmentation model"
+    assert found.embedding.read_bytes() == b"embedding model"
+    assert sorted(p.name for p in folder.iterdir()) == ["sherpa-onnx-pyannote-segmentation-3-0",
+                                                       found.embedding.name]  # no temporary files left
+    module.Speakers(folder, threads=1)  # a second replica finds them there
+    assert len(fetched) == 2
+
+
+def test_a_captions_job_times_sending_waiting_transcribing_and_speakers(db, setup, service):
+    service.module.speakers = FakeSpeakers()
+    captions.queue(db, setup, [1], None)
+    worker.run_queue(setup)
+    rows = {r["step"]: r for r in db.execute("SELECT * FROM timings WHERE kind = 'captions'")}
+    assert set(rows) == {"captions.upload", "captions.transcribe", "captions.speakers", "job"}
+    assert rows["captions.upload"]["count"] == len(b"not really audio")
+    assert rows["captions.transcribe"]["audio"] == rows["captions.speakers"]["audio"] == 20.0
+
+
+def test_time_spent_on_busy_replicas_counts_as_waiting(service, tmp_path):
+    from podblock.timing import Timer
+
+    audio = tmp_path / "a.mp3"
+    audio.write_bytes(b"audio")
+    service.module.turn.acquire()
+    later(0.3, service.module.turn.release)
+    timer = Timer()
+    captions.ask(Steps(), service.url, "transcribe", audio, patience=5.0, timer=timer)
+    rows = {r["step"]: r for r in timer.rows}
+    assert rows["captions.wait"]["count"] > 1 and rows["captions.wait"]["seconds"] >= 0.25  # tries
+    assert set(rows) == {"captions.upload", "captions.wait", "captions.transcribe"}

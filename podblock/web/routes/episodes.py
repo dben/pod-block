@@ -15,6 +15,7 @@ from ...app import chapters, grabs, jobs, library, processing, states
 from ...app.text import show_notes
 from ..deps import current_user, get_db, wake_worker
 from ..templating import flash, page
+from .podcasts import list_return_url
 
 router = APIRouter()
 
@@ -77,7 +78,8 @@ def show_episode(request: Request, episode_id: int, user=Depends(current_user),
                 "editable": ep["state"] == states.READY, "audio": f"/episodes/{episode_id}/original",
                 "peaks": f"/episodes/{episode_id}/peaks", "save": f"/episodes/{episode_id}/edits"}
     return page(request, "episode.html", title=ep["title"], nav="podcasts", user=user, episode=ep,
-                podcast=podcast, report=report, job=job, notes=show_notes(ep["item_xml"]), timeline=data,
+                podcast=podcast, back=list_return_url(request, podcast["id"]), report=report, job=job,
+                notes=show_notes(ep["item_xml"]), timeline=data,
                 captions=next(iter(chapters.transcripts(ep)), None),
                 play_needed=round(grabs.play_needed(ep["cut_duration"] or ep["duration"])))
 
