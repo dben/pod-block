@@ -23,6 +23,7 @@ CONFIRM_EPISODES = 3  # ...in this many episodes keeps its tag from then on
 JOIN_GAP_SEC = 8.0  # blocks this close together belong to one group
 MAX_BREAK_SEC = 300.0  # a bumper-in and bumper-out further apart do not pair up (podcasts.max_break)
 MIN_EDGE_SHARE = 0.5  # share of a block's occurrences that must sit at a group edge
+STING_PAIR_SEC = 15.0  # a bumper-out with a bumper-in this soon after it leads into a break
 
 OPENS = {BUMPER_IN, BUMPER}
 CLOSES = {BUMPER_OUT, BUMPER}
@@ -138,7 +139,7 @@ def find_breaks(matches: list[SegmentMatch], kinds: dict[int, str],
         group_end, ads_seen = m.end, False
         return AdBreak(m.end, m.end, opened_by=m.segment_id, blocks=[m.segment_id])
 
-    for m in matches:
+    for i, m in enumerate(matches):
         kind = kinds.get(m.segment_id)
         if kind in CLOSES and m.start - closers_until <= JOIN_GAP_SEC:
             closers_until = max(closers_until, m.end)  # bumper-outs often come in a row
@@ -165,6 +166,12 @@ def find_breaks(matches: list[SegmentMatch], kinds: dict[int, str],
             # both sides of a break leave the direction open; there, only
             # known ads in between show that a pair encloses a break.
             two_sided = kinds.get(open_break.opened_by) == BUMPER and kind == BUMPER
+            if kind == BUMPER_OUT and not ads_seen and _opener_follows(matches, i, kinds):
+                # Some shows play a closing sting and an opening one back to back
+                # going into a break. With no known ads since the break opened,
+                # the pair starts a break rather than ending this one: the
+                # bumper-in that follows takes over.
+                continue
             if kind in CLOSES and two_sided and not ads_seen and gap >= SHORT_BLOCK_SEC:
                 open_break = open_at(m)
             elif kind in CLOSES and gap >= SHORT_BLOCK_SEC:
@@ -219,6 +226,17 @@ def find_breaks(matches: list[SegmentMatch], kinds: dict[int, str],
             breaks.append(AdBreak(start, end, blocks=[m.segment_id for m in content]))
 
     return _merge_overlapping(breaks)
+
+
+def _opener_follows(matches: list[SegmentMatch], i: int, kinds: dict[int, str]) -> bool:
+    """Whether a bumper-in starts within STING_PAIR_SEC of where matches[i] ends."""
+    end = matches[i].end
+    for n in matches[i + 1:]:
+        if n.start - end > STING_PAIR_SEC:
+            return False
+        if kinds.get(n.segment_id) == BUMPER_IN:
+            return True
+    return False
 
 
 def _merge_overlapping(breaks: list[AdBreak]) -> list[AdBreak]:

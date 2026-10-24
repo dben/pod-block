@@ -99,3 +99,35 @@ def test_bumpers_further_apart_than_the_longest_break_do_not_pair():
     assert [(b.start, b.end) for b in find_breaks(matches, kinds, max_break=600)] == [(104, 400)]
     # The ad and bumper-out still mark the real break.
     assert [(b.start, b.end) for b in find_breaks(matches, kinds, max_break=240) if b.length > 0] == [(330, 400)]
+
+
+def test_a_closing_sting_right_before_an_opening_one_leads_into_the_break():
+    # From a real episode: a bumper-in before a notice, then 7 minutes of the
+    # show, then a bumper-out and bumper-in back to back going into the break.
+    kinds = {1: BUMPER_IN, 2: BUMPER_IN, 3: BUMPER_OUT}
+    matches = [
+        SegmentMatch(1, 1617, 1620, 0, 50),
+        SegmentMatch(3, 2039, 2040, 0, 50),
+        SegmentMatch(2, 2040, 2041, 0, 50),
+        SegmentMatch(5, 2073, 2135, 0, 500),
+        SegmentMatch(6, 2136, 2194, 0, 500),
+        SegmentMatch(3, 2293, 2294, 0, 50),
+    ]
+
+    breaks = [(b.start, b.end) for b in find_breaks(matches, kinds, max_break=600) if b.length > 0]
+
+    assert breaks == [(2041, 2293)]
+
+
+def test_a_break_with_known_ads_still_ends_at_its_bumper_out():
+    kinds = {1: BUMPER_IN, 3: BUMPER_OUT}
+    matches = [
+        SegmentMatch(1, 100, 104, 0, 50),
+        SegmentMatch(5, 110, 170, 0, 500),
+        SegmentMatch(3, 200, 204, 0, 50),
+        SegmentMatch(1, 206, 210, 0, 50),  # the next break, straight after
+        SegmentMatch(6, 215, 275, 0, 500),
+        SegmentMatch(3, 300, 304, 0, 50),
+    ]
+
+    assert [(b.start, b.end) for b in find_breaks(matches, kinds)] == [(104, 200), (210, 300)]
