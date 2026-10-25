@@ -136,8 +136,11 @@ def test_a_failed_download_can_be_retried(env):
 
     env.cdn.fail.clear()
     env.client.post(f"/jobs/{job['id']}/retry")
+    assert [j["id"] for j in jobs.listing(env.db)["finished"]] == []  # the queued one stands in for it
+    assert "Retry" not in env.client.get("/jobs").text
     worker.run_queue(env.settings)
     assert episode(env, "ep-1")["state"] == "ready"
+    assert [j["state"] for j in jobs.listing(env.db)["finished"]] == ["done"]
 
 
 def test_cancelling(env, monkeypatch):

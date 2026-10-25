@@ -186,6 +186,12 @@ def active_count(db: sqlite3.Connection) -> int:
     return db.execute(f"SELECT COUNT(*) FROM jobs WHERE state IN ({sql(ACTIVE)})").fetchone()[0]
 
 
+# a failed or cancelled job asked for again since, by Retry or otherwise: the later one shows instead
+RETRIED = f"""j.state IN ({sql(RETRYABLE)}) AND EXISTS (
+    SELECT 1 FROM jobs n WHERE n.id > j.id AND n.kind = j.kind AND n.episode_id IS j.episode_id
+    AND n.payload IS j.payload)"""
+
+
 def listing(db: sqlite3.Connection, recent: int = 30) -> dict[str, list[sqlite3.Row]]:
     base = """SELECT j.*, e.id AS about_id, e.title AS episode_title, e.podcast_id, p.name AS podcast_name
               FROM jobs j LEFT JOIN episodes e ON e.id = COALESCE(j.episode_id, json_extract(j.payload, '$.episode'))
@@ -193,7 +199,7 @@ def listing(db: sqlite3.Connection, recent: int = 30) -> dict[str, list[sqlite3.
     return {
         "running": db.execute(f"{base} WHERE j.state = 'running' ORDER BY j.id").fetchall(),
         "queued": db.execute(f"{base} WHERE j.state = 'queued' ORDER BY j.id").fetchall(),
-        "finished": db.execute(f"{base} WHERE j.state IN ({sql(FINISHED)}) "
+        "finished": db.execute(f"{base} WHERE j.state IN ({sql(FINISHED)}) AND NOT ({RETRIED}) "
                                "ORDER BY j.finished_at DESC LIMIT ?", (recent,)).fetchall(),
     }
 
