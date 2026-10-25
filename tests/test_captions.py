@@ -280,7 +280,6 @@ def test_captions_outlast_a_clean_up_for_the_next_download(db, setup, service, m
     # Downloaded again, the same file, and its feed has a transcript by now: kept only to check the captions by.
     audio = setup.media_dir / "original/ep.mp3"
     audio.write_bytes(b"not really audio")
-    assert not captions.match_download(db, 1, audio)
     ns = PODCAST.strip("{}")
     db.execute("UPDATE episodes SET state = 'ready', original_path = ?, item_xml = ? WHERE id = 1",
                (str(audio), f'<item xmlns:podcast="{ns}"><podcast:transcript url="https://example.com/t.srt" '
@@ -303,7 +302,11 @@ def test_captions_outlast_a_clean_up_for_the_next_download(db, setup, service, m
 
 
 def test_a_different_download_is_transcribed_again(db, setup, service):
-    from podblock.app import retention
+    from podblock.app import media, processing, retention
+    from podblock.store import Store
+    db.execute("UPDATE episodes SET original_sha256 = ? WHERE id = 1",
+               (media.digest(setup.media_dir / "original/ep.mp3"),))
+    db.commit()
     assert captions.queue(db, setup, [1], None) == [1]
     assert worker.run_job(setup, db, jobs.claim(db, kinds=(captions.KIND,))) == "done"
     (saved,) = chapters.transcripts(episode(db))
@@ -313,12 +316,12 @@ def test_a_different_download_is_transcribed_again(db, setup, service):
     audio.write_bytes(b"not really audio, with another ad in it")  # ads put in as it was downloaded
     db.execute("UPDATE episodes SET state = 'ready', original_path = ? WHERE id = 1", (str(audio),))
     db.commit()
-    assert captions.match_download(db, 1, audio)
+    processing._new_download(db, Store.on(db), 1, audio)
     assert episode(db)["transcripts"] is None
     assert not Path(saved["path"]).exists() and not Path(saved["words"]).exists()
     assert captions.queue(db, setup, [1], None) == [1]
     assert worker.run_job(setup, db, jobs.claim(db, kinds=(captions.KIND,))) == "done"
-    assert chapters.transcripts(episode(db))[0]["audio"] == captions.digest(audio)
+    assert len(service.model.calls) == 2
 
 
 def test_the_downloads_page_queues_episodes_to_transcribe_again(db, setup):

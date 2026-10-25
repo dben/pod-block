@@ -23,9 +23,9 @@ Each word's time is saved beside the captions too, for the show's intro and
 outro phrases (`phrases.py`); hearing one queues the episode to be cut again.
 
 Captions outlast a clean-up (retention.py), but the next download keeps them
-only if it is the very file they were made from (`match_download`): a show
-that puts its ads in as each download is made moves everything after an ad,
-so a different file is transcribed again.
+only if it is the very file they were made from (`processing.py`'s
+`_new_download`): a show that puts its ads in as each download is made moves
+everything after an ad, so a different file is transcribed again.
 
 An episode can also be transcribed again on purpose (`queue(force=True)`, the
 downloads page's Transcribe again): the new captions then replace whatever it
@@ -45,7 +45,6 @@ to compare with the repeats found. They don't go into the captions yet.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import random
@@ -119,37 +118,6 @@ def queue(db: sqlite3.Connection, settings: Settings, episode_ids: list[int], us
         enqueue_task(db, KIND, user_id, json.dumps({"episode": ep_id, **({"force": True} if force else {})}))
         queued.append(ep_id)
     return queued
-
-
-def digest(audio: Path) -> str:
-    """The file's SHA-256, to know a download again."""
-    h = hashlib.sha256()
-    with audio.open("rb") as f:
-        while chunk := f.read(1 << 20):
-            h.update(chunk)
-    return h.hexdigest()
-
-
-def match_download(db: sqlite3.Connection, episode_id: int, audio: Path) -> bool:
-    """After a new download: drop the captions kept from before a clean-up unless they were made from this very
-    file, as their times may not fit another. Returns whether any were dropped."""
-    ep = db.execute("SELECT transcripts FROM episodes WHERE id = ?", (episode_id,)).fetchone()
-    saved = json.loads(ep["transcripts"] or "[]") if ep else []
-    heard = [t for t in saved if t.get("made")]
-    if not heard:
-        return False
-    same = digest(audio)
-    stale = [t for t in heard if t.get("audio") != same]
-    if not stale:
-        return False
-    with transaction(db):
-        rest = [t for t in saved if t not in stale]
-        db.execute("UPDATE episodes SET transcripts = ? WHERE id = ?", (json.dumps(rest) if rest else None,
-                                                                        episode_id))
-    _forget(stale, keep=rest)
-    log.info("episode %d: its new download isn't the one its captions were made from; transcribing it again",
-             episode_id)
-    return True
 
 
 # ---- splitting what was heard into captions -------------------------------------
@@ -397,7 +365,6 @@ def run(ctx: Context, settings: Settings) -> None:
     timed = stem.with_name(stem.name + ".words.json")  # each word's time, for finding intro and outro phrases
     _write(timed, json.dumps([w for seg in heard["segments"] for w in _words(seg)], separators=(",", ":")))
     saved = {"format": "vtt", "path": str(path), "rel": "captions", "made": "whisper", "words": str(timed),
-             "audio": digest(Path(ep["original_path"])),  # the download they fit (match_download)
              **({"language": heard["language"]} if heard["language"] else {})}
     if heard["speakers"] is not None:
         saved["speakers"] = str(speakers.save(stem, heard["speakers"], heard["options"]))
@@ -425,6 +392,20 @@ def run(ctx: Context, settings: Settings) -> None:
     else:
         phrases.requeue(ctx.db, ep["podcast_id"], ctx.job["requested_by"], [episode_id],
                         note="Waiting to be cut again: an intro or outro phrase was heard")
+
+
+def forget(db: sqlite3.Connection, episode_id: int) -> None:
+    """Delete an episode's captions, and what was saved with them; its feed's transcripts stay, and are served
+    again."""
+    ep = db.execute("SELECT transcripts FROM episodes WHERE id = ?", (episode_id,)).fetchone()
+    saved = json.loads(ep["transcripts"] or "[]") if ep else []
+    rest = [{k: v for k, v in t.items() if k != "reference"} for t in saved if not t.get("made")]
+    if len(rest) == len(saved):
+        return
+    with transaction(db):
+        db.execute("UPDATE episodes SET transcripts = ? WHERE id = ?", (json.dumps(rest) if rest else None,
+                                                                        episode_id))
+    _forget(saved, keep=rest)
 
 
 def _forget(transcripts: list[dict], keep: list[dict]) -> None:
