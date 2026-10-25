@@ -138,13 +138,22 @@ fingerprint, so it needs no audio.
    `bumper-out`. Tags are worked out afresh on each run until a bumper has
    sat at a break edge 6 times in 3 episodes. It is then confirmed and keeps
    its tag.
-5. **Breaks.** A break runs from a bumper-in to the next bumper-out (within
-   10 minutes), even when the ads between them are all new. Some shows play
-   one sting on both sides of a break (`bumper`); a pair of those only counts
-   when known ads play between them, so the pairing can't slip out of step.
-   A lone bumper-in or bumper-out still marks one end, and reaches over up to
-   90 s of new ads to known ones. Shows without bumpers get breaks from 60 s
-   or more of known blocks back to back.
+5. **Breaks.** A break runs from a bumper-in to the next bumper-out, even
+   when the ads between them are all new. The two must be closer than the
+   show's longest ad break (8 minutes by default, set per podcast).
+   - A break never holds a second bumper-in. When one comes, the first was
+     a false start (the same sting before a short notice, say), and the
+     break starts again at the second.
+   - Some shows play a closing sting and an opening one back to back going
+     into a break. With no known ads since the break opened, that bumper-out
+     is skipped and the bumper-in after it starts the break.
+   - Some shows play one sting on both sides of a break (`bumper`). A pair of
+     those only counts when known ads play between them, so the pairing
+     can't slip out of step.
+   - A lone bumper-in or bumper-out still marks one end, and reaches over up
+     to 90 s of new ads to known ones.
+   - Shows without bumpers get breaks from 60 s or more of known blocks back
+     to back.
 
 ## Which episodes are compared
 
