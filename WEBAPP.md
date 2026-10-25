@@ -1,17 +1,17 @@
 # pod-block web app
 
-The second half of pod-block: a web app that follows feeds, cuts the repeats
-that the detector finds out of the episodes you pick, and serves the cut
-episodes as private podcast feeds. `README.md` covers the detector and
-`CLI.md` the command line; this file covers the app: what it does, how it is
-built, and what could come next.
+The web app follows feeds, cuts the repeats the detector finds out of the
+episodes you pick, and serves the cut episodes as private podcast feeds.
+This file covers what it does, how it's built, and what could come next.
+`README.md` is the getting-started guide, `HOW-IT-WORKS.md` covers the
+detector, and `CLI.md` the command line.
 
 ## Decisions
 
 | Topic | Decision |
 | --- | --- |
 | Database | One database for the detector and the app: the app's tables and columns go in `podblock.sqlite` beside the detector's. If we move off SQLite, both move to the same host together. |
-| Marking blocks | Intro, Outro and Keep on the timeline are the podcast's own type for the block (`podcast_types`), used in that podcast's episodes only; other podcasts keep the block's own type. Removing one goes back to that. Not a repeat (`ignored`) changes the block itself, for every podcast, as `podblock type` does. Only overrides, not copies of the block: a copy would match twice and count twice against the cap on common hashes. |
+| Marking blocks | Intro, Outro and Keep on the timeline are the podcast's own type for the block (`podcast_types`), used in that podcast's episodes only; other podcasts keep the block's own type. Removing one goes back to that. Not a repeat (`ignored`) changes the block itself, for every podcast, as `podblock type` does. They are stored as overrides, since a copy of the block would match twice and count twice against the cap on common hashes. |
 | Block types | `show` (Local in the app): a block checked only against its own podcast's episodes, never other feeds'. In the app it is only for sections marked by hand and saved as blocks; those are always of one podcast, and can be deleted. `kept`: a podcast's own type, never cut there. `ignored`: a false positive, never cut anywhere; reports list where one plays (`not_repeats`) so it can be undone. Every section a report lists is cut. |
 | Old hand types | Intros, outros and Local blocks typed by hand before podcasts had their own types went back to automatic when the store was upgraded. False positives stayed. |
 | Comparison episodes | When a show has fewer than 4 fingerprinted episodes, a download also pulls the episodes published after the chosen one, nearest first, and older ones only when it reaches the newest episode. These are fully processed too: shows often run in parts, so they are likely next anyway. |
@@ -189,8 +189,9 @@ on Kubernetes, with backups and upgrades, see `deployment/README.md`.
 - The list has three tabs: All, Archived, and Filtered (when a filter
   hides anything). Downloaded and Grabbed are toggles beside them that
   narrow whichever tab is open, alone or together, so "archived and
-  downloaded" is one view. Each is in the address (`?view=archived&downloaded=1`),
-  so the back button and bookmarks work; the old `?view=downloaded` and
+  downloaded" is one view. Each is in the address
+  (`?view=archived&downloaded=1`), so the back button and bookmarks work;
+  the old `?view=downloaded` and
   `?view=grabbed` still do. Tab counts follow the toggles.
 - Each row has a download button ("Download and cut", or "Download again"
   once cleaned up or after a failure); a spinner takes its place while
@@ -225,8 +226,8 @@ on Kubernetes, with backups and upgrades, see `deployment/README.md`.
   else becomes MP3) at the nearest standard bitrate, with a 40 ms fade
   either side of each join. Tags and cover art are copied. Kept stretches
   under a second between two cuts go too.
-- Chapters and transcripts are moved to fit the cut (`podblock/app/chapters.py`).
-  The first time an episode is cut, its chapters are read: the feed's
+- Chapters and transcripts are moved to fit the cut
+  (`podblock/app/chapters.py`). The first time an episode is cut, its chapters are read: the feed's
   `podcast:chapters` JSON, else its inline `psc:chapters`, else the ones in
   the audio file. Its timed transcripts (`podcast:transcript` as WebVTT, SRT
   or JSON) are saved under `media/transcripts/`. A time in a kept stretch
@@ -339,20 +340,20 @@ on Kubernetes, with backups and upgrades, see `deployment/README.md`.
   play button (under it, or on its card) to play from two seconds before it
   to its end, where playback stops. While it plays, both of its buttons
   turn to Pause; pressing one again pauses, and the next press plays on
-  from there. The main play button and the space bar play on with no end. "Skip cuts" jumps over
-  everything that would be cut, unsaved changes included, to hear the
-  joins.
+  from there. The main play button and the space bar play on with no end.
+  "Skip cuts" jumps over everything that would be cut, unsaved changes
+  included, to hear the joins.
 - Set a section to Intro, Outro or Keep (this show), to Not a repeat (every
-  show), or back to how it was found. See Decisions
-  for which blocks take it. Other ready episodes the blocks play in are
+  show), or back to how it was found. See Decisions for which blocks take
+  it. Other ready episodes the blocks play in are
   cut again: this show's, or every show's for Not a repeat. Keep on an ad
   break keeps its bumpers too, so the break stays.
 - Sections of this show's own types, and blocks marked by hand, show a
   "Custom (this show)" pill. Remove puts a section back as it was found;
   Delete deletes a block marked by hand. Kept sections stay on the
   timeline, in grey, and aren't cut.
-- Matches marked Not a repeat aren't on the timeline: they are invalid
-  matches, not part of the episode's cuts. When an episode has any, a
+- Matches marked Not a repeat aren't on the timeline, since they aren't
+  part of the episode's cuts. When an episode has any, a
   collapsed "Not a repeat" list under the sections shows them, each with
   "Cut again". A section set to Not a repeat moves there at once, with
   Undo, before it is saved. Kept sections stay on the timeline.
@@ -361,8 +362,8 @@ on Kubernetes, with backups and upgrades, see `deployment/README.md`.
   Drag its edges, or type times and nudge them a second at a time or set
   them to the player's place. Choose to cut it here only, or to catch it in
   this show's other episodes too (saved as a Local, Intro or Outro block of
-  this show, and its other ready episodes are checked again). Hand-cut sections can be put
-  back.
+  this show, and its other ready episodes are checked again). Hand-cut
+  sections can be put back.
 - Nothing is written until Save, in a bar that counts the unsaved changes;
   Discard puts it all back, and leaving the page asks first. Saving queues
   an `edit` job; the episode page shows it working and reloads when done.
@@ -437,8 +438,8 @@ on Kubernetes, with backups and upgrades, see `deployment/README.md`.
   random token of their own (128 bits, URL-safe), made the first time they
   open the show page. It lists ready episodes with their cut audio on disk,
   newest first, except the ones that user archived or that a filter hides
-  from them. The Private feed tab shows the address with Copy and a QR code (made on
-  the server with `segno`).
+  from them. The Private feed tab shows the address with Copy and a QR
+  code (made on the server with `segno`).
 - Each user also gets an omni feed, at the same kind of address: every
   ready episode of the podcasts on their home page, newest first, without
   the ones they archived or filtered. Its channel is pod-block's own ("Pod
@@ -490,8 +491,8 @@ on Kubernetes, with backups and upgrades, see `deployment/README.md`.
 ### Grabs
 
 - Every time a user's podcast app fetches an episode through their private
-  feed or omni feed, it counts toward a grab by that user (`podblock/app/grabs.py`,
-  table `grabs`). Apps fetch audio in pieces, some stream while a download
+  feed or omni feed, it counts toward a grab by that user
+  (`podblock/app/grabs.py`, table `grabs`). Apps fetch audio in pieces, some stream while a download
   runs alongside, and a seek is another request; so a hit within 10 minutes
   of the last one, or one that starts partway into the file, adds to the
   grab before it. A `HEAD`, and the chapters and transcripts, count for
@@ -502,29 +503,29 @@ on Kubernetes, with backups and upgrades, see `deployment/README.md`.
   editing and doesn't count. The page's Download button counts too.
 - Each row in the episode list, and the episode page, shows "Grabbed" (with
   "×2" and so on) for your own grabs, with when you last did in its tooltip.
-  The Grabbed toggle lists the episodes you grabbed. The
-  Users page counts each user's grabs.
+  The Grabbed toggle lists the episodes you grabbed. The Users page counts
+  each user's grabs.
 
 ### Retention
 
 - Downloads are cleaned up a set time after the episode was first made
   ready (default 7 days, set per podcast; 0 keeps them for good).
   Processing again or saving timeline changes doesn't restart the clock.
-  The download, cut file, waveform and the feed's transcripts go (and the next
-  download looks for chapters and transcripts again); the episode's metadata, report and
-  hand-cut sections stay. Captions from the transcription service stay a
-  year longer, with their word times and speakers, so the next download
-  doesn't need transcribing again.
-- "Download again" keeps what was timed to the old file only if the new
-  one is the same file byte for byte (by SHA-256). A show that puts its ads
-  in as each download is made sends a different file each time, and
-  everything after a changed ad moves. Then the episode is worked on
-  afresh: it is fingerprinted and compared again, its hand-cut sections and
-  kept stretches go, and it is transcribed again
-  (`podblock/app/processing.py`). It shows as "Cleaned up" with the date, leaves the
-  private feed, and "Download again" brings it back, cut the same way.
+  The download, cut file, waveform and the feed's transcripts go (and the
+  next download looks for chapters and transcripts again); the episode's
+  metadata, report and hand-cut sections stay. Captions from the
+  transcription service stay a year longer, with their word times and
+  speakers, so the next download doesn't need transcribing again. The
+  episode shows as "Cleaned up" with the date and leaves the private feed.
   Downloads that never became ready (failed jobs, companions of a cancelled
   one) go on the same clock.
+- "Download again" brings a cleaned-up episode back, cut the same way, as
+  long as the new file is the old one byte for byte (by SHA-256). A show
+  that puts its ads in as each download is made sends a different file
+  each time, and everything after a changed ad moves. Then the episode is
+  worked on afresh: it is fingerprinted and compared again, its hand-cut
+  sections and kept stretches go, and it is transcribed again
+  (`podblock/app/processing.py`).
 - An episode nobody wants goes early: once everyone who has the podcast on
   their home page has archived it or filters it out, its files go a day
   after it was made ready (the day leaves time to play one downloaded from
@@ -584,7 +585,7 @@ Labels and hints are short and plain, so a page can be scanned.
 ## Data model
 
 The app's tables and columns, added by migrations 1 to 15 in
-`podblock/app/db.py`, beside the detector's (see `README.md`):
+`podblock/app/db.py`, beside the detector's (see "Data" in `HOW-IT-WORKS.md`):
 
 ```
 settings: app_schema, api_key_hash, auth_epoch, secret_key   -- rows beside the detector's own

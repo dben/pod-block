@@ -87,9 +87,9 @@ kubectl apply -k deployment/whisper/
 ```
 
 Then uncomment `PODBLOCK_WHISPER_URL` and `PODBLOCK_CAPTION_WORKERS` in
-`kustomization.yaml` and apply it again. Each episode downloaded after that gets a captions job once it is cut.
-It's ready in the feed straight away; the captions follow when the job is
-done.
+`kustomization.yaml` and apply it again. From then on, each episode gets a
+captions job once it is cut. The episode goes into the feed straight away,
+and its captions follow when the job is done.
 
 Before you apply it, change these in `whisper/kustomization.yaml`:
 
@@ -109,15 +109,15 @@ And in `whisper/whisper.yaml`:
 It is its own Deployment, Service and volume (`pod-block-whisper-models`,
 5 GiB, for the downloaded models), with its own labels, so it never mixes
 with pod-block's pods. Replicas spread across nodes where they can, and a
-stopping replica finishes its episode first (up to an hour). It runs as uid 1000 with a read-only root file system,
-like pod-block, and asks for 1 CPU and 2 GiB, limited to 6 GiB. It is busy
-only while it transcribes. The image is `ghcr.io/dben/pod-block-whisper`,
+stopping replica finishes its episode first (up to an hour). It runs as
+uid 1000 with a read-only root file system, like pod-block, and asks for 1
+CPU and 2 GiB, limited to 6 GiB. It only works hard while it transcribes. The image is `ghcr.io/dben/pod-block-whisper`,
 with the same tags as pod-block's. [`whisper/README.md`](../whisper/README.md)
 covers its settings, speed and speaker labels.
 
 To take it out again, comment out `PODBLOCK_WHISPER_URL`, apply, then
-`kubectl delete -k deployment/whisper/`. Captions already made stay until
-their episode's download is cleaned up.
+`kubectl delete -k deployment/whisper/`. Captions already made stay, for a
+year after their episode's download is cleaned up.
 
 ## Backups
 

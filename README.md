@@ -6,13 +6,14 @@ reads, promos, theme music, and the short stings around ad breaks), cuts it
 out of the episodes you pick, and gives you a private feed of the cut
 episodes for any podcast app.
 
-What it learns goes into one database for every feed, so an ad heard on one
-show is cut from the next show that runs it, and an ad break marked by the
-show's usual stings is cut whole, even when the ads in it are new.
+Everything it learns goes into one database shared by every feed. An ad
+heard on one show is cut from the next show that runs it, and an ad break
+marked by the show's usual stings is cut whole, even when the ads in it are
+new.
 
-![An episode's timeline, with the intro, two ad breaks and the outro marked for cutting](docs/screenshots/timeline.png)
+![An episode's timeline: the intro, two ad breaks, a section cut by hand and the outro, each with its own colour](docs/screenshots/timeline.png)
 
-## Getting started
+## Install
 
 ### Docker
 
@@ -24,23 +25,10 @@ docker logs pod-block   # the login key, printed once on first start
 ```
 
 Open <http://localhost:8000> and log in as `admin`, with the key as the
-password. Then:
-
-1. Paste a podcast's RSS feed address into the box on the home page, or
-   type its name to search for it.
-2. Pick a few episodes and press **Download**. The first download of a
-   new show takes longest, since it brings a few more episodes along to
-   compare with.
-3. Open the show's **Private feed** tab and add that address to your
-   podcast app, or scan its QR code.
+password.
 
 `pb-data` holds the database (small; back it up) and `pb-media` the audio
 (large; it can be downloaded again).
-
-For private feeds to work, pod-block must be reachable from the internet,
-since podcast apps often fetch feeds from their own servers. Put it behind
-HTTPS and set `-e PODBLOCK_PUBLIC_URL=https://pods.example.com`.
-`WEBAPP.md` lists the other settings.
 
 ### Kubernetes
 
@@ -65,242 +53,185 @@ pip install -e '.[web]'
 podblock serve          # http://127.0.0.1:8000; prints a login key on first start
 ```
 
-pod-block also runs from the command line, with no web app: point it at
-feeds or audio files and it lists what repeats. See [`CLI.md`](CLI.md).
+### Reaching it from your podcast app
 
-## The web app
+Podcast apps often fetch feeds from their own servers, so for private feeds
+to work pod-block has to be reachable from the internet. Put it behind
+HTTPS and set:
 
-![Home page: each podcast with its artwork and how much has been cut](docs/screenshots/home.png)
-
-- **Follow feeds.** Add a feed by address, or search Apple's podcast
-  directory. Feeds refresh on their own, and a show can download new
-  episodes as they come out.
-- **Pick episodes.** Select episodes in the list (shift-click for a range)
-  to download, keep or archive them. Filters hide episodes by title, and
-  can keep "best of" and rerun episodes out of the learning.
-- **Check the cuts.** Each episode has a timeline of what was cut. Play
-  any part, change what a section is, or drag across the waveform to cut
-  something by hand. Intro, Outro and Keep apply to that show's episodes;
-  "Not a repeat" applies to every show.
-- **Listen anywhere.** Each user gets a private feed of each podcast, and
-  one feed of all their podcasts together.
-- **Share it.** The admin adds users with passwords; each picks their own
-  podcasts.
-- **Captions.** Optional: run the [`whisper/`](whisper/) container beside
-  it and each download gets captions in the private feed and under the
-  episode page's player, made on the CPU. A show can also list phrases
-  that end its intro or start its outro; everything past them is cut.
-  For a show whose feed has its own transcripts, the download is
-  transcribed too, speech the feed's transcript leaves out (inserted ads)
-  is cut, and the captions replace the feed's transcript, which was timed
-  before the ads went in.
-- **Stays small.** Downloads are cleaned up a week after they are cut (set
-  per podcast), unless you keep them.
-
-![A show's page: the feed's header, then its episodes, with each one's state](docs/screenshots/podcast.png)
-
-<img src="docs/screenshots/phone.png" alt="The same timeline on a phone" width="300">
-
-[`WEBAPP.md`](WEBAPP.md) describes the app in full. The screenshots show
-made-up podcasts.
-
-## Block types
-
-A **block** is a stretch of audio that pod-block has heard in more than one
-episode: a theme tune, an ad, a promo, a sting. Each block has a type, and
-the type decides two things:
-
-- **Where pod-block looks for it.** Most blocks are looked for in every
-  podcast, since networks run the same ads on all their shows. A show's own
-  intro and outro are looked for in that show only.
-- **What gets cut.** Most blocks are cut where they play and no more. Some
-  stretch to cover the audio around them, as below.
-
-pod-block types blocks itself. Change a type to mark which tune opens the
-show, or to undo a mistake: in the web app, from a section's menu on the
-timeline (or see [`CLI.md`](CLI.md)). A type set by hand is never changed
-back.
-
-Each block belongs to the podcast it was first found in.
-
-In the web app, Intro, Outro and Keep are a show's own: they change the
-block in that show's episodes only, and other shows go on treating it as
-pod-block found it. The timeline marks these "Custom (this show)", and
-removing one puts the block back as it was found. `podblock type` sets a
-block's type for every show at once.
-
-### Repeated
-
-The type every new block starts with: an ad, a promo, a jingle. Looked for
-in every podcast and cut where it plays.
-
-### Intro and outro
-
-A show's opening and closing music. Set these by hand; pod-block can't tell
-an intro from any other jingle. Looked for in their own show only. In the
-web app, marking a found section Intro or Outro does it for that show only.
-
-An intro is cut from the start of the episode to the end of the tune, so
-the cold open or the chat before the theme goes too. An outro is cut from
-the start of the tune to the end of the episode, taking the patron
-thank-yous and trailers that follow. Only the first intro, in the first
-half of the episode, and the last outro, in the second half, stretch; any
-others are cut where they play.
-
-Some outros are read over a music bed, and the bed rarely matches between
-episodes. pod-block can find these from the sound alone (see "Outros read
-over music").
-
-### Local (`show`)
-
-Cut where it plays, like a repeated block, but looked for in its own show
-only. In the web app, this is for sections you mark by hand and choose to
-catch in the show's other episodes too. You can delete those blocks again.
-
-### Bumpers
-
-The short stings that open and close an ad break: "We'll be right back",
-"And we're back". pod-block finds and types these itself, from short blocks
-that keep turning up at the edges of runs of ads.
-
-- **bumper-in** opens a break.
-- **bumper-out** closes one.
-- **bumper** is a sting a show plays at both ends.
-
-Bumpers are looked for in every podcast. They are never cut themselves,
-since hosts often talk over them. What they do is mark a break: everything
-between a bumper-in and the next bumper-out is cut as one, even ads
-pod-block has never heard. In shows without bumpers, a minute or more of
-known ads back to back counts as a break.
-
-### Keep (`kept`)
-
-Not cut in one show's episodes, and cut as usual in other shows. Only the
-web app sets it, as **Keep** on the timeline. Keeping an ad break also
-keeps its bumpers, so the break stays.
-
-### Ignored
-
-A mistake: audio pod-block took for a repeat. It is never cut in any show,
-and it stays in the database so pod-block doesn't learn the same audio
-again. In the web app, this is **Not a repeat** on the timeline. Each
-episode lists the ones it plays, under "Not a repeat" below its timeline,
-where you can undo them.
-
-### In short
-
-| Type | Who sets it | Looked for in | What's cut |
-| --- | --- | --- | --- |
-| `repeated` | pod-block (the default) | every podcast | the block |
-| `intro` | you | its own podcast | from the start of the episode to the end of the first intro |
-| `outro` | you | its own podcast | from the start of the last outro to the end of the episode |
-| `show` | you | its own podcast | the block |
-| `kept` | you, for one show | that show | nothing, in that show |
-| `bumper-in`, `bumper-out`, `bumper` | pod-block, or you | every podcast | the ad break between them; the bumpers stay |
-| `ignored` | you | nowhere | nothing |
-
-## Outros read over music
-
-Some shows end with minutes of talk over a music bed: patron names, plugs,
-announcements. The talk changes every week, so the bed seldom matches
-between episodes and no block covers it. It shows in the loudness floor
-instead, the level of the quietest moments: during the show it swings as
-people pause, while under a steady bed it holds still. With the setting
-on, that steady stretch at the end of an episode is cut as an outro.
-
-The setting is off by default and set per podcast from the command line
-(see [`CLI.md`](CLI.md)). It works from a loudness curve stored with each
-fingerprint, so it needs no audio.
-
-## How it works
-
-1. **Fingerprint.** Each episode is decoded with ffmpeg and turned into a
-   spectrogram. The strongest peaks are kept, each is paired with a few peaks
-   just after it, and each pair becomes a 32-bit hash stamped with its time.
-   This survives re-encoding, volume changes and moderate noise.
-   - Audio is decoded at 16 kHz, and 4-8 kHz is fingerprinted as a band of
-     its own. Speech sits mostly below 4 kHz, so music under a host's voice
-     often only shows up there.
-   - A store keeps the settings it was created with; fingerprints from
-     different settings never match.
-2. **Compare.** Each new episode is compared with its comparison set (see
-   "Comparing"). Matching hashes from the same audio all sit at one time
-   offset. Runs of densely matched seconds at least 1.5 s long are shared
-   audio. Runs under 10 s must turn up at least 3 times to be kept.
-3. **Store.** Each shared run becomes a block, unless stored blocks already
-   cover it. Long blocks are cut where other episodes match only part of them
-   (an ad break splits into single ads), and slivers that always play inside
-   a longer block are dropped.
-4. **Bumpers.** Matches within 8 s of each other form a group. A block whose
-   matches are short (under 10 s, and no longer than 20 s stored) and that
-   keeps opening groups becomes a `bumper-in`; one that keeps closing them a
-   `bumper-out`. Tags are worked out afresh on each run until a bumper has
-   sat at a break edge 6 times in 3 episodes; it is then confirmed and keeps
-   its tag.
-5. **Breaks.** A break runs from a bumper-in to the next bumper-out (within
-   10 minutes), even when the ads between them are all new. Some shows play
-   one sting on both sides of a break (`bumper`); a pair of those only counts
-   when known ads play between them, so the pairing can't slip out of step.
-   A lone bumper-in or bumper-out still marks one end, and reaches over up to
-   90 s of new ads to known ones. Shows without bumpers get breaks from 60 s
-   or more of known blocks back to back.
-
-## Comparing
-
-A new episode is compared with the 4 episodes of the same show closest to it
-in publish date, not the newest ones: people hop around a back catalogue, and
-the ads that ran when an episode came out sit in its neighbours. It is also
-compared with the closest episode of each other show, if published within 14
-days, to catch network ads. Only those episodes are rescanned afterwards, so
-a request costs the same however big the store grows.
-
-## Size and speed
-
-Measured on one CPU core:
-
-| | |
+| Setting | Value |
 | --- | --- |
-| Fingerprinting | about 30 s per hour of audio, about 0.3 GB of memory whatever the length |
-| Fingerprint file | about 2 MB per hour of audio |
-| Stored block | about 60 KB per minute of block |
-| Adding one 1-hour episode (download aside) | about 6 s after fingerprinting |
-| Report on a stored episode | about 1 s |
+| `PODBLOCK_PUBLIC_URL` | the address apps use, e.g. `https://pods.example.com` |
+| `PODBLOCK_SECURE_COOKIES` | `true`, so the login cookie only travels over HTTPS |
 
-The web app clears out old downloads, fingerprints and blocks no longer
-heard on its own ("Retention" in `WEBAPP.md`); from the command line,
-`prune` does it ("Keeping it small" in `CLI.md`).
+With Docker, pass them as `-e PODBLOCK_PUBLIC_URL=…`. "Settings" in
+[`WEBAPP.md`](WEBAPP.md) lists the rest.
 
-## Data
+## Using it
 
-The database and fingerprints live in the data folder
-(`PODBLOCK_DATA_DIR`, default `./podblock-data`; `/data` in the container):
+### 1. Add a podcast
 
-| Path | What |
+Paste a feed address into the box on the home page, or type a show's name to
+search Apple's podcast directory. Each podcast gets a card with how many
+episodes are ready and how much has been cut. The bar under the heading
+shows how much space downloads take.
+
+![Home page: three podcasts, each with its ready count and minutes cut, and the storage bar](docs/screenshots/home.png)
+
+### 2. Download episodes
+
+Open a show and pick episodes. Click an episode's artwork to select it, and
+shift-click another to select everything between. On a phone, tap the
+artwork or press and hold a row. Then press **Download** in the bar at the
+bottom, or use the download button on a single row.
+
+The first download of a new show takes longest. pod-block needs four
+episodes of a show to compare, so it brings the next few along and cuts
+those too.
+
+Each row shows where its episode is: queued, downloading, cutting, ready
+with its new length, or cleaned up. Above the list:
+
+- **All**, **Archived** and **Filtered** are the lists. Archive episodes
+  you're done with to clear them out of the way.
+- **Downloaded** and **Grabbed** narrow whichever list is open, to episodes
+  downloaded at some point, or ones you've had through your feed or played
+  here. Turn on both for episodes that are both.
+- **Search titles** filters as you type.
+
+**Keep**, in a row's menu or the selection bar, stops an episode from being
+cleaned up.
+
+![A show's episode list with two episodes selected, the selection bar at the bottom, and rows marked Ready, Kept, Grabbed and Cleaned up](docs/screenshots/podcast.png)
+
+### 3. Check the cuts
+
+Open an episode to see its timeline. Each cut section is drawn in its type's
+colour, with a card below it. Click the waveform to play from there, or a
+section's play button to hear it with two seconds of lead-in. **Skip cuts**
+plays the episode the way your podcast app will.
+
+Change a section from its menu:
+
+| Choice | Does |
 | --- | --- |
-| `podblock.sqlite` | podcasts, episodes, blocks with their hashes, occurrences, saved reports, settings |
-| `fingerprints/*.npz` | full fingerprint of each episode, so comparisons never decode again |
-| `audio/` | episodes the command line downloaded |
+| Intro: cut it and everything before | marks the show's theme tune; the cold open goes too (this show) |
+| Outro: cut it and everything after | marks the closing tune; the thank-yous and trailers after it go too (this show) |
+| Keep (this show) | leaves it in this show's episodes |
+| Not a repeat | never cuts it, in any show |
 
-The web app keeps its audio apart, in the media folder (`PODBLOCK_MEDIA_DIR`).
+pod-block can't tell an intro from any other jingle, so mark the intro and
+outro once per show. They're then found in every episode.
 
-```
-settings(key, value)                         -- schema version, fingerprint setting
-podcasts(id, name, feed_url, outro_bed)
-episodes(id, guid, podcast_id, title, pub_date, audio_url, audio_path, fingerprint_path, duration)
-segments(id, source_episode_id, podcast_id, source_start, source_end, label, type, type_manual,
-         hashes, times, created_at, last_seen)  -- hashes: packed uint32; times: packed int32,
-                                                -- 32 ms frames from the block start
-occurrences(segment_id, episode_id, start, end, segment_start, hits)
-compared_pairs(a_id, b_id)
-reports(episode_id, created_at, report)      -- a report's sections, as JSON
-users(id, username, password_hash, is_admin, created_at)  -- web app logins
-user_episodes(user_id, episode_id, archived, kept)        -- web app, per user
-```
+To cut something it missed, drag across the waveform (on a phone, tap **Add
+section**). Choose whether to cut it from this episode only or catch it in
+the show's other episodes too. Nothing changes until you press **Save and
+re-cut**.
 
-The web app adds its own columns to `podcasts` and `episodes` (feed metadata,
-raw XML); `WEBAPP.md` lists them.
+<img src="docs/screenshots/phone.png" alt="The same timeline on a phone, with the section cards stacked below" width="300">
 
-## Tests and lint
+[`HOW-IT-WORKS.md`](HOW-IT-WORKS.md) explains each block type and how ad
+breaks are found.
+
+### 4. Listen
+
+Each show's **Private feed** tab has your feed's address, with **Copy** and
+a QR code to scan into your podcast app. It lists the cut episodes,
+leaving out ones you archived or filtered. **By download date** gives a
+second address that lists them newest downloaded first, which suits working
+through a back catalogue.
+
+The **Omni feed** button on the home page gives one feed of every podcast on
+your home page.
+
+Anyone with a feed's address can use it. If one gets out, **Make a new
+address**.
+
+![The Private feed tab: the feed address with Copy, the release date and download date switch, and a QR code](docs/screenshots/feed.png)
+
+### 5. Filter episodes
+
+The **Filters** tab hides episodes whose titles match a pattern. Patterns
+are regular expressions, matched anywhere in the title and ignoring case,
+so `rewind|best of` catches both. A filter covers one podcast or all of
+them; hidden episodes move to the Filtered list.
+
+Tick **Filter from processing** for compilations, "best of" and rewind
+episodes. These replay whole earlier episodes, so comparing them would
+mark everything in them as a repeat. A filter from processing hides its
+episodes for everyone and keeps them out of finding repeats. If pod-block
+already learned from one, it forgets what that episode taught it. You can
+still download one by hand, and it's cut using what was learned elsewhere.
+
+![The Filters tab: a filter from processing for every podcast, a filter for this podcast, and the form to add another](docs/screenshots/filters.png)
+
+### 6. Tune a show
+
+The **Settings** tab is shared by everyone who follows the show.
+
+| Setting | Default | |
+| --- | --- | --- |
+| Clean up downloads after | 7 days | 0 keeps them for good |
+| Check for new episodes every | hour | 15 minutes to a week |
+| Combine repeats less than | 4 seconds apart | so a new ad between two known ones goes too |
+| Longest ad break | 8 minutes | bumpers further apart don't mark a break |
+| List episodes | newest first | |
+| Download new episodes as they appear | off | |
+
+**Intro and outro phrases** cut by what's said, for shows whose intro isn't
+a fixed tune. List phrases that end the intro or start the outro, and
+pod-block cuts up to or from them. Write a phrase between slashes for a
+regular expression. Phrases need a transcript: the feed's own, or captions
+(below).
+
+![The Settings tab: clean-up, refresh, gap and ad break settings, then intro and outro phrases](docs/screenshots/settings.png)
+
+### 7. Captions (optional)
+
+Run the transcription service from [`whisper/`](whisper/) beside pod-block
+and set `PODBLOCK_WHISPER_URL`. Downloads whose feed has no timed
+transcript then get captions, made on the CPU. They show under the
+episode's player, as a feed's own timed transcript does, and go into your
+private feed, timed to the cut audio.
+With speakers turned on, each line is lettered by who says it.
+
+Shows that put their ads in after recording often have a feed transcript
+that leaves the ads out. With captions on, pod-block compares the two and
+cuts the speech the feed's transcript doesn't have. A checkbox in the show's
+Settings turns this off.
+
+![An episode's player with two lines of captions under it, each with its speaker](docs/screenshots/captions.png)
+
+### Sharing and upkeep
+
+- **Users.** The admin adds people on the Users page, each with a password.
+  Everyone picks the podcasts on their own home page and gets their own
+  feeds, archive and filters. Downloads, cuts and show settings are shared.
+- **Jobs.** The Jobs page shows what's running and queued, with progress,
+  and lets you cancel or retry.
+- **Downloads.** The admin's Downloads page lists every file on disk with
+  its size. Delete one to free space; it can be downloaded again.
+- **Clean-up.** Downloads go after the show's clean-up time. An episode
+  everyone has archived or filtered goes after a day.
+
+## Command line
+
+`podblock` also runs on its own, with no web app: point it at feeds or audio
+files and it lists what repeats. See [`CLI.md`](CLI.md).
+
+## More
+
+| File | Covers |
+| --- | --- |
+| [`HOW-IT-WORKS.md`](HOW-IT-WORKS.md) | block types, how repeats and ad breaks are found, speed, the database |
+| [`WEBAPP.md`](WEBAPP.md) | the web app in full: settings, features, design, routes |
+| [`CLI.md`](CLI.md) | the command line |
+| [`deployment/README.md`](deployment/README.md) | running on Kubernetes |
+| [`whisper/README.md`](whisper/README.md) | the captions service |
+
+The screenshots show made-up podcasts with made-up audio.
+
+## Development
 
 ```sh
 uv sync --all-extras     # or: pip install -e '.[web,test,dev]', unpinned

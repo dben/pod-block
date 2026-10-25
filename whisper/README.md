@@ -147,7 +147,7 @@ podblock speakers 42 --count 3       # when you know how many people talk
 
 `--json` gives the turns and the comparison as JSON.
 
-What three real shows showed so far:
+What three real shows have shown so far:
 
 - Two shows read their own ads, so their ads come out as the hosts' voices
   and there is nothing for this to find.

@@ -1,10 +1,11 @@
 # pod-block command line
 
-The `podblock` command runs the detector on its own: point it at feeds or
-audio files, see what repeats, and change what it found, with no web app.
-It also runs the web app (`podblock serve`) and has a few commands for
-looking after it. `README.md` explains what the detector finds and how;
-this file lists the commands.
+The `podblock` command runs the detector on its own, with no web app:
+point it at feeds or audio files, see what repeats, and change what it
+found. It also starts the web app (`podblock serve`) and has a few commands
+for looking after it. This file lists the commands;
+[`HOW-IT-WORKS.md`](HOW-IT-WORKS.md) explains what the detector finds and
+how.
 
 ## Quick start
 
@@ -23,7 +24,7 @@ podblock report --feed "$FEED"        # repeated sections in the newest episode
 
 | Command | What it does |
 | --- | --- |
-| `analyze SOURCE... [-n 5] [--podcast NAME]` | Download and fingerprint the newest *n* episodes of each feed (or local files), compare each with the episodes closest to it (see "Comparing" in `README.md`), and store new blocks. Episodes already fingerprinted are skipped. |
+| `analyze SOURCE... [-n 5] [--podcast NAME]` | Download and fingerprint the newest *n* episodes of each feed (or local files), compare each with the episodes closest to it (see "Which episodes are compared" in `HOW-IT-WORKS.md`), and store new blocks. Episodes already fingerprinted are skipped. |
 | `report TARGET` | List the repeated sections in one episode. `TARGET` is a stored episode id, an audio file or an audio URL; or use `--feed URL [--index N]` (0 = newest). A feed or stored episode is first compared with the episodes closest to it, and the report is saved. |
 | `list [--podcast P] [--type T]` | Stored blocks, how many episodes each turns up in, and their types. |
 | `podcasts` | Podcasts in the store. |
@@ -31,7 +32,7 @@ podblock report --feed "$FEED"        # repeated sections in the newest episode
 | `breaks [EPISODE_ID...]` | Ad breaks found in stored episodes. |
 | `show ID` | Where a block occurs. |
 | `speakers EPISODE_ID [--threshold T] [--count N]` | Who speaks when in an episode, beside its repeats: the turns saved with its captions, or, given options, asked of the transcription service (`--whisper URL`, else `$PODBLOCK_WHISPER_URL`). See `whisper/README.md`. |
-| `type ID TYPE` | Set a block's type by hand (see "Block types" in `README.md`). `auto` hands it back to automatic tagging. |
+| `type ID TYPE` | Set a block's type by hand (see "Blocks" in `HOW-IT-WORKS.md`). `auto` hands it back to automatic tagging. |
 | `label ID TEXT` | Give a block a name. |
 | `export ID [-o file.mp3]` | Cut a block out of its source episode, to listen to it. |
 | `delete ID` | Remove a block. |
@@ -104,9 +105,9 @@ A report on a stored episode takes about 1 s, or 0.6 s with `--cached`.
 
 ## Outros read over music
 
-`README.md` explains how pod-block finds an outro read over a music bed. The
-setting is per podcast, off by default, and only the command line changes
-it. The web app follows it once set.
+`HOW-IT-WORKS.md` explains how pod-block finds an outro read over a music
+bed. The setting is per podcast and off by default. Only the command line
+changes it; the web app follows it once set.
 
 ```sh
 podblock podcast "My Show" --outro-bed
