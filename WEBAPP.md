@@ -514,7 +514,10 @@ on Kubernetes, with backups and upgrades, see `deployment/README.md`.
   download looks for chapters and transcripts again); the episode's metadata, report and
   hand-cut sections stay. Captions from the transcription service stay a
   year longer, with their word times and speakers, so the next download
-  doesn't need transcribing again. It shows as "Cleaned up" with the date, leaves the
+  doesn't need transcribing again, if it is the same file byte for byte. A
+  show that puts its ads in as each download is made sends a different
+  file each time, whose times after each ad don't fit the old captions; it
+  is transcribed again. It shows as "Cleaned up" with the date, leaves the
   private feed, and "Download again" brings it back, cut the same way.
   Downloads that never became ready (failed jobs, companions of a cancelled
   one) go on the same clock.

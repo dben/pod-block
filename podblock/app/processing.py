@@ -100,6 +100,7 @@ def _fetch(ctx: Context, settings: Settings, store: Store, paths: Paths, episode
         with transaction(ctx.db):
             ctx.db.execute("UPDATE episodes SET original_path = ?, ever_downloaded = 1 WHERE id = ?",
                            (str(original), episode_id))
+        captions.match_download(ctx.db, episode_id, original)
     fp_path = Path(ep["fingerprint_path"]) if ep["fingerprint_path"] else None
     if fp_path is None or not fp_path.exists():
         ctx.step("Fingerprinting", episode_id)

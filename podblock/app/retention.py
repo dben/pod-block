@@ -8,8 +8,9 @@ expires.
 
 Captions made by the transcription service (captions.py) stay too, for
 CAPTIONS_DAYS: they are small and slow to make, and the next download uses
-them again instead of transcribing it once more. The feed's transcripts go,
-as they are fetched again with the download.
+them again instead of transcribing it once more, if it is the same file
+(`captions.match_download`). The feed's transcripts go, as they are fetched
+again with the download.
 
 An episode nobody wants goes sooner: once everyone who has its podcast on
 their home page has archived it or filters it out, its files go a day after

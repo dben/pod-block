@@ -277,10 +277,13 @@ def test_captions_outlast_a_clean_up_for_the_next_download(db, setup, service, m
         assert page.status_code == 200 and "Transcript" not in page.text
         assert client.get("/episodes/1/captions.vtt").status_code == 404
 
-    # Downloaded again, and its feed has a transcript by now: that one is kept only to check the captions by.
+    # Downloaded again, the same file, and its feed has a transcript by now: kept only to check the captions by.
+    audio = setup.media_dir / "original/ep.mp3"
+    audio.write_bytes(b"not really audio")
+    assert not captions.match_download(db, 1, audio)
     ns = PODCAST.strip("{}")
-    db.execute("UPDATE episodes SET state = 'ready', item_xml = ? WHERE id = 1",
-               (f'<item xmlns:podcast="{ns}"><podcast:transcript url="https://example.com/t.srt" '
+    db.execute("UPDATE episodes SET state = 'ready', original_path = ?, item_xml = ? WHERE id = 1",
+               (str(audio), f'<item xmlns:podcast="{ns}"><podcast:transcript url="https://example.com/t.srt" '
                 'type="application/srt"/></item>',))
     db.commit()
     monkeypatch.setattr(chapters, "get", lambda url: b"1\n00:00:01,000 --> 00:00:02,000\nThe feed's own\n")
@@ -291,11 +294,31 @@ def test_captions_outlast_a_clean_up_for_the_next_download(db, setup, service, m
     assert len(service.model.calls) == 1
 
     retention.clear(db, episode(db), now=1000.0)
+    assert chapters.transcripts(episode(db)) == [saved]
     day = retention.DAY
     retention.expire_due(db, now=1000.0 + retention.CAPTIONS_DAYS * day - 1)
     assert chapters.transcripts(episode(db)) == [saved]
     retention.expire_due(db, now=1000.0 + retention.CAPTIONS_DAYS * day)
     assert episode(db)["transcripts"] is None and not list((setup.media_dir / "transcripts").iterdir())
+
+
+def test_a_different_download_is_transcribed_again(db, setup, service):
+    from podblock.app import retention
+    assert captions.queue(db, setup, [1], None) == [1]
+    assert worker.run_job(setup, db, jobs.claim(db, kinds=(captions.KIND,))) == "done"
+    (saved,) = chapters.transcripts(episode(db))
+    retention.clear(db, episode(db))
+
+    audio = setup.media_dir / "original/ep.mp3"
+    audio.write_bytes(b"not really audio, with another ad in it")  # ads put in as it was downloaded
+    db.execute("UPDATE episodes SET state = 'ready', original_path = ? WHERE id = 1", (str(audio),))
+    db.commit()
+    assert captions.match_download(db, 1, audio)
+    assert episode(db)["transcripts"] is None
+    assert not Path(saved["path"]).exists() and not Path(saved["words"]).exists()
+    assert captions.queue(db, setup, [1], None) == [1]
+    assert worker.run_job(setup, db, jobs.claim(db, kinds=(captions.KIND,))) == "done"
+    assert chapters.transcripts(episode(db))[0]["audio"] == captions.digest(audio)
 
 
 def test_the_downloads_page_queues_episodes_to_transcribe_again(db, setup):
