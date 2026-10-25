@@ -88,7 +88,7 @@ def show_episode(request: Request, episode_id: int, user=Depends(current_user),
     return page(request, "episode.html", title=ep["title"], nav="podcasts", user=user, episode=ep,
                 podcast=podcast, back=list_return_url(request, podcast["id"]), report=report, job=job,
                 notes=show_notes(ep["item_xml"]), timeline=data,
-                captions=next(iter(chapters.transcripts(ep)), None),
+                captions=next(iter(chapters.transcripts(ep)), None) if ep["cut_path"] else None,  # timed to the cut
                 play_needed=round(grabs.play_needed(ep["cut_duration"] or ep["duration"])))
 
 
@@ -156,7 +156,7 @@ def cut_audio(request: Request, episode_id: int, download: bool = False, user=De
 def episode_captions(episode_id: int, user=Depends(current_user), db: sqlite3.Connection = Depends(get_db)) -> Response:
     """The captions for the page's player: the episode's transcript as WebVTT, moved to fit the cut."""
     ep = _episode(db, user["id"], episode_id)
-    text = chapters.captions(ep)
+    text = chapters.captions(ep) if ep["cut_path"] else None  # a cleaned-up one's are kept, but have no cut to fit
     if text is None:
         raise HTTPException(404, "No captions for this episode")
     return Response(text.encode(), media_type="text/vtt; charset=utf-8", headers={"Cache-Control": "no-cache"})
@@ -167,7 +167,8 @@ def episode_transcript(request: Request, episode_id: int, user=Depends(current_u
                        db: sqlite3.Connection = Depends(get_db)) -> Response:
     """The transcript card's paragraphs, loaded when it's opened."""
     ep = _episode(db, user["id"], episode_id)
-    return page(request, "_transcript.html", paragraphs=chapters.paragraphs(ep), seek=ep["state"] == states.READY)
+    return page(request, "_transcript.html", paragraphs=chapters.paragraphs(ep) if ep["cut_path"] else [],
+                seek=ep["state"] == states.READY)
 
 
 @router.post("/episodes/{episode_id}/played")

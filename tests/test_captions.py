@@ -183,7 +183,7 @@ def test_speaker_turns_are_saved_with_the_captions_and_compared_with_the_repeats
 
     from podblock.app import retention
     retention.clear(db, episode(db))
-    assert not list((setup.media_dir / "transcripts").iterdir())  # the turns go with the download
+    assert speakers.saved(episode(db))["turns"] == found["turns"]  # the turns stay with the captions
 
 
 def test_captions_keep_each_words_time_and_an_intro_phrase_heard_cuts_again(db, setup, service):
@@ -199,10 +199,6 @@ def test_captions_keep_each_words_time_and_an_intro_phrase_heard_cuts_again(db, 
     queued = db.execute("SELECT kind, episode_id, payload FROM jobs WHERE state = 'queued'").fetchall()
     assert [tuple(r) for r in queued] == [("process", 1, '{"recut": true}')]
     assert episode(db)["state_note"] == "Waiting to be cut again: an intro or outro phrase was heard"
-
-    from podblock.app import retention
-    retention.clear(db, episode(db))
-    assert not list((setup.media_dir / "transcripts").iterdir())  # the word times go with the download
 
 
 def test_transcribing_again_replaces_the_feeds_transcript_and_earlier_captions(db, setup, service, tmp_path):
@@ -256,7 +252,50 @@ def test_a_checked_feed_transcript_is_kept_to_check_and_the_captions_served(db, 
 
     from podblock.app import retention
     retention.clear(db, episode(db))
-    assert not feeds.exists()  # the feed's goes with the download too
+    assert not feeds.exists()  # the feed's goes with the download; fetched again with the next one
+
+
+def test_captions_outlast_a_clean_up_for_the_next_download(db, setup, service, monkeypatch):
+    from podblock.app import retention
+    from podblock.feed import PODCAST
+    assert captions.queue(db, setup, [1], None) == [1]
+    assert worker.run_job(setup, db, jobs.claim(db, kinds=(captions.KIND,))) == "done"
+    (saved,) = chapters.transcripts(episode(db))
+
+    retention.clear(db, episode(db), now=1000.0)
+    assert episode(db)["state"] == "expired"
+    assert chapters.transcripts(episode(db)) == [saved] and Path(saved["words"]).exists()
+    if importlib.util.find_spec("fastapi"):  # with no cut to fit them to, the page leaves them out
+        from dataclasses import replace
+
+        from fastapi.testclient import TestClient
+
+        from podblock.web.app import create_app
+        client = TestClient(create_app(replace(setup, api_key="k", background=False)), follow_redirects=False)
+        client.post("/login", data={"key": "k"})
+        page = client.get("/episodes/1")
+        assert page.status_code == 200 and "Transcript" not in page.text
+        assert client.get("/episodes/1/captions.vtt").status_code == 404
+
+    # Downloaded again, and its feed has a transcript by now: that one is kept only to check the captions by.
+    ns = PODCAST.strip("{}")
+    db.execute("UPDATE episodes SET state = 'ready', item_xml = ? WHERE id = 1",
+               (f'<item xmlns:podcast="{ns}"><podcast:transcript url="https://example.com/t.srt" '
+                'type="application/srt"/></item>',))
+    db.commit()
+    monkeypatch.setattr(chapters, "get", lambda url: b"1\n00:00:01,000 --> 00:00:02,000\nThe feed's own\n")
+    chapters.gather(db, episode(db), setup.media.transcripts(episode(db)))
+    assert chapters.transcripts(episode(db)) == [saved]
+    assert [t["format"] for t in chapters.transcripts(episode(db), reference=True)] == ["vtt", "srt"]
+    assert captions.queue(db, setup, [1], None) == []  # nothing to transcribe again
+    assert len(service.model.calls) == 1
+
+    retention.clear(db, episode(db), now=1000.0)
+    day = retention.DAY
+    retention.expire_due(db, now=1000.0 + retention.CAPTIONS_DAYS * day - 1)
+    assert chapters.transcripts(episode(db)) == [saved]
+    retention.expire_due(db, now=1000.0 + retention.CAPTIONS_DAYS * day)
+    assert episode(db)["transcripts"] is None and not list((setup.media_dir / "transcripts").iterdir())
 
 
 def test_the_downloads_page_queues_episodes_to_transcribe_again(db, setup):

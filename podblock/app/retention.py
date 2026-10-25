@@ -6,6 +6,11 @@ becomes `expired`: its metadata, report and timeline marks stay, so it can be
 downloaded again and cut the same way. An episode any user keeps never
 expires.
 
+Captions made by the transcription service (captions.py) stay too, for
+CAPTIONS_DAYS: they are small and slow to make, and the next download uses
+them again instead of transcribing it once more. The feed's transcripts go,
+as they are fetched again with the download.
+
 An episode nobody wants goes sooner: once everyone who has its podcast on
 their home page has archived it or filters it out, its files go a day after
 it was made ready (the day leaves time to play one downloaded from the
@@ -15,6 +20,7 @@ the fingerprints of ready and kept episodes look fresh to it.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import sqlite3
@@ -36,6 +42,7 @@ PRUNE_EVERY = DAY
 FINGERPRINT_DAYS = 30  # fingerprints of episodes no longer on hand are deleted this long after
 BLOCK_DAYS = 90  # blocks not heard in this long go, unless typed by hand
 BUMPER_DAYS = 365
+CAPTIONS_DAYS = 365  # captions of a cleaned-up episode stay this long after, for its next download
 NO_AUDIO_PRUNE = 36500  # the app never stores audio where the detector's prune looks; leave the CLI's alone
 
 UNWANTED_AFTER = DAY  # an episode nobody wants goes this long after it was made ready
@@ -56,18 +63,21 @@ def _unlink(path: str | None) -> None:
 
 def clear(db: sqlite3.Connection, ep: sqlite3.Row, now: float | None = None) -> None:
     """Delete an episode's download, cut file, waveform and transcripts. A ready one becomes `expired`, to be
-    downloaded again and cut the same way; any other keeps its state."""
+    downloaded again and cut the same way, and keeps its captions (CAPTIONS_DAYS); any other keeps its state."""
     for path in (ep["original_path"], ep["cut_path"], ep["peaks_path"]):
         _unlink(path)
-    chapters.forget(ep)
+    saved = json.loads(ep["transcripts"] or "[]")
+    heard = [t for t in saved if t.get("made")] if ep["state"] == READY else []
+    chapters.forget({"transcripts": json.dumps([t for t in saved if t not in heard])})
     gone = ("original_path = NULL, cut_path = NULL, peaks_path = NULL, cut_spec = NULL, cut_chapters = NULL, "
-            "source_chapters = NULL, transcripts = NULL")  # chapters are looked for again on the next download
+            "source_chapters = NULL, transcripts = ?")  # chapters are looked for again on the next download
     with transaction(db):
         if ep["state"] == READY:
             db.execute(f"UPDATE episodes SET state = 'expired', state_note = NULL, {gone}, ready_at = NULL, "
-                       "expired_at = ? WHERE id = ?", (now or time.time(), ep["id"]))
+                       "expired_at = ? WHERE id = ?", (json.dumps(heard) if heard else None, now or time.time(),
+                                                       ep["id"]))
         else:
-            db.execute(f"UPDATE episodes SET {gone} WHERE id = ?", (ep["id"],))
+            db.execute(f"UPDATE episodes SET {gone} WHERE id = ?", (None, ep["id"]))
 
 
 def expire_due(db: sqlite3.Connection, now: float | None = None) -> list[int]:
@@ -96,6 +106,13 @@ def expire_due(db: sqlite3.Connection, now: float | None = None) -> list[int]:
                     or path.stat().st_mtime + ep["retention_days"] * DAY <= now):
                 _unlink(ep["original_path"])
                 db.execute("UPDATE episodes SET original_path = NULL WHERE id = ?", (ep["id"],))
+    stale = db.execute(
+        f"""SELECT e.id, e.transcripts FROM episodes e WHERE e.state = 'expired' AND e.transcripts IS NOT NULL
+              AND e.expired_at + {CAPTIONS_DAYS * DAY} <= ? AND NOT {KEPT}""", (now,)).fetchall()
+    with transaction(db):
+        for ep in stale:
+            chapters.forget(ep)
+            db.execute("UPDATE episodes SET transcripts = NULL WHERE id = ?", (ep["id"],))
     if due:
         log.info("cleaned up %d episode(s)", len(due))
     return [ep["id"] for ep in due]

@@ -156,9 +156,11 @@ def _transcript_ok(fmt: str, body: bytes) -> bool:
 
 def gather(db: sqlite3.Connection, ep: sqlite3.Row, stem: Path) -> None:
     """Find an episode's chapters and save its timed transcripts (as `stem` plus a suffix), the first time it is
-    cut. A chapters or transcript file that can't be had is left out."""
+    cut. A chapters or transcript file that can't be had is left out. Captions kept from before a clean-up
+    (retention.py) stay, and are served in place of the feed's, as they were."""
     if ep["source_chapters"] is not None:
         return
+    heard = [t for t in json.loads(ep["transcripts"] or "[]") if t.get("made")]
     item = None
     try:
         item = ET.fromstring(ep["item_xml"]) if ep["item_xml"] else None
@@ -198,10 +200,11 @@ def gather(db: sqlite3.Connection, ep: sqlite3.Row, stem: Path) -> None:
         tmp.write_bytes(body)
         tmp.replace(path)
         transcripts.append({"format": fmt, "path": str(path),
-                            **{k: el.get(k) for k in ("language", "rel") if el.get(k)}})
+                            **{k: el.get(k) for k in ("language", "rel") if el.get(k)},
+                            **({"reference": True} if heard else {})})
     with transaction(db):
         db.execute("UPDATE episodes SET source_chapters = ?, transcripts = ? WHERE id = ?",
-                   (json.dumps(chapters), json.dumps(transcripts), ep["id"]))
+                   (json.dumps(chapters), json.dumps([*heard, *transcripts]), ep["id"]))
 
 
 def forget(ep: sqlite3.Row | dict) -> None:
