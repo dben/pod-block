@@ -2,6 +2,7 @@
 filters, the show page's tabs, and finding podcasts by name."""
 
 import html
+import json
 import re
 
 import pytest
@@ -477,3 +478,40 @@ def test_an_apple_podcasts_link_follows_its_feed(client, web, apple):
     assert apple.calls == [(directory.LOOKUP_URL, {"id": "152249110", "entity": "podcast"})]
     res = client.post("/podcasts", data={"url": "https://podcasts.apple.com/us/podcast/gone/id999"})
     assert "Couldn&#39;t add that feed: Apple Podcasts has no feed for that show." in res.text
+
+
+def test_episode_page_counts_every_section_the_timeline_cuts(client, web, tmp_path):
+    pod = add(client, web, item(1))
+    (one,) = ids_of(client, pod, "ep-1")
+    original = tmp_path / "original.mp3"
+    original.write_bytes(b"")
+
+    def section(start, end, *types):
+        return {"start": start, "end": end, "length": end - start, "blocks": [], "types": list(types)}
+
+    report = {"duration": 3723, "sections": [section(0, 30, "intro"), section(600, 690, "break"),
+                                             section(1800, 1890, "break"), section(2400, 2430, "repeated")],
+              "kept": [section(3000, 3020, "repeated")], "not_repeats": []}
+    db = connect(client.db_path)
+    try:
+        db.execute("INSERT INTO reports VALUES (?, 0, ?)", (one, json.dumps(report)))
+        # cut by hand, over a break
+        db.execute("INSERT INTO edits (episode_id, start, end, created_at) VALUES (?, 650, 700, 0)", (one,))
+        db.execute("UPDATE episodes SET state = 'ready', duration = 3723, cut_duration = 3423, original_path = ?, "
+                   "missing_cuts = ?, missing_kept = ?, phrase_cuts = ? WHERE id = ?",
+                   (str(original), json.dumps([{"type": "missing", "start": 1200, "end": 1260}]),
+                    json.dumps([[2700, 2760]]), json.dumps([{"type": "outro", "start": 3650, "end": 3723}]), one))
+        db.commit()
+    finally:
+        db.close()
+    text = client.get(f"/episodes/{one}").text
+    assert "in 7 sections." in text and "7 sections cut" in text  # 4 found, 1 by hand, 1 missing, 1 phrase
+
+    db = connect(client.db_path)
+    try:
+        db.execute("UPDATE episodes SET original_path = NULL WHERE id = ?", (one,))
+        db.commit()
+    finally:
+        db.close()
+    text = client.get(f"/episodes/{one}").text
+    assert "What gets cut" in text and '<span class="muted">7 sections</span>' in text

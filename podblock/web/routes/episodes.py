@@ -80,14 +80,15 @@ def show_episode(request: Request, episode_id: int, user=Depends(current_user),
     podcast = library.podcast(db, ep["podcast_id"])
     report = library.report(db, episode_id)
     job = jobs.latest(db, episode_id)
+    shown = processing.timeline(db, episode_id, report) if report is not None else None
     data = None
-    if report is not None and ep["original_path"] and Path(ep["original_path"]).exists():
-        data = {**processing.timeline(db, episode_id, report), "duration": ep["duration"],
+    if shown is not None and ep["original_path"] and Path(ep["original_path"]).exists():
+        data = {**shown, "duration": ep["duration"],
                 "editable": ep["state"] == states.READY, "audio": f"/episodes/{episode_id}/original",
                 "peaks": f"/episodes/{episode_id}/peaks", "save": f"/episodes/{episode_id}/edits"}
     return page(request, "episode.html", title=ep["title"], nav="podcasts", user=user, episode=ep,
                 podcast=podcast, back=list_return_url(request, podcast["id"]), report=report, job=job,
-                notes=show_notes(ep["item_xml"]), timeline=data,
+                notes=show_notes(ep["item_xml"]), timeline=data, cut_count=processing.cut_count(shown) if shown else 0,
                 captions=next(iter(chapters.transcripts(ep)), None) if ep["cut_path"] else None,  # timed to the cut
                 play_needed=round(grabs.play_needed(ep["cut_duration"] or ep["duration"])))
 
