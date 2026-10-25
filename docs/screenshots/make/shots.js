@@ -65,7 +65,10 @@ const SHOTS = {
       player.currentTime = 312;
       await player.play();
     });
-    await page.waitForTimeout(5500);
+    // Pause part way into a line, with the one before it still showing.
+    await page.waitForFunction(() => document.querySelectorAll('.captions p').length === 2
+      && document.querySelector('.captions p.now'));
+    await page.waitForTimeout(1000);
     await page.evaluate(() => document.getElementById('player').pause());
     await page.waitForTimeout(300);
     return around(page, ['.status-card']);
