@@ -36,7 +36,7 @@
         {% if report and e.duration %}
         {% set cut_sec = e.duration - (e.cut_duration or e.duration) %}
         <p class="muted">{{ cut_sec|duration or 'Nothing' }} cut from {{ e.duration|duration }}
-          ({{ (100 * cut_sec / e.duration)|round|int }}%), in {{ report.sections|length|plural('section') }}.
+          ({{ (100 * cut_sec / e.duration)|round|int }}%), in {{ cut_count|plural('section') }}.
           {{ e.cut_duration|duration }} left.</p>
         {% endif %}
         {% if e.state_note %}<p class="alert alert-error">{{ e.state_note }}</p>{% endif %}
@@ -109,7 +109,7 @@
   <section class="card tl-card tl-loading" data-timeline>
     <div class="card-head">
       <h2>Timeline</h2>
-      <span class="muted">{{ report.sections|length|plural('section') }} cut</span>
+      <span class="muted">{{ cut_count|plural('section') }} cut</span>
     </div>
     <script type="application/json" id="timeline-data">{{ timeline|tojson }}</script>
     <audio data-original preload="none" src="{{ timeline.audio }}"></audio>
@@ -176,7 +176,7 @@
   <section class="card sections-card">
     <div class="card-head">
       <h2>What gets cut</h2>
-      <span class="muted">{{ report.sections|length|plural('section') }}</span>
+      <span class="muted">{{ cut_count|plural('section') }}</span>
     </div>
     <ol class="section-list">
       {% for s in report.sections %}

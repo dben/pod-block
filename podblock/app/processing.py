@@ -549,3 +549,10 @@ def timeline(db: sqlite3.Connection, episode_id: int, report: dict | None) -> di
     unsaid = [{"id": f"u{i}", **m} for i, m in enumerate(missing.listing(ep))]
     return {"sections": sections, "manual": manual, "not_repeats": not_repeats, "phrases": said, "missing": unsaid}
 
+
+def cut_count(shown: dict) -> int:
+    """How many sections `shown` (from timeline) lists as cut: all but the ones kept, each counted even where
+    it overlaps another, as the timeline lists them."""
+    return (sum(s["value"] != KEPT for s in shown["sections"]) + len(shown["manual"]) + len(shown["phrases"])
+            + sum(not m["kept"] for m in shown["missing"]))
+
