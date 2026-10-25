@@ -11,7 +11,7 @@ heard on one show is cut from the next show that runs it, and an ad break
 marked by the show's usual stings is cut whole, even when the ads in it are
 new.
 
-![An episode's timeline: the intro, two ad breaks, a section cut by hand and the outro, each with its own colour](docs/screenshots/timeline.png)
+![An episode's timeline: the intro, a section cut by hand, two ad breaks, a repeated theme, an ad read the feed's transcript leaves out, and an outro cut at a phrase](docs/screenshots/timeline.png)
 
 ## Install
 
@@ -107,7 +107,9 @@ cleaned up.
 ### 3. Check the cuts
 
 Open an episode to see its timeline. Each cut section is drawn in its type's
-colour, with a card below it. Click the waveform to play from there, or a
+colour, with a card below it saying why it's cut: a repeat heard in other
+episodes, an ad break found from the stings around it, speech the feed's
+transcript doesn't have, or an intro or outro phrase. Click the waveform to play from there, or a
 section's play button to hear it with two seconds of lead-in. **Skip cuts**
 plays the episode the way your podcast app will.
 
@@ -180,11 +182,12 @@ The **Settings** tab is shared by everyone who follows the show.
 
 **Intro and outro phrases** cut by what's said, for shows whose intro isn't
 a fixed tune. List phrases that end the intro or start the outro, and
-pod-block cuts up to or from them. Write a phrase between slashes for a
-regular expression. Phrases need a transcript: the feed's own, or captions
+pod-block cuts up to or from them: "this was a production of Podblock
+Studios" as an outro phrase cuts the credits that follow it. Write a phrase
+between slashes for a regular expression. Phrases need a transcript: the feed's own, or captions
 (below).
 
-![The Settings tab: clean-up, refresh, gap and ad break settings, then intro and outro phrases](docs/screenshots/settings.png)
+![The Settings tab: clean-up, refresh, gap and ad break settings, the transcript check, then an outro phrase](docs/screenshots/settings.png)
 
 ### 7. Captions (optional)
 
@@ -200,7 +203,7 @@ that leaves the ads out. With captions on, pod-block compares the two and
 cuts the speech the feed's transcript doesn't have. A checkbox in the show's
 Settings turns this off.
 
-![An episode's player with two lines of captions under it, each with its speaker](docs/screenshots/captions.png)
+![An episode's player with two lines of captions under it, each lettered by its speaker](docs/screenshots/captions.png)
 
 ### Sharing and upkeep
 
