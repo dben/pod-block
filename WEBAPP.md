@@ -510,9 +510,18 @@ on Kubernetes, with backups and upgrades, see `deployment/README.md`.
 - Downloads are cleaned up a set time after the episode was first made
   ready (default 7 days, set per podcast; 0 keeps them for good).
   Processing again or saving timeline changes doesn't restart the clock.
-  The download, cut file, waveform and saved transcripts go (and the next
+  The download, cut file, waveform and the feed's transcripts go (and the next
   download looks for chapters and transcripts again); the episode's metadata, report and
-  hand-cut sections stay. It shows as "Cleaned up" with the date, leaves the
+  hand-cut sections stay. Captions from the transcription service stay a
+  year longer, with their word times and speakers, so the next download
+  doesn't need transcribing again.
+- "Download again" keeps what was timed to the old file only if the new
+  one is the same file byte for byte (by SHA-256). A show that puts its ads
+  in as each download is made sends a different file each time, and
+  everything after a changed ad moves. Then the episode is worked on
+  afresh: it is fingerprinted and compared again, its hand-cut sections and
+  kept stretches go, and it is transcribed again
+  (`podblock/app/processing.py`). It shows as "Cleaned up" with the date, leaves the
   private feed, and "Download again" brings it back, cut the same way.
   Downloads that never became ready (failed jobs, companions of a cancelled
   one) go on the same clock.

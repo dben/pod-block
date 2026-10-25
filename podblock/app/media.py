@@ -20,6 +20,15 @@ def key(guid: str) -> str:
     return hashlib.sha1(guid.encode()).hexdigest()[:16]
 
 
+def digest(path: Path) -> str:
+    """A file's SHA-256, to know a download again."""
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        while chunk := f.read(1 << 20):
+            h.update(chunk)
+    return h.hexdigest()
+
+
 def audio_suffix(url: str | None, mime: str | None) -> str:
     suffix = Path((url or "").split("?", 1)[0]).suffix.lower()
     if suffix in AUDIO_SUFFIXES:

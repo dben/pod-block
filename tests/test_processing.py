@@ -136,8 +136,11 @@ def test_a_failed_download_can_be_retried(env):
 
     env.cdn.fail.clear()
     env.client.post(f"/jobs/{job['id']}/retry")
+    assert [j["id"] for j in jobs.listing(env.db)["finished"]] == []  # the queued one stands in for it
+    assert "Retry" not in env.client.get("/jobs").text
     worker.run_queue(env.settings)
     assert episode(env, "ep-1")["state"] == "ready"
+    assert [j["state"] for j in jobs.listing(env.db)["finished"]] == ["done"]
 
 
 def test_cancelling(env, monkeypatch):
@@ -818,6 +821,40 @@ def test_a_cleaned_up_episode_downloads_again(env):
     ep = episode(env, "ep-3")
     assert ep["state"] == "ready" and Path(ep["cut_path"]).exists() and ep["expired_at"] is None
     assert len(env.cdn.fetched) == fetched + 1 and ep["ready_at"] > 0
+
+
+def test_a_different_file_downloaded_again_is_worked_on_afresh(env):
+    from podblock.app import retention
+    processed(env)
+    ep_id = env.ids["ep-3"]
+    env.db.execute("INSERT INTO edits (episode_id, start, end, created_at) VALUES (?, 1, 3, ?)", (ep_id, time.time()))
+    env.db.execute("UPDATE episodes SET missing_kept = '[[5, 6]]' WHERE id = ?", (ep_id,))
+    env.db.commit()
+
+    def fingerprinted():
+        return env.db.execute("SELECT COUNT(*) FROM timings WHERE step = 'fingerprint' AND episode_id = ?",
+                              (ep_id,)).fetchone()[0]
+
+    def again(file=None):
+        age(env, "ep-3", 8)
+        retention.expire_due(env.db)
+        if file:
+            env.cdn.files["https://cdn.example.com/3.mp3"] = env.cdn.files[file]
+        env.client.post(f"/podcasts/{env.pod}/episodes", data={"action": "download", "ids": ep_id})
+        worker.run_queue(env.settings)
+        assert episode(env, "ep-3")["state"] == "ready"
+
+    again()  # the same file: what was timed to it still fits
+    assert fingerprinted() == 1
+    assert env.db.execute("SELECT COUNT(*) FROM edits WHERE episode_id = ?", (ep_id,)).fetchone()[0] == 1
+    assert episode(env, "ep-3")["missing_kept"] == "[[5, 6]]"
+
+    again("https://cdn.example.com/11.mp3")  # other audio, as a show that puts its ads in as it's downloaded sends
+    assert fingerprinted() == 2
+    assert env.db.execute("SELECT COUNT(*) FROM edits WHERE episode_id = ?", (ep_id,)).fetchone()[0] == 0
+    assert episode(env, "ep-3")["missing_kept"] is None
+    assert env.db.execute("SELECT 1 FROM compared_pairs WHERE a_id = ? OR b_id = ?", (ep_id, ep_id)).fetchone()
+    assert episode(env, "ep-3")["original_sha256"] == media.digest(env.cdn.files["https://cdn.example.com/11.mp3"])
 
 
 def test_archiving_everything_cleaned_up(env):

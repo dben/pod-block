@@ -26,7 +26,7 @@ from ..matcher import MatchParams
 from ..pipeline import Paths, episode_report, find_common_blocks, load_fingerprint, rescan
 from ..store import BUMPER, BUMPER_IN, BUMPER_OUT, IGNORED, INTRO, KEPT, OUTRO, PODCAST_TYPES, SHOW, Store
 from ..timing import Timer
-from . import captions, chapters, missing, phrases
+from . import captions, chapters, media, missing, phrases
 from .config import Settings
 from .db import transaction
 from .jobs import Cancelled, Context, enqueue, settle_episode, take_along
@@ -100,6 +100,8 @@ def _fetch(ctx: Context, settings: Settings, store: Store, paths: Paths, episode
         with transaction(ctx.db):
             ctx.db.execute("UPDATE episodes SET original_path = ?, ever_downloaded = 1 WHERE id = ?",
                            (str(original), episode_id))
+        _new_download(ctx.db, store, episode_id, original)
+        ep = _episode(ctx.db, episode_id)
     fp_path = Path(ep["fingerprint_path"]) if ep["fingerprint_path"] else None
     if fp_path is None or not fp_path.exists():
         ctx.step("Fingerprinting", episode_id)
@@ -112,6 +114,29 @@ def _fetch(ctx: Context, settings: Settings, store: Store, paths: Paths, episode
         fp_path = paths.fingerprint(ep["guid"], store.config)
         fp.save(fp_path)
         store.upsert_episode(ep["guid"], fingerprint_path=str(fp_path), duration=fp.duration)
+
+
+def _new_download(db: sqlite3.Connection, store: Store, episode_id: int, original: Path) -> None:
+    """Note which file was downloaded. If the episode was worked on from another file before (a show that puts
+    its ads in as each download is made sends a new one each time), everything timed to that one goes, as
+    everything after a changed ad has moved: its fingerprint and where blocks play in it, so it is fingerprinted
+    and compared afresh; the cuts made by hand and stretches kept on its timeline; and its captions."""
+    digest = media.digest(original)
+    ep = _episode(db, episode_id)
+    if ep["original_sha256"] not in (None, digest):
+        log.info("episode %d: its new download is a different file; working on it afresh", episode_id)
+        if ep["fingerprint_path"]:
+            Path(ep["fingerprint_path"]).unlink(missing_ok=True)
+        with transaction(db):
+            store.upsert_episode(ep["guid"], fingerprint_path=None)
+            db.execute("DELETE FROM occurrences WHERE episode_id = ?", (episode_id,))
+            db.execute("DELETE FROM reports WHERE episode_id = ?", (episode_id,))
+            db.execute("DELETE FROM compared_pairs WHERE a_id = ? OR b_id = ?", (episode_id, episode_id))
+            db.execute("DELETE FROM edits WHERE episode_id = ?", (episode_id,))
+            db.execute("UPDATE episodes SET missing_kept = NULL WHERE id = ?", (episode_id,))
+        captions.forget(db, episode_id)
+    with transaction(db):
+        db.execute("UPDATE episodes SET original_sha256 = ? WHERE id = ?", (digest, episode_id))
 
 
 def _cutting(db: sqlite3.Connection, settings: Settings, episode_id: int) -> dict:

@@ -260,6 +260,10 @@ MIGRATIONS = [
     ALTER TABLE episodes ADD COLUMN missing_cuts TEXT;  -- JSON list of {type, start, end}, as last cut
     ALTER TABLE episodes ADD COLUMN missing_kept TEXT;  -- JSON list of [start, end]: stretches kept on the timeline
     """,
+    # 20: which download the episode's times fit, to know when the next one is a different file (processing.py)
+    """
+    ALTER TABLE episodes ADD COLUMN original_sha256 TEXT;
+    """,
 ]
 
 

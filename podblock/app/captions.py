@@ -22,6 +22,11 @@ more before the job fails.
 Each word's time is saved beside the captions too, for the show's intro and
 outro phrases (`phrases.py`); hearing one queues the episode to be cut again.
 
+Captions outlast a clean-up (retention.py), but the next download keeps them
+only if it is the very file they were made from (`processing.py`'s
+`_new_download`): a show that puts its ads in as each download is made moves
+everything after an ad, so a different file is transcribed again.
+
 An episode can also be transcribed again on purpose (`queue(force=True)`, the
 downloads page's Transcribe again): the new captions then replace whatever it
 had, its feed's transcripts included.
@@ -387,6 +392,20 @@ def run(ctx: Context, settings: Settings) -> None:
     else:
         phrases.requeue(ctx.db, ep["podcast_id"], ctx.job["requested_by"], [episode_id],
                         note="Waiting to be cut again: an intro or outro phrase was heard")
+
+
+def forget(db: sqlite3.Connection, episode_id: int) -> None:
+    """Delete an episode's captions, and what was saved with them; its feed's transcripts stay, and are served
+    again."""
+    ep = db.execute("SELECT transcripts FROM episodes WHERE id = ?", (episode_id,)).fetchone()
+    saved = json.loads(ep["transcripts"] or "[]") if ep else []
+    rest = [{k: v for k, v in t.items() if k != "reference"} for t in saved if not t.get("made")]
+    if len(rest) == len(saved):
+        return
+    with transaction(db):
+        db.execute("UPDATE episodes SET transcripts = ? WHERE id = ?", (json.dumps(rest) if rest else None,
+                                                                        episode_id))
+    _forget(saved, keep=rest)
 
 
 def _forget(transcripts: list[dict], keep: list[dict]) -> None:
