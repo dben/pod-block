@@ -122,9 +122,12 @@ on Kubernetes, with backups and upgrades, see `deployment/README.md`.
 - **Lists.** Three tabs: All, Archived, and Filtered (when a filter hides
   anything). Downloaded, Grabbed and Cleaned up are toggles beside them
   that narrow whichever tab is open, alone or together, so "archived and
-  downloaded" is one view. Each is in the address (`?view=archived&downloaded=1`), so the
-  back button and bookmarks work; the old `?view=downloaded` and
-  `?view=grabbed` still do. Tab counts follow the toggles.
+  downloaded" is one view. Each click moves a toggle on: off, then only
+  those episodes, then none of them ("Not cleaned up"), then off again.
+  Each is in the address (`?view=archived&downloaded=1`,
+  `?cleaned=hide`), so the back button and bookmarks work; the old
+  `?view=downloaded` and `?view=grabbed` still do. Tab counts follow the
+  toggles.
 - **Selecting.** Each row's artwork is its checkbox: click it to select,
   shift-click another to select everything in between. While anything is
   selected, a click anywhere on a row toggles it too. Esc clears. On touch
@@ -437,9 +440,9 @@ A grab is a user getting an episode (`podblock/app/grabs.py`, table
 ### Retention
 
 - **The clock.** Downloads are cleaned up a set time after the episode was
-  first made ready, or after anyone last grabbed it if that's later
-  (default 7 days, set per podcast; 0 keeps them for good). Processing
-  again or saving timeline changes doesn't restart it.
+  last processed (made ready, processed again, or cut again after timeline
+  changes) or grabbed by anyone, whichever is later (default 7 days, set
+  per podcast; 0 keeps them for good).
   Downloads that never became ready (failed jobs, companions of a cancelled
   one) go on the same clock.
 - **What goes.** The download, cut file, waveform and the feed's
@@ -459,7 +462,7 @@ A grab is a user getting an episode (`podblock/app/grabs.py`, table
   (`podblock/app/processing.py`).
 - **Episodes nobody wants.** Once everyone who has the podcast on their home
   page has archived an episode or filters it out, its files go a day after
-  it was made ready or last grabbed (the day leaves time to play one
+  it was last processed or grabbed (the day leaves time to play one
   downloaded from the Archived tab), even if the podcast keeps downloads for good. Kept
   episodes still stay, and a podcast nobody has on their home page is left
   to the normal clock. Leftover downloads of such episodes go at once. The
@@ -593,7 +596,7 @@ podcast.
 | Short repeats | Sections under 15 seconds aren't cut (`report.MIN_SECTION_SEC`; the CLI's `--min-section`), unless they are ad breaks, intros, outros, show blocks or blocks typed by hand. Short blocks are still stored, since bumpers are short and are how breaks are found. |
 | Comparison episodes | When a show has fewer than 4 fingerprinted episodes, a download also pulls the episodes published after the chosen one, nearest first, and older ones only when it reaches the newest episode. These are fully processed too: shows often run in parts, so they are likely next anyway. |
 | Downloads | By hand, apart from the comparison episodes above and podcasts set to download new episodes on their own. |
-| Retention | Counts from when an episode was processed or last grabbed, not its publish date. A keep pin stops the clock. An episode everyone with the podcast has archived or filtered goes early, whatever the retention setting. |
+| Retention | Counts from when an episode was last processed or grabbed, not its publish date. A keep pin stops the clock. An episode everyone with the podcast has archived or filtered goes early, whatever the retention setting. |
 | Users | Built for a few users. The admin logs in with the API key and adds the others, with user names and passwords. Feeds, downloads, processing, blocks and podcast settings are shared, and any user can add a feed, download and edit timelines. Removing a podcast is the admin's, since it changes things for everyone. Archived, kept, filters, which podcasts are on the home page, and private feeds are per user. |
 | Grabs | A grab is a user getting an episode: through their private feed or omni feed, by playing it in its page's player (not the timeline's), or with its Download button. Hits within 10 minutes of the last one, or starting partway into the file, are the same grab, since apps stream and download at once and seek with byte ranges. A play on the page counts after the longer of 5 minutes and 5% of the episode (90% of one shorter than that). |
 | Keeping it generic | No real feed URLs, show names or audio in the repo, its history or its tests. Real feeds for trying things by hand live in the environment variable `PODBLOCK_TEST_FEEDS` (space-separated), set in the cloud environment's settings. The README's screenshots come from made-up shows (`docs/screenshots/make/`). |

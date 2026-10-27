@@ -725,7 +725,8 @@ def test_the_episode_page_has_its_transcript_folded_away(env, tmp_path):
 # ---- retention ------------------------------------------------------------------------
 
 def age(env, guid, days):
-    env.db.execute("UPDATE episodes SET ready_at = ready_at - ? WHERE guid = ?", (days * 86400, guid))
+    env.db.execute("UPDATE episodes SET ready_at = ready_at - ?, processed_at = processed_at - ? WHERE guid = ?",
+                   (days * 86400, days * 86400, guid))
     env.db.commit()
 
 
@@ -801,13 +802,16 @@ def test_ready_shows_when_it_will_be_cleaned_up(env):
     assert "You're keeping it" in env.client.get(f"/episodes/{env.ids['ep-3']}").text
 
 
-def test_processing_again_doesnt_restart_the_clock(env):
+def test_processing_again_restarts_the_clock(env):
+    from podblock.app import retention
     processed(env)
-    age(env, "ep-3", 3)
+    age(env, "ep-3", 8)
     before = episode(env, "ep-3")["ready_at"]
     env.client.post(f"/episodes/{env.ids['ep-3']}/process")
     worker.run_queue(env.settings)
-    assert episode(env, "ep-3")["ready_at"] == before
+    assert episode(env, "ep-3")["ready_at"] == before  # the feed by download date keeps its order
+    assert retention.expire_due(env.db) == []
+    assert "cleaned up in 7 days" in env.client.get(f"/episodes/{env.ids['ep-3']}").text
 
 
 def test_a_grab_restarts_the_clock(env):

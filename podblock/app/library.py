@@ -24,6 +24,8 @@ GRABBED = "EXISTS (SELECT 1 FROM grabs g WHERE g.episode_id = e.id AND g.user_id
 GRABS = ("(SELECT COUNT(*) FROM grabs g WHERE g.episode_id = e.id AND g.user_id = :user_id) AS grabs, "
          "(SELECT MAX(g.last_at) FROM grabs g WHERE g.episode_id = e.id AND g.user_id = :user_id) AS grabbed_at, "
          f"{LAST_GRAB} AS last_grab_at")  # by anyone: clean-up counts from it
+# What each of a list's narrows tests, by name: never NULL, so NOT of one is the episodes it leaves out.
+NARROWS = {"downloaded": f"COALESCE({WAS_DOWNLOADED}, 0)", "grabbed": GRABBED, "cleaned": f"COALESCE({CLEANED}, 0)"}
 MAX_IDS = 5000  # per bulk action
 RETENTION_DAYS = (0, 3650)  # the range of each podcast setting
 REFRESH_MINUTES = (15, 7 * 24 * 60)
@@ -152,26 +154,22 @@ def _like(q: str) -> str:
 
 
 def episodes(db: sqlite3.Connection, user_id: int, podcast_id: int, archived: bool, q: str = "",
-             limit: int = 50, offset: int = 0, downloaded: bool = False, filtered: bool = False,
-             oldest_first: bool = False, grabbed: bool = False,
-             cleaned: bool = False) -> tuple[list[sqlite3.Row], int]:
+             limit: int = 50, offset: int = 0, filtered: bool = False, oldest_first: bool = False,
+             narrow: dict[str, bool] | None = None) -> tuple[list[sqlite3.Row], int]:
     """One page of a podcast's episodes, newest first (or oldest), and how many match in all. Each row says
     how often this user grabbed it (`grabs`), and when last (`grabbed_at`; by anyone, `last_grab_at`).
 
-    `downloaded` keeps only episodes downloaded at some point: queued, ready, failed or cleaned up; `grabbed`
-    only the ones this user grabbed; `cleaned` only cleaned-up ones. Each narrows any list, together or alone.
-    Episodes a filter hides from this user are left out; `filtered` lists only those, archived or not."""
+    `narrow` keeps only the episodes each named narrow (`NARROWS`) matches, or with False, only those it
+    doesn't: `downloaded`, downloaded at some point (queued, ready, failed or cleaned up); `grabbed`, grabbed
+    by this user; `cleaned`, cleaned up. They narrow any list, together or alone. Episodes a filter hides from
+    this user are left out; `filtered` lists only those, archived or not."""
     args = {"user_id": user_id, "podcast_id": podcast_id, "archived": int(archived)}
     if filtered:
         where = f"e.podcast_id = :podcast_id AND {HIDDEN}"
     else:
         where = f"e.podcast_id = :podcast_id AND {ARCHIVED} = :archived AND NOT {HIDDEN}"
-    if downloaded:
-        where += f" AND {WAS_DOWNLOADED}"
-    if grabbed:
-        where += f" AND {GRABBED}"
-    if cleaned:
-        where += f" AND {CLEANED}"
+    for name, only in (narrow or {}).items():
+        where += f" AND {'' if only else 'NOT '}{NARROWS[name]}"
     if q.strip():
         where += " AND e.title LIKE :q ESCAPE '\\'"
         args["q"] = _like(q.strip())
@@ -185,18 +183,19 @@ def episodes(db: sqlite3.Connection, user_id: int, podcast_id: int, archived: bo
     return rows, total
 
 
-def counts(db: sqlite3.Connection, user_id: int, podcast_id: int, downloaded: bool = False,
-           grabbed: bool = False, cleaned: bool = False) -> dict[str, int]:
+def counts(db: sqlite3.Connection, user_id: int, podcast_id: int,
+           narrow: dict[str, bool] | None = None) -> dict[str, int]:
     """How many of a podcast's episodes are in each of a user's lists, narrowed as `episodes` narrows them.
     Filtered ones count only as filtered. `episodes` is how many the podcast has outside the filtered list,
     and `expired` how many cleaned-up ones are in the main list, neither narrowed."""
-    narrowed = " AND ".join(["1", *(["d"] if downloaded else []), *(["g"] if grabbed else []),
-                             *(["x"] if cleaned else [])])
+    column = {"downloaded": "d", "grabbed": "g", "cleaned": "x"}
+    narrowed = " AND ".join(["1", *(f"{'' if only else 'NOT '}{column[n]}" for n, only in (narrow or {}).items())])
     row = db.execute(
         f"""SELECT COALESCE(SUM(h = 0), 0) AS episodes, COALESCE(SUM(h = 0 AND a = 0 AND {narrowed}), 0) AS active,
                    COALESCE(SUM(h = 0 AND a = 1 AND {narrowed}), 0) AS archived,
                    COALESCE(SUM(h AND {narrowed}), 0) AS filtered, COALESCE(SUM(h = 0 AND x AND a = 0), 0) AS expired
-            FROM (SELECT {ARCHIVED} AS a, {WAS_DOWNLOADED} AS d, {CLEANED} AS x, {HIDDEN} AS h, {GRABBED} AS g
+            FROM (SELECT {ARCHIVED} AS a, {NARROWS["downloaded"]} AS d, {NARROWS["cleaned"]} AS x, {HIDDEN} AS h,
+                         {NARROWS["grabbed"]} AS g
                   FROM episodes e {USER_JOIN} WHERE e.podcast_id = :podcast_id)""",
         {"user_id": user_id, "podcast_id": podcast_id}).fetchone()
     return dict(row)

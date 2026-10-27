@@ -111,7 +111,7 @@ def test_lists_narrow_to_downloaded_grabbed_and_cleaned_up(client, web):
     assert found == [3]
     assert 'data-count="active">2<' in page and 'data-count="archived">1<' in page  # counts narrow too
     assert f'href="/podcasts/{pod}?downloaded=1"' in page  # the other lists keep it on
-    assert f'href="/podcasts/{pod}?view=archived" role="button" aria-pressed="true"' in page  # turns it off
+    assert f'href="/podcasts/{pod}?view=archived&amp;downloaded=hide" role="button" data-mode="only"' in page
     found, page = shown("view=archived&downloaded=1&grabbed=1")
     assert found == [] and "Nothing archived is downloaded and grabbed" in page
     assert '<input type="hidden" name="grabbed" value="1">' in page  # searching keeps them on
@@ -121,7 +121,17 @@ def test_lists_narrow_to_downloaded_grabbed_and_cleaned_up(client, web):
     assert shown("view=archived&cleaned=1")[0] == [3]
     assert f'href="/podcasts/{pod}?cleaned=1">Show it</a>' in shown("")[1]  # from the clean-up note
     found, page = shown("cleaned=1&grabbed=1")
-    assert found == [] and "Nothing cleaned up and grabbed" in page
+    assert found == [] and "No episodes are cleaned up and grabbed" in page
+
+    # each toggle can hide what it matches instead
+    found, page = shown("cleaned=hide")
+    assert found == [1, 4] and 'data-count="active">2<' in page
+    assert f'href="/podcasts/{pod}" role="button" data-mode="hide"' in page and ">Not cleaned up</a>" in page
+    assert f'href="/podcasts/{pod}?cleaned=1">Show it</a>' in page
+    assert shown("downloaded=hide")[0] == [1] and shown("downloaded=1&cleaned=hide")[0] == [4]
+    found, page = shown("downloaded=hide&cleaned=1")
+    assert found == [] and "No episodes are cleaned up and not downloaded" in page
+    assert '<input type="hidden" name="cleaned" value="hide">' in shown("cleaned=hide")[1]
 
 
 def test_archive_this_and_older(client, web):
@@ -397,6 +407,7 @@ def test_back_to_the_show_keeps_the_list_it_came_from(client, web):
     assert back(f"http://testserver/podcasts/{pod}?view=archived&downloaded=1&q=night&page=3") == \
         f"/podcasts/{pod}?view=archived&downloaded=1&q=night"
     assert back(f"http://testserver/podcasts/{pod}?view=grabbed") == f"/podcasts/{pod}?grabbed=1"
+    assert back(f"http://testserver/podcasts/{pod}?cleaned=hide&grabbed=1") == f"/podcasts/{pod}?grabbed=1&cleaned=hide"
     assert back(f"http://testserver/podcasts/{pod}?tab=settings") == f"/podcasts/{pod}"
     assert back(f"http://testserver/podcasts/{pod + 1}?view=archived") == f"/podcasts/{pod}"
     assert back(f"http://elsewhere.example/podcasts/{pod}?view=archived") == f"/podcasts/{pod}"

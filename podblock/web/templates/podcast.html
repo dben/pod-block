@@ -243,18 +243,20 @@
         Filtered <span class="count">{{ '{:,}'.format(counts.filtered) }}</span></a>
       {% endif %}
     </nav>
-    <div class="narrows" role="group" aria-label="Show only">
-      {% for key, label, hint in [('downloaded', 'Downloaded', 'Only episodes downloaded at some point'),
-                                  ('grabbed', 'Grabbed', 'Only episodes you got through your private feed or omni feed, or played or downloaded here'),
-                                  ('cleaned', 'Cleaned up', 'Only episodes whose download was cleaned up')] %}
-      <a class="narrow" href="{{ narrow_urls[key] }}" role="button" aria-pressed="{{ 'true' if key in narrow else 'false' }}" title="{{ hint }}">
-        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">{% if key in narrow %}<path d="m5 12.5 4.5 4.5L19 7.5"/>{% else %}<path d="M12 5v14M5 12h14"/>{% endif %}</svg>{{ label }}</a>
+    <div class="narrows" role="group" aria-label="Narrow the list">
+      {% for key, label, what in [('downloaded', 'downloaded', 'downloaded at some point'),
+                                  ('grabbed', 'grabbed', 'you got through your private feed or omni feed, or played or downloaded here'),
+                                  ('cleaned', 'cleaned up', 'whose download was cleaned up')] %}
+      {% set mode = 'off' if key not in narrow else 'only' if narrow[key] else 'hide' %}
+      <a class="narrow" href="{{ narrow_urls[key] }}" role="button" data-mode="{{ mode }}" aria-pressed="{{ 'false' if mode == 'off' else 'true' }}"
+         title="{{ {'off': 'Show only episodes ' ~ what, 'only': 'Showing only episodes ' ~ what ~ '. Click to hide them instead', 'hide': 'Hiding episodes ' ~ what ~ '. Click to turn off'}[mode] }}">
+        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">{% if mode == 'only' %}<path d="m5 12.5 4.5 4.5L19 7.5"/>{% elif mode == 'hide' %}<path d="M5 12h14"/>{% else %}<path d="M12 5v14M5 12h14"/>{% endif %}</svg>{{ ('Not ' ~ label) if mode == 'hide' else label|capitalize }}</a>
       {% endfor %}
     </div>
   </div>
   <form class="search" method="get" action="/podcasts/{{ podcast.id }}" role="search">
     {% if view != 'active' %}<input type="hidden" name="view" value="{{ view }}">{% endif %}
-    {% for key in narrow|sort %}<input type="hidden" name="{{ key }}" value="1">{% endfor %}
+    {% for key, only in narrow|dictsort %}<input type="hidden" name="{{ key }}" value="{{ '1' if only else 'hide' }}">{% endfor %}
     <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/></svg>
     <input class="input" type="search" name="q" value="{{ q }}" placeholder="Search titles" aria-label="Search titles"
            hx-get="/podcasts/{{ podcast.id }}" hx-trigger="input changed delay:300ms, search"
@@ -273,7 +275,7 @@
     <input type="hidden" name="action" value="archive_expired">
     <input type="hidden" name="next" value="{{ here }}">
     <span class="muted">{{ counts.expired|plural('episode') }} {{ 'was' if counts.expired == 1 else 'were' }} downloaded and cleaned up since.</span>
-    {% if 'cleaned' not in narrow %}<a class="btn btn-ghost btn-sm" href="{{ narrow_urls.cleaned }}">Show {{ 'it' if counts.expired == 1 else 'them' }}</a>{% endif %}
+    {% if not narrow.cleaned %}<a class="btn btn-ghost btn-sm" href="{{ cleaned_url }}">Show {{ 'it' if counts.expired == 1 else 'them' }}</a>{% endif %}
     <button class="btn btn-ghost btn-sm" type="submit">Archive {{ 'it' if counts.expired == 1 else 'them all' }}</button>
   </form>
   {% endif %}
@@ -288,10 +290,10 @@
   </ul>
   {% else %}
   <div class="card empty">
-    {% set narrow_words = narrow|sort|map('replace', 'cleaned', 'cleaned up')|list %}
+    {% set narrow_words = [] %}{% for key, only in narrow|dictsort %}{% set _ = narrow_words.append(('' if only else 'not ') ~ key|replace('cleaned', 'cleaned up')) %}{% endfor %}
     {% if q %}<h2>Nothing matches “{{ q }}”</h2>
     {% elif narrow and view != 'active' %}<h2>Nothing {{ view }} is {{ narrow_words|join(' and ') }}</h2><p class="muted">Turn off {{ 'that' if narrow|length == 1 else 'those' }} to see every {{ view }} episode.</p>
-    {% elif narrow|length > 1 %}<h2>Nothing {{ narrow_words|join(' and ') }}</h2><p class="muted">Turn one off to see more.</p>
+    {% elif narrow|length > 1 or false in narrow.values() %}<h2>No episodes are {{ narrow_words|join(' and ') }}</h2><p class="muted">Turn {{ 'that' if narrow|length == 1 else 'one' }} off to see more.</p>
     {% elif 'downloaded' in narrow %}<h2>Nothing downloaded yet</h2><p class="muted">Episodes you download show here, and stay after they're cleaned up until you archive them.</p>
     {% elif 'cleaned' in narrow %}<h2>Nothing cleaned up</h2><p class="muted">Downloads show here once they're cleaned up, until you archive them.</p>
     {% elif 'grabbed' in narrow %}<h2>Nothing grabbed yet</h2><p class="muted">Episodes show here once your podcast app gets them through your private feed or omni feed, or once you play or download them here, until you archive them.</p>

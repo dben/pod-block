@@ -111,7 +111,7 @@ def expires(ep, podcast=None) -> float | None:
     days = podcast["retention_days"] if podcast is not None else ep["retention_days"]
     if ep["state"] != states.READY or ep["kept_any"]:
         return None
-    return retention.expires_at(ep["ready_at"], days, ep["last_grab_at"])
+    return retention.expires_at(ep, days)
 
 
 def until(ts: float | None) -> str:
