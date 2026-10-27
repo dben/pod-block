@@ -810,6 +810,80 @@ def test_processing_again_doesnt_restart_the_clock(env):
     assert episode(env, "ep-3")["ready_at"] == before
 
 
+def test_a_grab_restarts_the_clock(env):
+    from podblock.app import grabs, retention
+    processed(env)
+    age(env, "ep-3", 8)
+    grabs.record(env.db, accounts.admin_id(env.db), env.ids["ep-3"], "feed", now=time.time() - 2 * 86400)
+    assert retention.expire_due(env.db) == []
+    assert "cleaned up in 5 days" in env.client.get(f"/episodes/{env.ids['ep-3']}").text
+    env.db.execute("UPDATE grabs SET last_at = last_at - ?", (6 * 86400,))
+    env.db.commit()
+    assert retention.expire_due(env.db) == [env.ids["ep-3"]]
+
+
+def test_cleaned_up_episodes_with_captions_come_back_on_demand(env, tmp_path, monkeypatch):
+    from podblock.app import retention
+    from podblock.feed import parse_feed
+    processed(env)
+    made = tmp_path / "captions.vtt"
+    made.write_text("WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nHello.\n")
+    for guid in ("ep-3", "ep-5"):
+        env.db.execute("UPDATE episodes SET transcripts = ? WHERE guid = ?",
+                       (json.dumps([{"format": "vtt", "path": str(made), "made": True}]), guid))
+    env.db.commit()
+    for guid in ("ep-3", "ep-4", "ep-5"):
+        age(env, guid, 8)
+    cut_bytes = episode(env, "ep-3")["cut_bytes"]
+    assert sorted(retention.expire_due(env.db)) == sorted(env.ids[g] for g in ("ep-3", "ep-4", "ep-5"))
+    token, anon = feed_of(env)
+
+    def items():
+        return {e.guid: e for e in parse_feed(anon.get(f"/p/{token}/feed.xml").content, "x").episodes}
+
+    assert "ep-3" not in items()  # off by default
+    env.client.post(f"/podcasts/{env.pod}/settings",
+                    data={"retention_days": 7, "refresh_minutes": 60, "on_demand": "true"})
+    assert 'name="on_demand" value="true" checked' in env.client.get(f"/podcasts/{env.pod}?tab=settings").text
+    shown = items()
+    assert "ep-3" in shown and "ep-5" in shown and "ep-4" not in shown  # only those with captions
+    assert shown["ep-3"].audio_length == cut_bytes and b"podcast:transcript" not in shown["ep-3"].xml.encode()
+    url = shown["ep-3"].audio_url.replace("http://testserver", "")
+
+    monkeypatch.setattr(private_feeds, "ON_DEMAND_WAIT", 0)
+    res = anon.get(url)
+    assert res.status_code == 503 and res.headers["retry-after"] == "60"
+    ep = episode(env, "ep-3")
+    assert ep["state"] == "queued" and ep["state_note"] == private_feeds.ON_DEMAND_NOTE
+    assert "ep-3" in items()  # stays while it's cut
+    assert anon.get(url).status_code == 503
+    assert env.db.execute("SELECT COUNT(*) FROM jobs WHERE episode_id = ?", (ep["id"],)).fetchone()[0] == 1
+    worker.run_queue(env.settings)
+    res = anon.get(url)
+    assert res.status_code == 200 and len(res.content) == episode(env, "ep-3")["cut_bytes"]
+    assert env.db.execute("SELECT COUNT(*) FROM grabs WHERE episode_id = ?", (ep["id"],)).fetchone()[0] == 1
+
+    # given time, the fetch waits for the cut and serves it
+    monkeypatch.setattr(private_feeds, "ON_DEMAND_WAIT", 30)
+    real_sleep, ran = time.sleep, []
+
+    def sleep(secs):
+        if not ran:
+            ran.append(secs)
+            worker.run_queue(env.settings)
+        else:
+            real_sleep(0.01)
+
+    monkeypatch.setattr(private_feeds.time, "sleep", sleep)
+    url5 = items()["ep-5"].audio_url.replace("http://testserver", "")
+    res = anon.get(url5)
+    assert res.status_code == 200 and ran and episode(env, "ep-5")["state"] == "ready"
+    monkeypatch.undo()
+    assert anon.get(url.replace(".mp3", ".chapters.json")).status_code == 200  # ready again: chapters too
+    env.client.post(f"/podcasts/{env.pod}/settings", data={"retention_days": 7, "refresh_minutes": 60})
+    assert anon.get(url5).status_code == 200  # a ready one stays whatever the setting
+
+
 def test_a_cleaned_up_episode_downloads_again(env):
     from podblock.app import retention
     processed(env)

@@ -1,6 +1,8 @@
-"""Cleaning up: downloads go a set time after they were made ready, unless someone keeps them.
+"""Cleaning up: downloads go a set time after they were made ready or last grabbed, unless someone keeps them.
 
-Each podcast has `retention_days` (0 keeps downloads for good). When an
+Each podcast has `retention_days` (0 keeps downloads for good), counted from
+when the episode was first made ready or, if later, when anyone last grabbed
+it (grabs.py). When an
 episode's time is up, its download, cut file and waveform are deleted and it
 becomes `expired`: its metadata, report and timeline marks stay, so it can be
 downloaded again and cut the same way. An episode any user keeps never
@@ -15,9 +17,10 @@ with the download.
 
 An episode nobody wants goes sooner: once everyone who has its podcast on
 their home page has archived it or filters it out, its files go a day after
-it was made ready (the day leaves time to play one downloaded from the
-archive), whatever the podcast's `retention_days`. Once a day the detector's own clean-up runs too, after making sure
-the fingerprints of ready and kept episodes look fresh to it.
+it was made ready or last grabbed (the day leaves time to play one downloaded
+from the archive), whatever the podcast's `retention_days`. Once a day the
+detector's own clean-up runs too, after making sure the fingerprints of ready
+and kept episodes look fresh to it.
 """
 
 from __future__ import annotations
@@ -49,6 +52,8 @@ NO_AUDIO_PRUNE = 36500  # the app never stores audio where the detector's prune 
 
 UNWANTED_AFTER = DAY  # an episode nobody wants goes this long after it was made ready
 
+LAST_GRAB = "(SELECT MAX(g.last_at) FROM grabs g WHERE g.episode_id = e.id)"  # by anyone
+SINCE = f"MAX(COALESCE(e.ready_at, 0), COALESCE({LAST_GRAB}, 0))"  # where the clock starts
 KEPT = "EXISTS (SELECT 1 FROM user_episodes ue WHERE ue.episode_id = e.id AND ue.kept = 1)"
 # Someone has the podcast, and everyone who has it archived the episode or filters it out.
 UNWANTED = f"""(EXISTS (SELECT 1 FROM user_podcasts up WHERE up.podcast_id = e.podcast_id)
@@ -88,8 +93,8 @@ def expire_due(db: sqlite3.Connection, now: float | None = None) -> list[int]:
     due = db.execute(
         f"""SELECT e.* FROM episodes e JOIN podcasts p ON p.id = e.podcast_id
             WHERE e.state = 'ready' AND NOT {KEPT}
-              AND ((e.ready_at IS NOT NULL AND p.retention_days > 0 AND e.ready_at + p.retention_days * {DAY} <= :now)
-                   OR (COALESCE(e.ready_at, 0) + {UNWANTED_AFTER} <= :now AND {UNWANTED}))""",
+              AND ((e.ready_at IS NOT NULL AND p.retention_days > 0 AND {SINCE} + p.retention_days * {DAY} <= :now)
+                   OR ({SINCE} + {UNWANTED_AFTER} <= :now AND {UNWANTED}))""",
         {"now": now}).fetchall()
     with transaction(db):
         for ep in due:
@@ -142,7 +147,8 @@ def prune_store(db: sqlite3.Connection, now: float | None = None) -> dict | None
     return dict(gone)
 
 
-def expires_at(ready_at: float | None, retention_days: int | None) -> float | None:
+def expires_at(ready_at: float | None, retention_days: int | None, last_grab: float | None = None) -> float | None:
+    """When a ready episode's download goes: `retention_days` after it was made ready or last grabbed."""
     if not ready_at or not retention_days:
         return None
-    return ready_at + retention_days * DAY
+    return max(ready_at, last_grab or 0) + retention_days * DAY

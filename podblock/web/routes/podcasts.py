@@ -15,7 +15,7 @@ from ..templating import flash, page, plural
 
 PAGE_SIZE = 50
 VIEWS = ("active", "archived", "filtered")  # which list
-NARROWS = ("downloaded", "grabbed")  # narrow any list; on together or alone
+NARROWS = ("downloaded", "grabbed", "cleaned")  # narrow any list; on together or alone
 TABS = ("episodes", "feed", "filters", "settings")
 
 router = APIRouter()
@@ -140,16 +140,16 @@ def list_return_url(request: Request, podcast_id: int) -> str:
 
 @router.get("/podcasts/{podcast_id}")
 def show_podcast(request: Request, podcast_id: int, view: str = "active", q: str = "", tab: str = "",
-                 downloaded: bool = False, grabbed: bool = False,
+                 downloaded: bool = False, grabbed: bool = False, cleaned: bool = False,
                  page_no: int = Query(1, alias="page", ge=1), partial: bool = False,
                  user=Depends(current_user), db: sqlite3.Connection = Depends(get_db)) -> Response:
     """The show's header, then one of its tabs: the episode list, your private feed, filters or settings.
-    The list is one of `VIEWS`, narrowed to the episodes downloaded, grabbed, or both."""
+    The list is one of `VIEWS`, narrowed to the episodes downloaded, grabbed or cleaned up, in any mix."""
     pod = _podcast_or_404(db, podcast_id)
     params = request.query_params
     tab = tab if tab in TABS else "feed" if params.get("feed") else "filters" if params.get("filters") else "episodes"
-    narrow = {n for n, on in (("downloaded", downloaded), ("grabbed", grabbed)) if on}
-    if view in NARROWS:  # the old ?view=downloaded and ?view=grabbed
+    narrow = {n for n, on in (("downloaded", downloaded), ("grabbed", grabbed), ("cleaned", cleaned)) if on}
+    if view in ("downloaded", "grabbed"):  # the old ?view=downloaded and ?view=grabbed
         narrow.add(view)
     view = view if view in VIEWS else "active"
     context = dict(podcast=pod, view=view, q=q, page_no=page_no, tab=tab, narrow=narrow,
@@ -160,7 +160,7 @@ def show_podcast(request: Request, podcast_id: int, view: str = "active", q: str
         rows, total = library.episodes(db, user["id"], podcast_id, view == "archived", q, limit=PAGE_SIZE,
                                        offset=(page_no - 1) * PAGE_SIZE, downloaded="downloaded" in narrow,
                                        filtered=view == "filtered", grabbed="grabbed" in narrow,
-                                       oldest_first=bool(pod["sort_oldest"]))
+                                       cleaned="cleaned" in narrow, oldest_first=bool(pod["sort_oldest"]))
         more = page_no * PAGE_SIZE < total
         context.update(episodes=rows, total=total,
                        next_url=_list_url(podcast_id, view, narrow, q, page=page_no + 1) if more else None)
@@ -179,20 +179,22 @@ def show_podcast(request: Request, podcast_id: int, view: str = "active", q: str
                 cut_sec=library.cut_seconds(db, podcast_id),
                 subscribed=library.subscribed(db, user["id"], podcast_id),
                 filters=filters.for_podcast(db, user["id"], podcast_id),
-                counts=library.counts(db, user["id"], podcast_id, "downloaded" in narrow, "grabbed" in narrow),
+                counts=library.counts(db, user["id"], podcast_id, "downloaded" in narrow, "grabbed" in narrow,
+                                      "cleaned" in narrow),
                 **context)
 
 
 @router.post("/podcasts/{podcast_id}/settings")
 def podcast_settings(request: Request, podcast_id: int, retention_days: int = Form(...),
                      refresh_minutes: int = Form(...), fill_gaps: float = Form(4.0), auto_download: bool = Form(False),
-                     max_break_minutes: float = Form(8.0), sort: str = Form("newest"),
+                     max_break_minutes: float = Form(8.0), sort: str = Form("newest"), on_demand: bool = Form(False),
                      transcript_check: bool = Form(False), check_shown: bool = Form(False), user=Depends(current_user),
                      db: sqlite3.Connection = Depends(get_db)) -> Response:
     _podcast_or_404(db, podcast_id)
     try:
         recut = library.save_settings(db, podcast_id, retention_days, refresh_minutes, fill_gaps, auto_download,
-                                      oldest_first=sort == "oldest", max_break=max_break_minutes * 60)
+                                      oldest_first=sort == "oldest", max_break=max_break_minutes * 60,
+                                      on_demand=on_demand)
     except library.SettingsError as e:
         flash(request, str(e), "error")
     else:

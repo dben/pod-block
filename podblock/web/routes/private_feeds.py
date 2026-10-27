@@ -11,11 +11,12 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import FileResponse, PlainTextResponse, Response
 
-from ...app import chapters, grabs
+from ...app import chapters, grabs, private_feeds
 from ...app.private_feeds import build_feed, build_omni, feed_by_token, omni_by_token, podcast_by_token, ready_episode
-from ..deps import base_url, get_db
+from ..deps import base_url, get_db, wake_worker
 
 NOT_FOUND = PlainTextResponse("Not found", status_code=404)
+RETRY_AFTER = 60  # seconds, for a fetch of an episode still being cut on demand
 FILE_NAME = re.compile(r"([0-9a-f]{16})\.(chapters\.json|transcript\.(?:vtt|srt|json)|[a-z0-9]{1,5})")
 
 router = APIRouter()
@@ -51,19 +52,27 @@ def _serve_feed(request: Request, token: str, db: sqlite3.Connection, by_downloa
 @router.api_route("/p/{token}/{name}", methods=["GET", "HEAD"], include_in_schema=False)
 def private_file(request: Request, token: str, name: str, db: sqlite3.Connection = Depends(get_db)) -> Response:
     """An episode's cut audio, chapters or transcript, through a user's feed or omni feed. Each GET of the audio
-    counts toward a grab by that user. Audio links from before feeds carried their own token still work."""
+    counts toward a grab by that user. Audio links from before feeds carried their own token still work. Audio
+    of an episode offered on demand is cut again first (`private_feeds.fetch_on_demand`)."""
     m = FILE_NAME.fullmatch(name)
     if not m:
         return NOT_FOUND
     key, what = m[1], m[2]
     if (pod := feed_by_token(db, token)) is not None:
-        ep, user_id, via = ready_episode(db, key, pod["id"]), pod["user_id"], "feed"
+        podcast_id, user_id, via = pod["id"], pod["user_id"], "feed"
     elif (user := omni_by_token(db, token)) is not None:
-        ep, user_id, via = ready_episode(db, key), user["id"], "omni"
+        podcast_id, user_id, via = None, user["id"], "omni"
     elif (pod := podcast_by_token(db, token)) is not None and "." not in what:
-        ep, user_id, via = ready_episode(db, key, pod["id"]), None, None
+        podcast_id, user_id, via = pod["id"], None, None
     else:
         return NOT_FOUND
+    ep, on_demand = ready_episode(db, key, podcast_id), False
+    if ep is None and "." not in what and (waiting := private_feeds.on_demand_episode(db, key, podcast_id)):
+        wait = private_feeds.ON_DEMAND_WAIT if request.method == "GET" else 0
+        ep, on_demand = private_feeds.fetch_on_demand(db, waiting, user_id, lambda: wake_worker(request), wait), True
+        if ep is None:
+            return PlainTextResponse("Being downloaded and cut. Try again in a minute.", status_code=503,
+                                     headers={"Retry-After": str(RETRY_AFTER)})
     if ep is None:
         return NOT_FOUND
     headers = {"Cache-Control": "private, max-age=3600", "X-Robots-Tag": "noindex"}
@@ -77,7 +86,7 @@ def private_file(request: Request, token: str, name: str, db: sqlite3.Connection
             return NOT_FOUND
         return Response(text.encode() if request.method == "GET" else b"",
                         media_type=f"{chapters.MIME[fmt]}; charset=utf-8", headers=headers)
-    if Path(ep["cut_path"]).suffix != f".{what}":
+    if Path(ep["cut_path"]).suffix != f".{what}" and not on_demand:  # the new cut may have another suffix
         return NOT_FOUND
     if user_id is not None and request.method == "GET":
         grabs.record(db, user_id, ep["id"], via, resumed=grabs.resumed(request.headers.get("range")))
