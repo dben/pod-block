@@ -264,6 +264,12 @@ MIGRATIONS = [
     """
     ALTER TABLE episodes ADD COLUMN original_sha256 TEXT;
     """,
+    # 21: clean-up counts from the last grab by anyone (retention.py); cleaned-up episodes with captions stay in
+    # private feeds, downloaded and cut again when fetched (private_feeds.py)
+    """
+    CREATE INDEX grabs_episode ON grabs(episode_id, last_at);
+    ALTER TABLE podcasts ADD COLUMN on_demand INTEGER NOT NULL DEFAULT 0;
+    """,
 ]
 
 

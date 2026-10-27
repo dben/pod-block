@@ -32,11 +32,20 @@ the show as each item's author.
 Each feed has a second address, `downloaded.xml` in place of `feed.xml`, that
 lists the same episodes newest downloaded first. Apps sort by `pubDate`, so
 there each item's `pubDate` is when its episode was downloaded and cut.
+
+On demand: a podcast with `on_demand` set leaves its cleaned-up episodes in
+these feeds while they still have captions (retention.py keeps them for
+CAPTIONS_DAYS), and those being cut again. Their items carry the last cut's
+length and duration, and no chapters or transcripts. Fetching one queues it
+to be downloaded and cut again, and waits up to ON_DEMAND_WAIT for that before
+serving it; if it isn't ready by then the app gets a 503 with Retry-After,
+and the next try waits again.
 """
 
 from __future__ import annotations
 
 import io
+import logging
 import sqlite3
 import time
 import xml.etree.ElementTree as ET
@@ -45,11 +54,14 @@ from email.utils import format_datetime
 from pathlib import Path
 
 from ..feed import ITUNES, PODCAST, PSC
-from . import chapters, media
+from . import chapters, jobs, media
 from .db import new_token, transaction
 from .filters import HIDDEN
 from .library import USER_JOIN
+from .states import ACTIVE, sql
 from .text import web_url
+
+log = logging.getLogger(__name__)
 
 ATOM = "{http://www.w3.org/2005/Atom}"
 PREFIXES = {"itunes": ITUNES[1:-1], "atom": ATOM[1:-1], "podcast": PODCAST[1:-1],
@@ -61,6 +73,12 @@ OMNI_ABOUT = ("Every episode you've downloaded from your podcasts, in one feed, 
               "Made by pod-block.")
 OMNI_ART = "static/omni.jpg"
 FEED_FILES = {False: "feed.xml", True: "downloaded.xml"}  # by_download: the feed's file name
+ON_DEMAND_WAIT = 40.0  # seconds a fetch of a cleaned-up episode waits for it to be cut again
+ON_DEMAND_POLL = 1.0
+ON_DEMAND_NOTE = "Fetched through a private feed"
+# A cleaned-up episode that can come back on demand, or one being cut (again) now; with `p` its podcast.
+ON_DEMAND = f"""(p.on_demand = 1 AND e.processed_at IS NOT NULL AND e.cut_duration IS NOT NULL
+    AND ((e.state = 'expired' AND e.transcripts IS NOT NULL) OR e.state IN ({sql(ACTIVE)})))"""
 OUT_OF_STEP = {f"{PODCAST}chapters", f"{PODCAST}transcript", f"{PODCAST}soundbite", f"{PSC}chapters",
                f"{PODCAST}alternateEnclosure"}
 
@@ -132,32 +150,40 @@ def _downloaded_at(ep: sqlite3.Row) -> float | None:
     return ep["ready_at"] or ep["processed_at"]
 
 
+def _on_hand(rows: list[sqlite3.Row]) -> list[sqlite3.Row]:
+    """Ready episodes whose cut file is on disk, and on-demand ones."""
+    return [r for r in rows if r["state"] != "ready" or Path(r["cut_path"]).exists()]
+
+
 def published(db: sqlite3.Connection, podcast_id: int, user_id: int | None = None,
               by_download: bool = False) -> list[sqlite3.Row]:
-    """A podcast's episodes that can be in a private feed: ready, with their cut file on disk, newest released
-    (or downloaded) first. With a user, the ones in their feed: not archived by them, nor hidden by a filter."""
+    """A podcast's episodes that can be in a private feed: ready, with their cut file on disk, and those it
+    offers on demand; newest released (or downloaded) first. With a user, the ones in their feed: not archived
+    by them, nor hidden by a filter."""
     mine = f"AND COALESCE(ue.archived, 0) = 0 AND NOT {HIDDEN}" if user_id is not None else ""
     rows = db.execute(
-        f"""SELECT e.* FROM episodes e {USER_JOIN}
-            WHERE e.podcast_id = :podcast_id AND e.state = 'ready' AND e.cut_path IS NOT NULL {mine}
+        f"""SELECT e.* FROM episodes e JOIN podcasts p ON p.id = e.podcast_id {USER_JOIN}
+            WHERE e.podcast_id = :podcast_id AND ((e.state = 'ready' AND e.cut_path IS NOT NULL) OR {ON_DEMAND})
+              {mine}
             ORDER BY {_order(by_download)}""",
         {"user_id": user_id, "podcast_id": podcast_id}).fetchall()
-    return [r for r in rows if Path(r["cut_path"]).exists()]
+    return _on_hand(rows)
 
 
 def omni_published(db: sqlite3.Connection, user_id: int, by_download: bool = False) -> list[sqlite3.Row]:
-    """The episodes in a user's omni feed: ready, with their cut file on disk, of the podcasts on their home
-    page, not archived by them nor hidden by a filter; newest released (or downloaded) first. Each row has its
-    podcast's name, author, artwork and explicit flag."""
+    """The episodes in a user's omni feed: ready, with their cut file on disk, or offered on demand, of the
+    podcasts on their home page, not archived by them nor hidden by a filter; newest released (or downloaded)
+    first. Each row has its podcast's name, author, artwork and explicit flag."""
     rows = db.execute(
         f"""SELECT e.*, p.name AS podcast_name, p.author AS podcast_author, p.image_url AS podcast_image,
                    p.explicit AS podcast_explicit
             FROM episodes e JOIN podcasts p ON p.id = e.podcast_id AND p.followed = 1
             JOIN user_podcasts up ON up.podcast_id = p.id AND up.user_id = :user_id
             {USER_JOIN}
-            WHERE e.state = 'ready' AND e.cut_path IS NOT NULL AND COALESCE(ue.archived, 0) = 0 AND NOT {HIDDEN}
+            WHERE ((e.state = 'ready' AND e.cut_path IS NOT NULL) OR {ON_DEMAND})
+              AND COALESCE(ue.archived, 0) = 0 AND NOT {HIDDEN}
             ORDER BY {_order(by_download)}""", {"user_id": user_id}).fetchall()
-    return [r for r in rows if Path(r["cut_path"]).exists()]
+    return _on_hand(rows)
 
 
 def podcast_by_token(db: sqlite3.Connection, token: str) -> sqlite3.Row | None:
@@ -204,7 +230,7 @@ def _rfc822(ts: float) -> str:
 def _item(ep: sqlite3.Row, link: str, art: str | None = None, by_download: bool = False) -> ET.Element:
     """An episode's <item>, pointing at its cut audio, chapters and transcripts, whose addresses start with
     `link`. `art` is the show's artwork, for items with none. By download, its `pubDate` is when it was
-    downloaded."""
+    downloaded. One offered on demand has no chapters or transcripts until it is cut again."""
     item = None
     if ep["item_xml"]:
         try:
@@ -225,12 +251,13 @@ def _item(ep: sqlite3.Row, link: str, art: str | None = None, by_download: bool 
     if enclosure is None:
         enclosure = ET.SubElement(item, "enclosure")
     enclosure.attrib.clear()
-    enclosure.attrib.update(url=link + Path(ep["cut_path"]).suffix, length=str(ep["cut_bytes"] or 0),
+    enclosure.attrib.update(url=link + suffix(ep), length=str(ep["cut_bytes"] or 0),
                             type=ep["cut_type"] or "audio/mpeg")
     _set(item, f"{ITUNES}duration", _hms(ep["cut_duration"]))
-    if chapters.has_chapters(ep):
+    ready = ep["state"] == "ready"
+    if ready and chapters.has_chapters(ep):
         ET.SubElement(item, f"{PODCAST}chapters", url=f"{link}.chapters.json", type="application/json+chapters")
-    for t in chapters.transcripts(ep):
+    for t in chapters.transcripts(ep) if ready else ():
         ET.SubElement(item, f"{PODCAST}transcript", url=f"{link}.transcript.{t['format']}",
                       type=chapters.MIME[t["format"]], **{k: t[k] for k in ("language", "rel") if t.get(k)})
     own = item.find(f"{ITUNES}image")
@@ -239,6 +266,11 @@ def _item(ep: sqlite3.Row, link: str, art: str | None = None, by_download: bool 
     if by_download and (when := _downloaded_at(ep)):
         _set(item, "pubDate", _rfc822(when))
     return item
+
+
+def suffix(ep: sqlite3.Row) -> str:
+    """The suffix of an episode's audio link: its cut file's, or for one offered on demand, its last one's."""
+    return Path(ep["cut_path"]).suffix if ep["cut_path"] else media.audio_suffix(None, ep["cut_type"])
 
 
 def _stamp(channel: ET.Element, episodes: list[sqlite3.Row]) -> None:
@@ -335,3 +367,32 @@ def ready_episode(db: sqlite3.Connection, key: str, podcast_id: int | None = Non
             WHERE e.state = 'ready' AND instr(e.cut_path, ?) > 0 {'AND e.podcast_id = ?' if podcast_id else ''}""",
         (key, *([podcast_id] if podcast_id else []))).fetchall()
     return next((r for r in rows if media.key(r["guid"]) == key and Path(r["cut_path"]).exists()), None)
+
+
+def on_demand_episode(db: sqlite3.Connection, key: str, podcast_id: int | None = None) -> sqlite3.Row | None:
+    """The episode offered on demand (`ON_DEMAND`) whose files are named `key`: of one podcast, or of any."""
+    rows = db.execute(
+        f"""SELECT e.id, e.guid FROM episodes e JOIN podcasts p ON p.id = e.podcast_id AND p.followed = 1
+            WHERE {ON_DEMAND} {'AND e.podcast_id = ?' if podcast_id else ''}""",
+        ([podcast_id] if podcast_id else [])).fetchall()
+    found = next((r["id"] for r in rows if media.key(r["guid"]) == key), None)
+    return db.execute("SELECT * FROM episodes WHERE id = ?", (found,)).fetchone() if found else None
+
+
+def fetch_on_demand(db: sqlite3.Connection, ep: sqlite3.Row, user_id: int | None, wake=None,
+                    wait: float = ON_DEMAND_WAIT) -> sqlite3.Row | None:
+    """Queue an episode offered on demand to be downloaded and cut again, unless it is already, and wait up to
+    `wait` seconds for it. Returns it once ready with its cut file on disk, or None if it isn't by then or its
+    job stopped short. `wake` tells the worker a job was queued."""
+    if jobs.enqueue(db, "process", [ep["id"]], user_id, note=ON_DEMAND_NOTE):
+        log.info("fetched episode %d on demand", ep["id"])
+        if wake:
+            wake()
+    deadline = time.monotonic() + wait
+    while True:
+        row = db.execute("SELECT * FROM episodes WHERE id = ?", (ep["id"],)).fetchone()
+        if row["state"] == "ready" and row["cut_path"] and Path(row["cut_path"]).exists():
+            return row
+        if row["state"] not in ACTIVE or time.monotonic() >= deadline:
+            return None
+        time.sleep(ON_DEMAND_POLL)

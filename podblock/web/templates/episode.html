@@ -73,7 +73,7 @@
       <section class="card status-card">
         <h2>Cleaned up</h2>
         <p class="muted">Its download was deleted {{ e.expired_at|ago if e.expired_at else '' }}, {{ e.retention_days }} days after it was
-          ready. The report and any changes you made stay, so downloading it again cuts it the same way.</p>
+          last processed or grabbed. The report and any changes you made stay, so downloading it again cuts it the same way.</p>
         <form method="post" action="/episodes/{{ e.id }}/process">
           <button class="btn btn-primary" type="submit">Download again</button>
         </form>

@@ -12,7 +12,7 @@ from fastapi import Request
 from fastapi.responses import Response
 from fastapi.templating import Jinja2Templates
 
-from ..app import jobs, states
+from ..app import jobs, retention, states
 from ..app.text import html_to_text, plural, web_url
 
 HERE = Path(__file__).parent
@@ -109,9 +109,9 @@ def active_jobs(request: Request) -> int:
 def expires(ep, podcast=None) -> float | None:
     """When a ready episode will be cleaned up, or None if it won't (kept, or the podcast keeps everything)."""
     days = podcast["retention_days"] if podcast is not None else ep["retention_days"]
-    if ep["state"] != states.READY or ep["kept_any"] or not days or not ep["ready_at"]:
+    if ep["state"] != states.READY or ep["kept_any"]:
         return None
-    return ep["ready_at"] + days * 86400
+    return retention.expires_at(ep, days)
 
 
 def until(ts: float | None) -> str:

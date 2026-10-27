@@ -181,8 +181,8 @@ def _render(ctx: Context, settings: Settings, episode_id: int, report: dict) -> 
             and Path(ep["cut_path"]).exists()):
         with transaction(ctx.db):  # nothing to cut differently
             ctx.db.execute("UPDATE episodes SET state = 'ready', state_note = NULL, phrase_cuts = ?, missing_cuts = ?, "
-                           "ready_at = COALESCE(ready_at, ?) WHERE id = ?",
-                           (json.dumps(said), json.dumps(unsaid), time.time(), episode_id))
+                           "processed_at = ?, ready_at = COALESCE(ready_at, ?) WHERE id = ?",
+                           (json.dumps(said), json.dumps(unsaid), time.time(), time.time(), episode_id))
         return
     ctx.step("Cutting", episode_id)
     try:
