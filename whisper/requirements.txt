@@ -20,7 +20,7 @@ packaging==26.3
 protobuf==7.36.2
 pyyaml==6.0.3
 sherpa-onnx==1.13.8
-sherpa-onnx-core==1.13.8
+sherpa-onnx-core==2.0.0
 tokenizers==0.23.3
 tqdm==4.70.1
 truststore==0.10.5
